@@ -54,15 +54,20 @@ function App() {
   // --- OPTIMISATIONS TELEGRAM (POINTS 2B & 3B) ---
   const [isFetching, setIsFetching] = useState(false);
 
-  // Fonction sécurisée pour les retours haptiques (Vibrations)
+// Fonction ultra-sécurisée pour les retours haptiques (Vibrations)
   const triggerHaptic = (type = 'light') => {
-    // Vérifie si l'app tourne dans Telegram, sinon ne fait rien (évite les crashs sur navigateur classique)
-    if (window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.HapticFeedback) {
-      if (type === 'light' || type === 'medium' || type === 'heavy') {
-        window.Telegram.WebApp.HapticFeedback.impactOccurred(type);
-      } else if (type === 'success' || type === 'error' || type === 'warning') {
-        window.Telegram.WebApp.HapticFeedback.notificationOccurred(type);
+    try {
+      // 1. On vérifie que TOUT l'arbre Telegram existe avant de l'appeler
+      if (window?.Telegram?.WebApp?.HapticFeedback) {
+        if (type === 'light' || type === 'medium' || type === 'heavy') {
+          window.Telegram.WebApp.HapticFeedback.impactOccurred(type);
+        } else if (type === 'success' || type === 'error' || type === 'warning') {
+          window.Telegram.WebApp.HapticFeedback.notificationOccurred(type);
+        }
       }
+    } catch (e) {
+      // Si ça échoue (ex: navigateur PC), on ignore silencieusement pour ne pas crasher l'app
+      console.log("Haptic feedback non disponible.");
     }
   };
 
