@@ -8,6 +8,7 @@ import WebApp from '@twa-dev/sdk'
 try {
   WebApp.ready();
   WebApp.expand();
+  WebApp.setHeaderColor('#0a0a0a');
 } catch (e) {
   console.log("Exécution hors Telegram détectée.");
 }
