@@ -597,14 +597,23 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
                     <div style={{ fontSize: '0.85rem', color: '#888' }}>{trade.pips > 0 ? '+' : ''}{trade.pips} pips</div>
                   </div>
                   
-                  {/* BOUTONS ACTIONS */}
-                  <div style={{ display: 'flex', gap: '8px' }}>
+                  {/* BLOC DROITE : PRIX ET BOUTONS */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexShrink: 0 }}>
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontWeight: 'bold', fontSize: '0.95rem', color: trade.profit >= 0 ? '#00e676' : '#ff4444', whiteSpace: 'nowrap' }}>
+                        {trade.profit > 0 ? '+' : ''}{trade.profit.toFixed(2)} €
+                    </div>
+                      <div style={{ fontSize: '0.7rem', color: '#555' }}>{trade.pips > 0 ? '+' : ''}{trade.pips}p</div>
+                    </div>
+                  </div>
+                  
+                  <div style={{ display: 'flex', gap: '5px' }}>
                     {!trade.managed ? (
-                      <button onClick={() => handleSuivre(trade.ticket)} className="btn-interactive" style={{ background: '#2196f3', border: 'none', color: 'white', padding: '8px 15px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' }}>Suivre</button>
+                      <button onClick={() => handleSuivre(trade.ticket)} className="btn-interactive" style={{ background: '#2196f3', border: 'none', color: 'white', padding: '6px 10px', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '0.75rem' }}>Suivre</button>
                     ) : (
                       <>
-                        <button onClick={() => handleBeTrade(trade.ticket)} className="btn-interactive" style={{ background: 'rgba(255, 193, 7, 0.1)', border: '1px solid #ffc107', color: '#ffc107', padding: '8px', borderRadius: '8px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '5px' }}><Shield size={18} /> BE</button>
-                        <button onClick={() => handleCloseTrade(trade.ticket)} className="btn-interactive" style={{ background: 'rgba(255, 68, 68, 0.1)', border: '1px solid #ff4444', color: '#ff4444', padding: '8px', borderRadius: '8px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '5px' }}><XCircle size={18} /> Close</button>
+                        <button onClick={() => handleBeTrade(trade.ticket)} className="btn-interactive" style={{ background: 'rgba(255, 193, 7, 0.1)', border: '1px solid #ffc107', color: '#ffc107', padding: '6px', borderRadius: '6px', cursor: 'pointer' }}><Shield size={14} /></button>
+                        <button onClick={() => handleCloseTrade(trade.ticket)} className="btn-interactive" style={{ background: 'rgba(255, 68, 68, 0.1)', border: '1px solid #ff4444', color: '#ff4444', padding: '6px', borderRadius: '6px', cursor: 'pointer' }}><XCircle size={14} /></button>
                       </>
                     )}
                   </div>
