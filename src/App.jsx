@@ -4,7 +4,7 @@ import { Activity, Wallet, TrendingUp, TrendingDown, Settings, XCircle, Shield, 
 import './App.css'
 
 // 🚨 REMET TON URL CLOUDFLARE ICI
-const API_URL = "http://51.91.101.234:8000"
+const API_URL = "https://icing-jolly-drapery.ngrok-free.dev"
 
 // --- COMPOSANT ODOMÈTRE (ÉTAPE 5) ---
 const AnimatedNumber = ({ value, duration = 800, prefix = '' }) => {
