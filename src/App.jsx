@@ -6,6 +6,8 @@ import './App.css'
 // 🚨 REMET TON URL CLOUDFLARE ICI
 const API_URL = "https://icing-jolly-drapery.ngrok-free.dev"
 
+axios.defaults.headers.common['ngrok-skip-browser-warning'] = 'true';
+
 // --- COMPOSANT ODOMÈTRE (ÉTAPE 5) ---
 const AnimatedNumber = ({ value, duration = 800, prefix = '' }) => {
   const [displayValue, setDisplayValue] = useState(value);
