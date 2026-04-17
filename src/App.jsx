@@ -572,8 +572,9 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
                 padding: (trade.isClosing || isPanicMode) ? '0px 15px' : '15px', 
                 borderRadius: '10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '15px',
                 overflow: 'hidden',
+                flexWrap: 'nowrap', gap: '8px',
                 animation: isPanicMode ? `cascadeClose 1.2s ease-in-out forwards ${2 + (index * 0.2)}s` : trade.isClosing ? (trade.profit >= 0 ? 'slideOutGain 0.5s forwards' : 'slideOutLoss 0.5s forwards') : 'fadeIn 0.3s ease-out'              }}>
-                <div style={{ flex: '1 1 250px' }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
                     <span style={{ padding: '3px 8px', borderRadius: '4px', fontSize: '0.8rem', fontWeight: 'bold', background: trade.type === 'BUY' ? 'rgba(0, 230, 118, 0.2)' : 'rgba(255, 68, 68, 0.2)', color: trade.type === 'BUY' ? '#00e676' : '#ff4444' }}>{trade.type}</span>
                     <strong style={{ fontSize: '1.1rem' }}>{trade.symbol}</strong>
@@ -586,10 +587,10 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
                   </div>
                 </div>
 
-                <div style={{ textAlign: 'right', display: 'flex', alignItems: 'center', gap: '20px', flex: '1 1 auto', justifyContent: 'flex-end' }}>
-                  <div style={{ textAlign: 'right' }}>
-                    <div style={{ fontWeight: 'bold', fontSize: '1.2rem', color: trade.profit >= 0 ? '#00e676' : '#ff4444' }}>{trade.profit > 0 ? '+' : ''}{trade.profit.toFixed(2)} €</div>
-                    <div style={{ fontSize: '0.85rem', color: '#888' }}>{trade.pips > 0 ? '+' : ''}{trade.pips} pips</div>
+                <div style={{ textAlign: 'right', display: 'flex', alignItems: 'center', gap: '10px', flexShrink: 0 }}>
+                  <div style={{ textAlign: 'right', minWidth: '65px' }}>
+                    <div style={{ fontWeight: 'bold', fontSize: '0.95rem', color: trade.profit >= 0 ? '#00e676' : '#ff4444', whiteSpace: 'nowrap' }}>{trade.profit > 0 ? '+' : ''}{trade.profit.toFixed(2)} €</div>
+                    <div style={{ fontSize: '0.75rem', color: '#888' }}>{trade.pips > 0 ? '+' : ''}{trade.pips} p</div>
                   </div>
                   
                   {/* BOUTONS ACTIONS */}
