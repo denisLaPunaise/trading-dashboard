@@ -461,18 +461,28 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
       <div style={{ display: 'flex', gap: '10px', marginBottom: '15px', width: '100%' }}>
         
         {/* CASE BALANCE */}
-        <div style={{ flex: 1, minWidth: 0, padding: '15px', background: '#1e1e1e', border: '1px solid #333', borderRadius: '12px', display: 'flex', flexDirection: 'column', minHeight: '130px' }}>
+        <div style={{ flex: 1, minWidth: 0, padding: '15px', background: '#1e1e1e', border: '1px solid #333', borderRadius: '12px', display: 'flex', flexDirection: 'column', minHeight: '135px' }}>
           <h3 style={{ margin: 0, color: '#aaa', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '5px', whiteSpace: 'nowrap' }}>
             <Wallet size={14} color="#aaa"/> Balance
           </h3>
+          
+          {/* Le gros chiffre de la balance au centre (Légèrement réduit) */}
           <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <h2 style={{ fontSize: '1.4rem', margin: 0, whiteSpace: 'nowrap' }}>
+            <h2 style={{ fontSize: '1.25rem', margin: 0, whiteSpace: 'nowrap' }}>
               <AnimatedNumber value={account.balance} /> €
             </h2>
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', fontSize: '0.7rem', color: '#666', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '8px', marginTop: '5px' }}>
-            <span>Eq : <strong>{account.equity.toLocaleString('fr-FR')} €</strong></span>
-            <span>Réf : <strong>{balanceMinuit.toLocaleString('fr-FR')} €</strong></span>
+
+          {/* Ligne d'informations secondaires (Empilées Gauche / Droite) */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', color: '#888', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '8px', marginTop: '5px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
+              <span>Equity :</span>
+              <strong style={{ color: '#666' }}>{account.equity.toLocaleString('fr-FR')} €</strong>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
+              <span>Réf 00h :</span>
+              <strong style={{ color: '#666' }}>{balanceMinuit.toLocaleString('fr-FR')} €</strong>
+            </div>
           </div>
         </div>
 
@@ -481,25 +491,38 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
           flex: 1, minWidth: 0, padding: '15px', 
           background: daily_stats.realized_pnl >= 0 ? 'rgba(0, 230, 118, 0.05)' : 'rgba(255, 68, 68, 0.05)', 
           border: `1px solid ${daily_stats.realized_pnl >= 0 ? '#00e676' : '#ff4444'}`, 
-          borderRadius: '12px', display: 'flex', flexDirection: 'column', minHeight: '130px',
+          borderRadius: '12px', display: 'flex', flexDirection: 'column', minHeight: '135px',
           animation: pnlPulse === 'gain' ? 'pulseGain 0.5s ease-out' : pnlPulse === 'loss' ? 'pulseLoss 0.5s ease-out' : 'none'
         }}>
           <h3 style={{ margin: 0, color: daily_stats.realized_pnl >= 0 ? '#00e676' : '#ff4444', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '5px', whiteSpace: 'nowrap' }}>
             {daily_stats.realized_pnl >= 0 ? <TrendingUp size={14}/> : <TrendingDown size={14}/>} Profit
           </h3>
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
-            <h2 style={{ fontSize: '1.4rem', margin: 0, color: daily_stats.realized_pnl >= 0 ? '#00e676' : '#ff4444', whiteSpace: 'nowrap' }}>
-              <AnimatedNumber value={daily_stats.realized_pnl} prefix={daily_stats.realized_pnl > 0 ? '+' : ''} /> €
-            </h2>
-            <span style={{ fontSize: '0.8rem', fontWeight: 'bold', color: daily_stats.realized_pnl >= 0 ? '#00e676' : '#ff4444', opacity: 0.8 }}>
-              ({daily_stats.realized_pnl > 0 ? '+' : ''}{(balanceMinuit > 0 ? (daily_stats.realized_pnl / balanceMinuit) * 100 : 0).toFixed(2)}%)
-            </span>
+          
+          {/* Le gros chiffre + pourcentage alignés sur la même ligne */}
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: '4px' }}>
+              <h2 style={{ fontSize: '1.25rem', margin: 0, color: daily_stats.realized_pnl >= 0 ? '#00e676' : '#ff4444', whiteSpace: 'nowrap' }}>
+                <AnimatedNumber value={daily_stats.realized_pnl} prefix={daily_stats.realized_pnl > 0 ? '+' : ''} /> €
+              </h2>
+              <span style={{ fontSize: '0.75rem', fontWeight: 'bold', color: daily_stats.realized_pnl >= 0 ? '#00e676' : '#ff4444', opacity: 0.8, whiteSpace: 'nowrap' }}>
+                ({daily_stats.realized_pnl > 0 ? '+' : ''}{(balanceMinuit > 0 ? (daily_stats.realized_pnl / balanceMinuit) * 100 : 0).toFixed(2)}%)
+              </span>
+            </div>
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', fontSize: '0.7rem', color: '#666', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '8px', marginTop: '5px' }}>
-            <span>Flot : <strong style={{ color: daily_stats.floating_pnl >= 0 ? '#00e676' : '#ff4444' }}>{daily_stats.floating_pnl.toLocaleString('fr-FR')} €</strong></span>
-            <span>Total : <strong style={{ color: daily_stats.total_pnl >= 0 ? '#00e676' : '#ff4444' }}>{daily_stats.total_pnl.toLocaleString('fr-FR')} €</strong></span>
+
+          {/* Ligne d'informations secondaires (Empilées Gauche / Droite) */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', color: '#888', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '8px', marginTop: '5px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
+              <span>Flottant :</span>
+              <strong style={{ color: daily_stats.floating_pnl >= 0 ? '#00e676' : '#ff4444' }}>{daily_stats.floating_pnl > 0 ? '+' : ''}{daily_stats.floating_pnl.toLocaleString('fr-FR')} €</strong>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
+              <span>Total :</span>
+              <strong style={{ color: daily_stats.total_pnl >= 0 ? '#00e676' : '#ff4444' }}>{daily_stats.total_pnl > 0 ? '+' : ''}{daily_stats.total_pnl.toLocaleString('fr-FR')} €</strong>
+            </div>
           </div>
         </div>
+
       </div>
 
       {/* BOUTON PANIC CENTRÉ SOUS LES STATS */}
