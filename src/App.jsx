@@ -572,6 +572,7 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
                 padding: (trade.isClosing || isPanicMode) ? '0px 15px' : '15px', 
                 borderRadius: '10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '15px',
                 overflow: 'hidden',
+                flexWrap: 'nowrap', gap: '8px',
                 animation: isPanicMode ? `cascadeClose 1.2s ease-in-out forwards ${2 + (index * 0.2)}s` : trade.isClosing ? (trade.profit >= 0 ? 'slideOutGain 0.5s forwards' : 'slideOutLoss 0.5s forwards') : 'fadeIn 0.3s ease-out'              }}>
                 <div style={{ flex: '1 1 250px' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
