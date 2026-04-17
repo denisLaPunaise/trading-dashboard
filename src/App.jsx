@@ -637,9 +637,9 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
                   <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '5px' }}>
                     <span style={{ padding: '2px 6px', borderRadius: '4px', fontSize: '0.7rem', fontWeight: 'bold', background: trade.type === 'BUY' ? 'rgba(0, 230, 118, 0.1)' : 'rgba(255, 68, 68, 0.1)', color: trade.type === 'BUY' ? '#00e676' : '#ff4444' }}>{trade.type}</span>
                     <strong style={{ fontSize: '1rem', color: '#ccc' }}>{trade.symbol}</strong>
-                    <div style={{ display: 'flex', flexDirection: 'column', marginLeft: 'auto', textAlign: 'right' }}>
-                      <span style={{ color: '#888', fontSize: '0.8rem', fontWeight: 'bold' }}>{trade.volume} lots</span>
-                      <span style={{ color: '#555', fontSize: '0.7rem' }}>{trade.open_time}</span>
+                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+                      <span style={{ color: '#888', fontSize: '0.75rem', fontWeight: 'bold', whiteSpace: 'nowrap' }}>{trade.volume} lots</span>
+                      <span style={{ color: '#555', fontSize: '0.65rem' }}>{trade.open_time}</span>
                     </div>
                   </div>
                   <div style={{ fontSize: '0.75rem', color: '#777' }}>
