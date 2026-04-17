@@ -458,70 +458,48 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
       </header>
 
       {/* SECTION 1 : STATS GLOBALES */}
-      <div style={{ display: 'flex', gap: '15px', marginBottom: '15px' }}>
+      <div style={{ display: 'flex', gap: '10px', marginBottom: '15px', width: '100%' }}>
         
         {/* CASE BALANCE */}
-        <div style={{ flex: 1, padding: '20px', background: '#1e1e1e', border: '1px solid #333', borderRadius: '12px', display: 'flex', flexDirection: 'column', minHeight: '140px' }}>
-          <h3 style={{ margin: 0, color: '#aaa', fontSize: '0.9rem', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <Wallet size={16} color="#aaa"/> Balance Actuelle
+        <div style={{ flex: 1, minWidth: 0, padding: '15px', background: '#1e1e1e', border: '1px solid #333', borderRadius: '12px', display: 'flex', flexDirection: 'column', minHeight: '130px' }}>
+          <h3 style={{ margin: 0, color: '#aaa', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '5px', whiteSpace: 'nowrap' }}>
+            <Wallet size={14} color="#aaa"/> Balance
           </h3>
-          
-          {/* Le gros chiffre de la balance au centre */}
           <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <h2 style={{ fontSize: '1.8rem', margin: 0 }}>
+            <h2 style={{ fontSize: '1.4rem', margin: 0, whiteSpace: 'nowrap' }}>
               <AnimatedNumber value={account.balance} /> €
             </h2>
           </div>
-
-          {/* Ligne d'informations secondaires (Equity + Réf 00h) */}
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.8rem', color: '#888', borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: '10px', marginTop: '5px' }}>
-            <span>
-              {/* Couleur passée en gris #666 pour l'Equity */}
-              Equity : <strong style={{ color: '#666' }}>{account.equity.toLocaleString('fr-FR')} €</strong>
-            </span>
-            <span>
-              Réf 00h : <strong style={{ color: '#666' }}>{balanceMinuit.toLocaleString('fr-FR')} €</strong>
-            </span>
+          <div style={{ display: 'flex', flexDirection: 'column', fontSize: '0.7rem', color: '#666', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '8px', marginTop: '5px' }}>
+            <span>Eq : <strong>{account.equity.toLocaleString('fr-FR')} €</strong></span>
+            <span>Réf : <strong>{balanceMinuit.toLocaleString('fr-FR')} €</strong></span>
           </div>
         </div>
 
         {/* CASE P&L DU JOUR (ENCAISSÉ) */}
         <div style={{ 
-          flex: 1, padding: '20px', 
+          flex: 1, minWidth: 0, padding: '15px', 
           background: daily_stats.realized_pnl >= 0 ? 'rgba(0, 230, 118, 0.05)' : 'rgba(255, 68, 68, 0.05)', 
           border: `1px solid ${daily_stats.realized_pnl >= 0 ? '#00e676' : '#ff4444'}`, 
-          borderRadius: '12px', display: 'flex', flexDirection: 'column', minHeight: '140px',
-          animation: pnlPulse === 'gain' ? 'pulseGain 0.5s ease-out' : pnlPulse === 'loss' ? 'pulseLoss 0.5s ease-out' : 'none',
-          transition: 'all 0.3s ease'
+          borderRadius: '12px', display: 'flex', flexDirection: 'column', minHeight: '130px',
+          animation: pnlPulse === 'gain' ? 'pulseGain 0.5s ease-out' : pnlPulse === 'loss' ? 'pulseLoss 0.5s ease-out' : 'none'
         }}>
-          <h3 style={{ margin: 0, color: daily_stats.realized_pnl >= 0 ? '#00e676' : '#ff4444', fontSize: '0.9rem', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            {daily_stats.realized_pnl >= 0 ? <TrendingUp size={16}/> : <TrendingDown size={16}/>} 
-            Profit Encaissé (Jour)
+          <h3 style={{ margin: 0, color: daily_stats.realized_pnl >= 0 ? '#00e676' : '#ff4444', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '5px', whiteSpace: 'nowrap' }}>
+            {daily_stats.realized_pnl >= 0 ? <TrendingUp size={14}/> : <TrendingDown size={14}/>} Profit
           </h3>
-          
-          {/* Le gros chiffre aligné sur la balance */}
-          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
-              <h2 style={{ fontSize: '1.8rem', margin: 0, color: daily_stats.realized_pnl >= 0 ? '#00e676' : '#ff4444' }}>
-                <AnimatedNumber value={daily_stats.realized_pnl} prefix={daily_stats.realized_pnl > 0 ? '+' : ''} /> €
-              </h2>
-              <span style={{ fontSize: '1rem', fontWeight: 'bold', color: daily_stats.realized_pnl >= 0 ? '#00e676' : '#ff4444', opacity: 0.8 }}>
-                ({daily_stats.realized_pnl > 0 ? '+' : ''}{(balanceMinuit > 0 ? (daily_stats.realized_pnl / balanceMinuit) * 100 : 0).toFixed(2)}%)
-              </span>
-            </div>
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+            <h2 style={{ fontSize: '1.4rem', margin: 0, color: daily_stats.realized_pnl >= 0 ? '#00e676' : '#ff4444', whiteSpace: 'nowrap' }}>
+              <AnimatedNumber value={daily_stats.realized_pnl} prefix={daily_stats.realized_pnl > 0 ? '+' : ''} /> €
+            </h2>
+            <span style={{ fontSize: '0.8rem', fontWeight: 'bold', color: daily_stats.realized_pnl >= 0 ? '#00e676' : '#ff4444', opacity: 0.8 }}>
+              ({daily_stats.realized_pnl > 0 ? '+' : ''}{(balanceMinuit > 0 ? (daily_stats.realized_pnl / balanceMinuit) * 100 : 0).toFixed(2)}%)
+            </span>
           </div>
-
-          {/* Ligne d'informations secondaires (Flottant + Total) */}
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.8rem', color: '#888', borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: '10px', marginTop: '5px' }}>
-            <span>
-              Flottant : <strong style={{ color: daily_stats.floating_pnl > 0 ? '#00e676' : daily_stats.floating_pnl < 0 ? '#ff4444' : '#888' }}>{daily_stats.floating_pnl > 0 ? '+' : ''}{daily_stats.floating_pnl.toLocaleString('fr-FR')} €</strong>
-            </span>
-            <span>
-              Total : <strong style={{ color: daily_stats.total_pnl >= 0 ? '#fff' : '#ff4444' }}>{daily_stats.total_pnl > 0 ? '+' : ''}{daily_stats.total_pnl.toLocaleString('fr-FR')} €</strong>
-            </span>
+          <div style={{ display: 'flex', flexDirection: 'column', fontSize: '0.7rem', color: '#666', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '8px', marginTop: '5px' }}>
+            <span>Flot : <strong style={{ color: daily_stats.floating_pnl >= 0 ? '#00e676' : '#ff4444' }}>{daily_stats.floating_pnl.toLocaleString('fr-FR')} €</strong></span>
+            <span>Total : <strong style={{ color: daily_stats.total_pnl >= 0 ? '#00e676' : '#ff4444' }}>{daily_stats.total_pnl.toLocaleString('fr-FR')} €</strong></span>
           </div>
         </div>
-
       </div>
 
       {/* BOUTON PANIC CENTRÉ SOUS LES STATS */}
