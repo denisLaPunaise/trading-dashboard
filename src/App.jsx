@@ -587,10 +587,12 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
                   </div>
                 </div>
 
-                <div style={{ textAlign: 'right', display: 'flex', alignItems: 'center', gap: '10px', flexShrink: 0 }}>
-                  <div style={{ textAlign: 'right', minWidth: '65px' }}>
-                    <div style={{ fontWeight: 'bold', fontSize: '0.95rem', color: trade.profit >= 0 ? '#00e676' : '#ff4444', whiteSpace: 'nowrap' }}>{trade.profit > 0 ? '+' : ''}{trade.profit.toFixed(2)} €</div>
-                    <div style={{ fontSize: '0.75rem', color: '#888' }}>{trade.pips > 0 ? '+' : ''}{trade.pips} p</div>
+                <div style={{ textAlign: 'right', display: 'flex', alignItems: 'center', gap: '12px', flexShrink: 0 }}>
+                  <div style={{ textAlign: 'right', minWidth: '70px' }}>
+                    <div style={{ fontWeight: 'bold', fontSize: '1.15rem', color: trade.profit >= 0 ? '#00e676' : '#ff4444', whiteSpace: 'nowrap' }}>
+                      {trade.profit > 0 ? '+' : ''}{trade.profit.toFixed(2)} €
+                    </div>
+                    <div style={{ fontSize: '0.8rem', color: '#888' }}>{trade.pips > 0 ? '+' : ''}{trade.pips} p</div>
                   </div>
                   
                   {/* BOUTONS ACTIONS */}
