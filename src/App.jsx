@@ -8,6 +8,10 @@ const API_URL = "https://icing-jolly-drapery.ngrok-free.dev"
 
 axios.defaults.headers.common['ngrok-skip-browser-warning'] = 'true';
 
+// 🔒 LA CLÉ CRYPTÉE TELEGRAM (La fameuse "Carte d'identité")
+const tgInitData = window?.Telegram?.WebApp?.initData || "";
+axios.defaults.headers.common['x-telegram-init-data'] = tgInitData;
+
 // --- COMPOSANT ODOMÈTRE (ÉTAPE 5) ---
 const AnimatedNumber = ({ value, duration = 800, prefix = '' }) => {
   const [displayValue, setDisplayValue] = useState(value);
