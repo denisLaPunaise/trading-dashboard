@@ -569,20 +569,25 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
               <div key={trade.ticket} style={{ 
                 background: trade.managed ? '#1e1e1e' : 'rgba(33, 150, 243, 0.1)', 
                 border: `1px solid ${trade.managed ? '#333' : '#2196f3'}`, 
-                padding: (trade.isClosing || isPanicMode) ? '0px 15px' : '15px', 
-                borderRadius: '10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '15px',
+                padding: (trade.isClosing || isPanicMode) ? '0px 12px' : '12px', 
+                borderRadius: '10px', 
+                display: 'flex', 
+                justifyContent: 'space-between', 
+                alignItems: 'center', 
+                flexWrap: 'nowrap', // 🔒 ON INTERDIT LE PASSAGE À LA LIGNE
+                gap: '10px',
                 overflow: 'hidden',
-                animation: isPanicMode ? `cascadeClose 1.2s ease-in-out forwards ${2 + (index * 0.2)}s` : trade.isClosing ? (trade.profit >= 0 ? 'slideOutGain 0.5s forwards' : 'slideOutLoss 0.5s forwards') : 'fadeIn 0.3s ease-out'              }}>
-                <div style={{ flex: '1 1 250px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
-                    <span style={{ padding: '3px 8px', borderRadius: '4px', fontSize: '0.8rem', fontWeight: 'bold', background: trade.type === 'BUY' ? 'rgba(0, 230, 118, 0.2)' : 'rgba(255, 68, 68, 0.2)', color: trade.type === 'BUY' ? '#00e676' : '#ff4444' }}>{trade.type}</span>
-                    <strong style={{ fontSize: '1.1rem' }}>{trade.symbol}</strong>
-                    <span style={{ color: '#888', fontSize: '0.9rem' }}>{Number(trade.volume).toFixed(2)} lots ({trade.open_time})</span>
-                    {!trade.managed && <span style={{ fontSize: '0.7rem', background: '#2196f3', padding: '2px 6px', borderRadius: '4px', color: 'white', fontWeight: 'bold' }}>NON SUIVI</span>}
+                animation: isPanicMode ? `cascadeClose 1.2s ease-in-out forwards ${2 + (index * 0.2)}s` : trade.isClosing ? (trade.profit >= 0 ? 'slideOutGain 0.5s forwards' : 'slideOutLoss 0.5s forwards') : 'fadeIn 0.3s ease-out'              
+              }}>
+                {/* BLOC GAUCHE : INFO SYMBOLE (On réduit son importance pour laisser de la place) */}
+                <div style={{ flex: 1, minWidth: 0 }}> 
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px', flexWrap: 'nowrap' }}>
+                    <span style={{ padding: '2px 5px', borderRadius: '4px', fontSize: '0.65rem', fontWeight: 'bold', background: trade.type === 'BUY' ? 'rgba(0, 230, 118, 0.2)' : 'rgba(255, 68, 68, 0.2)', color: trade.type === 'BUY' ? '#00e676' : '#ff4444' }}>{trade.type}</span>
+                    <strong style={{ fontSize: '0.9rem', whiteSpace: 'nowrap' }}>{trade.symbol}</strong>
+                    <span style={{ color: '#666', fontSize: '0.7rem', whiteSpace: 'nowrap' }}>{trade.open_time}</span>
                   </div>
-                  <div style={{ fontSize: '0.85rem', color: '#aaa', textAlign: 'left', lineHeight: '1.6' }}>
-                    Ouv: {Number(trade.open_price).toFixed(5)} | Actuel: <span style={{ color: '#fff' }}>{Number(trade.current_price).toFixed(5)}</span><br />
-                    SL: {trade.sl > 0 ? Number(trade.sl).toFixed(5) : "Aucun"} | TP: {trade.tp > 0 ? Number(trade.tp).toFixed(5) : "Aucun"}
+                  <div style={{ fontSize: '0.7rem', color: '#888', textAlign: 'left', lineHeight: '1.2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {trade.volume} lots | Ouv: {Number(trade.open_price).toFixed(2)}
                   </div>
                 </div>
 
