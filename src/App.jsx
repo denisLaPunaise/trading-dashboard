@@ -911,13 +911,13 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
                     <div style={{ display: 'flex', gap: '15px' }}>
                       <div style={{ flex: 1, background: '#1e1e1e', borderRadius: '12px', padding: '20px', border: '1px solid #333', textAlign: 'center' }}>
                         <div style={{ color: '#aaa', fontSize: '0.75rem', textTransform: 'uppercase', marginBottom: '5px' }}>Profit Encaissé</div>
-                        <div style={{ fontSize: '1.8rem', fontWeight: 'bold', color: (data.realized_pnl ?? data.profit) >= 0 ? '#00e676' : '#ff4444' }}>
+                        <div style={{ fontSize: '1.4rem', fontWeight: 'bold', color: (data.realized_pnl ?? data.profit) >= 0 ? '#00e676' : '#ff4444' }}>
                           {(data.realized_pnl ?? data.profit ?? 0).toLocaleString('fr-FR')} €
                         </div>
                       </div>
                       <div style={{ flex: 1, background: '#1e1e1e', borderRadius: '12px', padding: '20px', border: '1px solid #333', textAlign: 'center' }}>
                         <div style={{ color: '#aaa', fontSize: '0.75rem', textTransform: 'uppercase', marginBottom: '5px' }}>Volume Pips</div>
-                        <div style={{ fontSize: '1.8rem', fontWeight: 'bold', color: (data.daily_pips || data.pips) >= 0 ? '#00e676' : '#ff4444' }}>
+                        <div style={{ fontSize: '1.4rem', fontWeight: 'bold', color: (data.daily_pips || data.pips) >= 0 ? '#00e676' : '#ff4444' }}>
                           {(data.daily_pips || data.pips || 0).toFixed(1)} <span style={{fontSize:'1rem'}}>p</span>
                         </div>
                       </div>
@@ -1061,6 +1061,14 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
                   <div style={{ color: '#888', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '10px' }}>Volume Période</div>
                   <div style={{ fontSize: '1.6rem', fontWeight: 'bold' }}>
                     {historicalStats?.global_period?.total_trades || 0} <span style={{fontSize:'0.9rem', color:'#666'}}>trades</span>
+                  </div>
+                </div>
+
+                <div style={{ background: '#1e1e1e', padding: '25px 20px', borderRadius: '12px', textAlign: 'center', border: '1px solid #333' }}>
+                  <Target size={24} color="#aaa" style={{marginBottom: '10px'}}/>
+                  <div style={{ color: '#888', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '10px' }}>Pips Cumulés</div>
+                  <div style={{ fontSize: '1.6rem', fontWeight: 'bold', color: (historicalStats?.global_period?.pips || 0) >= 0 ? '#00e676' : '#ff4444' }}>
+                    {(historicalStats?.global_period?.pips || 0).toFixed(1)} <span style={{fontSize:'0.9rem'}}>p</span>
                   </div>
                 </div>
               </div>
