@@ -828,8 +828,8 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
             {/* Mute Canaux */}
             <div style={{ background: '#1e1e1e', border: '1px solid #333', borderRadius: '12px', padding: '20px' }}>
               <h3 style={{ margin: '0 0 15px 0', fontSize: '1rem', color: '#aaa', display: 'flex', alignItems: 'center', gap: '5px' }}><BellOff size={16}/> Mute Canaux</h3>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px' }}>
-                {["CANAL MDT_VIP", "CANAL MDT_FREE", "CANAL SABR_VIP", "CANAL SABR_FREE", "CANAL SPACE", "CANAL LIGUE", "CANAL PERSO"].map(chan => {
+             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px' }}>
+                {["CANAL MDT_VIP", "CANAL MDT_FREE", "CANAL SABR_VIP", "CANAL SABR_FREE", "CANAL SABR_COPIE", "CANAL SPACE", "CANAL LIGUE", "CANAL PERSO"].map(chan => {
                   const isMuted = settings.muted_channels?.includes(chan);
                   return (
                     <button 
