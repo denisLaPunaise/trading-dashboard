@@ -473,13 +473,13 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
           </div>
 
           {/* Ligne d'informations secondaires (Centrées avec espacement) */}
-          <div style={{ display: 'flex', justifyContent: 'center', gap: '40px', fontSize: '0.7rem', color: '#888', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '8px', marginTop: '5px' }}>
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-              <span>Equity :</span>
+          <div style={{ display: 'flex', width: '100%', fontSize: '0.65rem', color: '#888', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '8px', marginTop: '5px' }}>
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', borderRight: '1px solid rgba(255,255,255,0.05)' }}>
+              <span style={{ whiteSpace: 'nowrap' }}>Equity :</span>
               <strong style={{ color: '#666' }}>{Math.round(account.equity).toLocaleString('fr-FR')} €</strong>
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-              <span>Réf 00h :</span>
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+              <span style={{ whiteSpace: 'nowrap' }}>Réf 00h :</span>
               <strong style={{ color: '#666' }}>{Math.round(balanceMinuit).toLocaleString('fr-FR')} €</strong>
             </div>
           </div>
@@ -509,14 +509,18 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
           </div>
 
           {/* Ligne d'informations secondaires (Centrées avec espacement) */}
-          <div style={{ display: 'flex', justifyContent: 'center', gap: '40px', fontSize: '0.7rem', color: '#888', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '8px', marginTop: '5px' }}>
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-              <span>Flottant :</span>
-              <strong style={{ color: daily_stats.floating_pnl >= 0 ? '#00e676' : '#ff4444' }}>{daily_stats.floating_pnl > 0 ? '+' : ''}{daily_stats.floating_pnl.toLocaleString('fr-FR')} €</strong>
+          <div style={{ display: 'flex', width: '100%', fontSize: '0.65rem', color: '#888', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '8px', marginTop: '5px' }}>
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', borderRight: '1px solid rgba(255,255,255,0.05)' }}>
+              <span style={{ whiteSpace: 'nowrap' }}>Flottant :</span>
+              <strong style={{ color: daily_stats.floating_pnl >= 0 ? '#00e676' : '#ff4444' }}>
+                {daily_stats.floating_pnl > 0 ? '+' : ''}{Math.round(daily_stats.floating_pnl).toLocaleString('fr-FR')} €
+              </strong>
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-              <span>Total :</span>
-              <strong style={{ color: daily_stats.total_pnl >= 0 ? '#00e676' : '#ff4444' }}>{daily_stats.total_pnl > 0 ? '+' : ''}{daily_stats.total_pnl.toLocaleString('fr-FR')} €</strong>
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+              <span style={{ whiteSpace: 'nowrap' }}>Total :</span>
+              <strong style={{ color: daily_stats.total_pnl >= 0 ? '#00e676' : '#ff4444' }}>
+                {daily_stats.total_pnl > 0 ? '+' : ''}{Math.round(daily_stats.total_pnl).toLocaleString('fr-FR')} €
+              </strong>
             </div>
           </div>
         </div>
