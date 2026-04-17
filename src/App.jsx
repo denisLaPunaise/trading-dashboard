@@ -218,11 +218,14 @@ const fetchData = async () => {
     }, 'warning')
   }
 
-// 1. Fonction générale pour les curseurs (Jours, Risques, etc.)
+// 1. Fonction générale pour les curseurs (Jours, Risques, etc.) avec Rollback
   const updateSetting = async (key, value) => {
     // 1. On lève le bouclier pour bloquer le rafraîchissement auto
     isUpdating.current = true;
     if (updateTimeout.current) clearTimeout(updateTimeout.current);
+
+    // 📸 NOUVEAU : On sauvegarde l'état actuel en cas de crash
+    const previousSettings = { ...dashboardData.settings };
 
     // 2. Mise à jour visuelle immédiate (Anti-clignotement)
     setDashboardData(prev => {
@@ -236,11 +239,23 @@ const fetchData = async () => {
       };
     });
 
-    // 3. Envoi silencieux au VPS
+    // 3. Envoi au VPS
     try { 
       await axios.post(`${API_URL}/api/update_setting`, { key, value }); 
     } catch (err) { 
       console.error("Erreur de sauvegarde", err); 
+      triggerHaptic('error'); // Petite vibration d'erreur si disponible
+      
+      // 🚨 NOUVEAU : ROLLBACK ! Si échec, on remet l'ancienne valeur
+      setDashboardData(prev => {
+        if (!prev) return prev;
+        return { 
+          ...prev, 
+          settings: previousSettings // On restaure la photo de sauvegarde
+        };
+      });
+      // Optionnel : un petit message pour prévenir l'utilisateur
+      // alert("Connexion perdue. Le réglage n'a pas été sauvegardé.");
     }
 
     // 4. On relance le chronomètre : le bouclier se baisse 1.5s APRÈS ton dernier clic
