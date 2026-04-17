@@ -8,9 +8,13 @@ const API_URL = "https://icing-jolly-drapery.ngrok-free.dev"
 
 axios.defaults.headers.common['ngrok-skip-browser-warning'] = 'true';
 
-// 🔒 LA CLÉ CRYPTÉE TELEGRAM (La fameuse "Carte d'identité")
-const tgInitData = window?.Telegram?.WebApp?.initData || "";
-axios.defaults.headers.common['x-telegram-init-data'] = tgInitData;
+// 🛡️ LE VIGILE REACT : On accroche le badge VIP juste avant chaque envoi
+axios.interceptors.request.use((config) => {
+  const tgInitData = window?.Telegram?.WebApp?.initData || "";
+  config.headers['x-telegram-init-data'] = tgInitData;
+  config.headers['ngrok-skip-browser-warning'] = 'true';
+  return config;
+});
 
 // --- COMPOSANT ODOMÈTRE (ÉTAPE 5) ---
 const AnimatedNumber = ({ value, duration = 800, prefix = '' }) => {
