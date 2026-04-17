@@ -468,8 +468,8 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
           
           {/* Le gros chiffre de la balance au centre (Légèrement réduit) */}
           <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <h2 style={{ fontSize: '1.25rem', margin: 0, whiteSpace: 'nowrap' }}>
-              <AnimatedNumber value={account.balance} /> €
+            <h2 style={{ fontSize: '1.2rem', margin: 0, whiteSpace: 'nowrap' }}>
+              <AnimatedNumber value={account.balance} />&nbsp;€
             </h2>
           </div>
 
@@ -500,11 +500,11 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
           
           {/* Le gros chiffre + pourcentage alignés sur la même ligne */}
           <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: '4px' }}>
-              <h2 style={{ fontSize: '1.25rem', margin: 0, color: daily_stats.realized_pnl >= 0 ? '#00e676' : '#ff4444', whiteSpace: 'nowrap' }}>
-                <AnimatedNumber value={daily_stats.realized_pnl} prefix={daily_stats.realized_pnl > 0 ? '+' : ''} /> €
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: '3px', whiteSpace: 'nowrap' }}>
+              <h2 style={{ fontSize: '1.15rem', margin: 0, color: daily_stats.realized_pnl >= 0 ? '#00e676' : '#ff4444' }}>
+                <AnimatedNumber value={daily_stats.realized_pnl} prefix={daily_stats.realized_pnl > 0 ? '+' : ''} />&nbsp;€
               </h2>
-              <span style={{ fontSize: '0.75rem', fontWeight: 'bold', color: daily_stats.realized_pnl >= 0 ? '#00e676' : '#ff4444', opacity: 0.8, whiteSpace: 'nowrap' }}>
+              <span style={{ fontSize: '0.7rem', fontWeight: 'bold', color: daily_stats.realized_pnl >= 0 ? '#00e676' : '#ff4444', opacity: 0.8 }}>
                 ({daily_stats.realized_pnl > 0 ? '+' : ''}{(balanceMinuit > 0 ? (daily_stats.realized_pnl / balanceMinuit) * 100 : 0).toFixed(2)}%)
               </span>
             </div>
