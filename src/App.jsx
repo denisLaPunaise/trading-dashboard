@@ -574,24 +574,24 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
                 display: 'flex', 
                 justifyContent: 'space-between', 
                 alignItems: 'center', 
-                flexWrap: 'nowrap', // 🔒 INTERDIT DE PASSER À LA LIGNE
-                gap: '10px',
+                flexWrap: 'nowrap', 
+                gap: '8px',
                 overflow: 'hidden',
                 animation: isPanicMode ? `cascadeClose 1.2s ease-in-out forwards ${2 + (index * 0.2)}s` : trade.isClosing ? (trade.profit >= 0 ? 'slideOutGain 0.5s forwards' : 'slideOutLoss 0.5s forwards') : 'fadeIn 0.3s ease-out'
               }}>
-                {/* BLOC GAUCHE : INFOS SYMBOLE */}
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-                    <span style={{ padding: '2px 6px', borderRadius: '4px', fontSize: '0.7rem', fontWeight: 'bold', background: trade.type === 'BUY' ? 'rgba(0, 230, 118, 0.2)' : 'rgba(255, 68, 68, 0.2)', color: trade.type === 'BUY' ? '#00e676' : '#ff4444' }}>{trade.type}</span>
-                    <strong style={{ fontSize: '1rem', whiteSpace: 'nowrap' }}>{trade.symbol}</strong>
-                    <span style={{ color: '#888', fontSize: '0.75rem' }}>{Number(trade.volume).toFixed(2)}</span>
-                  </div>
-                  <div style={{ fontSize: '0.75rem', color: '#777', whiteSpace: 'nowrap' }}>
-                    {trade.open_time} | Ouv: {Number(trade.open_price).toFixed(2)}
-                  </div>
+                {/* 1. SYMBOLE (GAUCHE) */}
+                <div style={{ flex: '0 0 auto', minWidth: '70px' }}>
+                  <span style={{ display: 'block', width: 'fit-content', padding: '2px 6px', borderRadius: '4px', fontSize: '0.65rem', fontWeight: 'bold', background: trade.type === 'BUY' ? 'rgba(0, 230, 118, 0.2)' : 'rgba(255, 68, 68, 0.2)', color: trade.type === 'BUY' ? '#00e676' : '#ff4444', marginBottom: '4px' }}>{trade.type}</span>
+                  <strong style={{ fontSize: '1rem', whiteSpace: 'nowrap' }}>{trade.symbol}</strong>
                 </div>
 
-                {/* BLOC DROITE : PRIX ET BOUTONS EMPILÉS */}
+                {/* 2. LOTS & HEURE (CENTRE - Comme dans trades fermés) */}
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+                  <span style={{ color: '#888', fontSize: '0.8rem', fontWeight: 'bold', whiteSpace: 'nowrap' }}>{Number(trade.volume).toFixed(2)} lots</span>
+                  <span style={{ color: '#555', fontSize: '0.7rem' }}>{trade.open_time}</span>
+                </div>
+
+                {/* 3. PROFIT & ACTIONS (DROITE) */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexShrink: 0 }}>
                   {/* PROFIT */}
                   <div style={{ textAlign: 'right' }}>
@@ -601,14 +601,14 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
                     <div style={{ fontSize: '0.75rem', color: '#888' }}>{trade.pips > 0 ? '+' : ''}{trade.pips} p</div>
                   </div>
                   
-                  {/* BOUTONS ACTIONS (L'UN SUR L'AUTRE) */}
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                  {/* BOUTONS ACTIONS (Plus grands et espacés) */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                     {!trade.managed ? (
-                      <button onClick={() => handleSuivre(trade.ticket)} className="btn-interactive" style={{ background: '#2196f3', border: 'none', color: 'white', padding: '8px 12px', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '0.8rem' }}>Suivre</button>
+                      <button onClick={() => handleSuivre(trade.ticket)} className="btn-interactive" style={{ background: '#2196f3', border: 'none', color: 'white', padding: '12px 15px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '0.85rem' }}>Suivre</button>
                     ) : (
                       <>
-                        <button onClick={() => handleBeTrade(trade.ticket)} className="btn-interactive" style={{ background: 'rgba(255, 193, 7, 0.1)', border: '1px solid #ffc107', color: '#ffc107', padding: '4px 8px', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', fontSize: '0.7rem', fontWeight: 'bold' }}><Shield size={14} /> BE</button>
-                        <button onClick={() => handleCloseTrade(trade.ticket)} className="btn-interactive" style={{ background: 'rgba(255, 68, 68, 0.1)', border: '1px solid #ff4444', color: '#ff4444', padding: '4px 8px', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', fontSize: '0.7rem', fontWeight: 'bold' }}><XCircle size={14} /> Close</button>
+                        <button onClick={() => handleBeTrade(trade.ticket)} className="btn-interactive" style={{ background: 'rgba(255, 193, 7, 0.1)', border: '1px solid #ffc107', color: '#ffc107', padding: '8px 10px', borderRadius: '8px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', fontSize: '0.85rem', fontWeight: 'bold' }}><Shield size={16} /> BE</button>
+                        <button onClick={() => handleCloseTrade(trade.ticket)} className="btn-interactive" style={{ background: 'rgba(255, 68, 68, 0.1)', border: '1px solid #ff4444', color: '#ff4444', padding: '8px 10px', borderRadius: '8px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', fontSize: '0.85rem', fontWeight: 'bold' }}><XCircle size={16} /> Close</button>
                       </>
                     )}
                   </div>
