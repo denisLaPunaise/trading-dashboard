@@ -461,14 +461,13 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
       <div style={{ display: 'flex', gap: '10px', marginBottom: '15px', width: '100%' }}>
         
         {/* CASE BALANCE */}
-        <div style={{ flex: 1, minWidth: 0, padding: '15px', background: '#1e1e1e', border: '1px solid #333', borderRadius: '12px', display: 'flex', flexDirection: 'column', minHeight: '135px' }}>
-          <h3 style={{ margin: 0, color: '#aaa', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '5px', whiteSpace: 'nowrap' }}>
-            <Wallet size={14} color="#aaa"/> Balance
+        <div style={{ flex: 1, minWidth: 0, padding: '12px 8px', background: '#1e1e1e', border: '1px solid #333', borderRadius: '12px', display: 'flex', flexDirection: 'column', minHeight: '135px' }}>
+          <h3 style={{ margin: 0, color: '#aaa', fontSize: '0.7rem', display: 'flex', alignItems: 'center', gap: '5px', whiteSpace: 'nowrap' }}>
+            <Wallet size={12} color="#aaa"/> Balance
           </h3>
           
-          {/* Le gros chiffre de la balance au centre (Légèrement réduit) */}
           <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <h2 style={{ fontSize: '1.2rem', margin: 0, whiteSpace: 'nowrap' }}>
+            <h2 style={{ fontSize: '1.1rem', fontWeight: 'bold', margin: 0, whiteSpace: 'nowrap', letterSpacing: '-0.5px' }}>
               <AnimatedNumber value={account.balance} />&nbsp;€
             </h2>
           </div>
@@ -488,24 +487,23 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
 
         {/* CASE P&L DU JOUR (ENCAISSÉ) */}
         <div style={{ 
-          flex: 1, minWidth: 0, padding: '15px', 
+          flex: 1, minWidth: 0, padding: '12px 8px', 
           background: daily_stats.realized_pnl >= 0 ? 'rgba(0, 230, 118, 0.05)' : 'rgba(255, 68, 68, 0.05)', 
           border: `1px solid ${daily_stats.realized_pnl >= 0 ? '#00e676' : '#ff4444'}`, 
           borderRadius: '12px', display: 'flex', flexDirection: 'column', minHeight: '135px',
           animation: pnlPulse === 'gain' ? 'pulseGain 0.5s ease-out' : pnlPulse === 'loss' ? 'pulseLoss 0.5s ease-out' : 'none'
         }}>
-          <h3 style={{ margin: 0, color: daily_stats.realized_pnl >= 0 ? '#00e676' : '#ff4444', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '5px', whiteSpace: 'nowrap' }}>
-            {daily_stats.realized_pnl >= 0 ? <TrendingUp size={14}/> : <TrendingDown size={14}/>} Profit
+          <h3 style={{ margin: 0, color: daily_stats.realized_pnl >= 0 ? '#00e676' : '#ff4444', fontSize: '0.7rem', display: 'flex', alignItems: 'center', gap: '5px', whiteSpace: 'nowrap' }}>
+            {daily_stats.realized_pnl >= 0 ? <TrendingUp size={12}/> : <TrendingDown size={12}/>} Profit
           </h3>
           
-          {/* Le gros chiffre + pourcentage alignés sur la même ligne */}
           <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: '3px', whiteSpace: 'nowrap' }}>
-              <h2 style={{ fontSize: '1.15rem', margin: 0, color: daily_stats.realized_pnl >= 0 ? '#00e676' : '#ff4444' }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: '2px', whiteSpace: 'nowrap' }}>
+              <h2 style={{ fontSize: '1.05rem', fontWeight: 'bold', margin: 0, color: daily_stats.realized_pnl >= 0 ? '#00e676' : '#ff4444', letterSpacing: '-0.5px' }}>
                 <AnimatedNumber value={daily_stats.realized_pnl} prefix={daily_stats.realized_pnl > 0 ? '+' : ''} />&nbsp;€
               </h2>
-              <span style={{ fontSize: '0.7rem', fontWeight: 'bold', color: daily_stats.realized_pnl >= 0 ? '#00e676' : '#ff4444', opacity: 0.8 }}>
-                ({daily_stats.realized_pnl > 0 ? '+' : ''}{(balanceMinuit > 0 ? (daily_stats.realized_pnl / balanceMinuit) * 100 : 0).toFixed(2)}%)
+              <span style={{ fontSize: '0.65rem', fontWeight: 'bold', color: daily_stats.realized_pnl >= 0 ? '#00e676' : '#ff4444', opacity: 0.8 }}>
+                ({daily_stats.realized_pnl > 0 ? '+' : ''}{(balanceMinuit > 0 ? (daily_stats.realized_pnl / balanceMinuit) * 100 : 0).toFixed(1)}%)
               </span>
             </div>
           </div>
