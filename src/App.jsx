@@ -571,48 +571,74 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
                 border: `1px solid ${trade.managed ? '#333' : '#2196f3'}`, 
                 padding: '12px 10px', 
                 borderRadius: '10px', 
-                display: 'flex', 
-                justifyContent: 'space-between', 
-                alignItems: 'center', 
-                flexWrap: 'nowrap', 
+                
+                /* STRUCTURE EN GRILLE : 3 Colonnes */
+                /* 1. Zone Infos (Flexible) | 2. Zone Profit (Flexible) | 3. Zone Boutons (Fixe: ~65px) */
+                display: 'grid', 
+                gridTemplateColumns: '1fr 1fr 65px', 
                 gap: '8px',
+                alignItems: 'center',
+
                 overflow: 'hidden',
                 animation: isPanicMode ? `cascadeClose 1.2s ease-in-out forwards ${2 + (index * 0.2)}s` : trade.isClosing ? (trade.profit >= 0 ? 'slideOutGain 0.5s forwards' : 'slideOutLoss 0.5s forwards') : 'fadeIn 0.3s ease-out'
               }}>
-                {/* 1. SYMBOLE (GAUCHE) */}
-                <div style={{ flex: '0 0 auto', minWidth: '70px' }}>
-                  <span style={{ display: 'block', width: 'fit-content', padding: '2px 6px', borderRadius: '4px', fontSize: '0.65rem', fontWeight: 'bold', background: trade.type === 'BUY' ? 'rgba(0, 230, 118, 0.2)' : 'rgba(255, 68, 68, 0.2)', color: trade.type === 'BUY' ? '#00e676' : '#ff4444', marginBottom: '4px' }}>{trade.type}</span>
-                  <strong style={{ fontSize: '1rem', whiteSpace: 'nowrap' }}>{trade.symbol}</strong>
-                </div>
-
-                {/* 2. LOTS & HEURE (CENTRE - Comme dans trades fermés) */}
-                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
-                  <span style={{ color: '#888', fontSize: '0.8rem', fontWeight: 'bold', whiteSpace: 'nowrap' }}>{Number(trade.volume).toFixed(2)} lots</span>
-                  <span style={{ color: '#555', fontSize: '0.7rem' }}>{trade.open_time}</span>
-                </div>
-
-                {/* 3. PROFIT & ACTIONS (DROITE) */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexShrink: 0 }}>
-                  {/* PROFIT */}
-                  <div style={{ textAlign: 'right' }}>
-                    <div style={{ fontWeight: 'bold', fontSize: '1.1rem', color: trade.profit >= 0 ? '#00e676' : '#ff4444', whiteSpace: 'nowrap' }}>
-                      {trade.profit > 0 ? '+' : ''}{trade.profit.toFixed(2)} €
-                    </div>
-                    <div style={{ fontSize: '0.75rem', color: '#888' }}>{trade.pips > 0 ? '+' : ''}{trade.pips} p</div>
+                
+                {/* --- COLONNE 1 : SYMBOLE ET PRIX (Gauche) --- */}
+                <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+                  {/* Haut : Type + Symbole */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
+                    <span style={{ padding: '2px 6px', borderRadius: '4px', fontSize: '0.65rem', fontWeight: 'bold', background: trade.type === 'BUY' ? 'rgba(0, 230, 118, 0.2)' : 'rgba(255, 68, 68, 0.2)', color: trade.type === 'BUY' ? '#00e676' : '#ff4444' }}>
+                      {trade.type}
+                    </span>
+                    <strong style={{ fontSize: '0.95rem', whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden' }}>
+                      {trade.symbol}
+                    </strong>
                   </div>
                   
-                  {/* BOUTONS ACTIONS (Plus grands et espacés) */}
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                    {!trade.managed ? (
-                      <button onClick={() => handleSuivre(trade.ticket)} className="btn-interactive" style={{ background: '#2196f3', border: 'none', color: 'white', padding: '12px 15px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '0.85rem' }}>Suivre</button>
-                    ) : (
-                      <>
-                        <button onClick={() => handleBeTrade(trade.ticket)} className="btn-interactive" style={{ background: 'rgba(255, 193, 7, 0.1)', border: '1px solid #ffc107', color: '#ffc107', padding: '8px 10px', borderRadius: '8px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', fontSize: '0.85rem', fontWeight: 'bold' }}><Shield size={16} /> BE</button>
-                        <button onClick={() => handleCloseTrade(trade.ticket)} className="btn-interactive" style={{ background: 'rgba(255, 68, 68, 0.1)', border: '1px solid #ff4444', color: '#ff4444', padding: '8px 10px', borderRadius: '8px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', fontSize: '0.85rem', fontWeight: 'bold' }}><XCircle size={16} /> Close</button>
-                      </>
-                    )}
+                  {/* Bas : Lignes de Prix */}
+                  <div style={{ fontSize: '0.65rem', color: '#888', lineHeight: '1.4', whiteSpace: 'nowrap' }}>
+                    Ouv: {Number(trade.open_price).toFixed(2)} | Act: <span style={{ color: '#fff' }}>{Number(trade.current_price).toFixed(2)}</span><br />
+                    SL: {trade.sl > 0 ? Number(trade.sl).toFixed(2) : "Aucun"} | TP: {trade.tp > 0 ? Number(trade.tp).toFixed(2) : "Aucun"}
                   </div>
                 </div>
+
+                {/* --- COLONNE 2 : LOTS, HEURE ET PROFIT (Centre) --- */}
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', borderLeft: '1px solid rgba(255,255,255,0.05)', borderRight: '1px solid rgba(255,255,255,0.05)', padding: '0 5px' }}>
+                  {/* Haut : Lots et Heure */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '4px' }}>
+                     <span style={{ color: '#ccc', fontSize: '0.7rem', fontWeight: 'bold' }}>{Number(trade.volume).toFixed(2)}</span>
+                     <span style={{ color: '#666', fontSize: '0.65rem' }}>({trade.open_time})</span>
+                  </div>
+                  
+                  {/* Bas : Profit et Pips */}
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                    <div style={{ fontWeight: 'bold', fontSize: '1rem', color: trade.profit >= 0 ? '#00e676' : '#ff4444', whiteSpace: 'nowrap' }}>
+                      {trade.profit > 0 ? '+' : ''}{trade.profit.toFixed(2)} €
+                    </div>
+                    <div style={{ fontSize: '0.7rem', color: '#888' }}>
+                      {trade.pips > 0 ? '+' : ''}{trade.pips} p
+                    </div>
+                  </div>
+                </div>
+
+                {/* --- COLONNE 3 : BOUTONS (Droite) --- */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', justifyContent: 'center' }}>
+                  {!trade.managed ? (
+                    <button onClick={() => handleSuivre(trade.ticket)} className="btn-interactive" style={{ background: '#2196f3', border: 'none', color: 'white', padding: '10px 0', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '0.8rem', width: '100%' }}>
+                      Suivre
+                    </button>
+                  ) : (
+                    <>
+                      <button onClick={() => handleBeTrade(trade.ticket)} className="btn-interactive" style={{ background: 'rgba(255, 193, 7, 0.1)', border: '1px solid #ffc107', color: '#ffc107', padding: '6px 0', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', fontSize: '0.7rem', fontWeight: 'bold', width: '100%' }}>
+                        <Shield size={12} /> BE
+                      </button>
+                      <button onClick={() => handleCloseTrade(trade.ticket)} className="btn-interactive" style={{ background: 'rgba(255, 68, 68, 0.1)', border: '1px solid #ff4444', color: '#ff4444', padding: '6px 0', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', fontSize: '0.7rem', fontWeight: 'bold', width: '100%' }}>
+                        <XCircle size={12} /> Close
+                      </button>
+                    </>
+                  )}
+                </div>
+
               </div>
             ))
           )}
