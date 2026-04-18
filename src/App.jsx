@@ -606,7 +606,7 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
                 </div>
 
                 {/* --- COLONNE 2 : LOTS, HEURE ET PROFIT --- */}
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', borderLeft: '1px solid rgba(255,255,255,0.05)', borderRight: '1px solid rgba(255,255,255,0.05)', padding: '0 5px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '0 5px' }}>
                   
                   {/* Lots et Heures (Gris et petits) */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '6px' }}>
