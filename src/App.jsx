@@ -467,7 +467,7 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
           </h3>
           
           <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <h2 style={{ fontSize: '1.1rem', fontWeight: 'bold', margin: 0, whiteSpace: 'nowrap', letterSpacing: '-0.5px' }}>
+            <h2 style={{ fontSize: '1.2rem', fontWeight: 'bold', margin: 0, whiteSpace: 'nowrap', letterSpacing: '-0.5px' }}>
               <AnimatedNumber value={account.balance} />&nbsp;€
             </h2>
           </div>
@@ -499,7 +499,7 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
           
           <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: '2px', whiteSpace: 'nowrap' }}>
-              <h2 style={{ fontSize: '1.05rem', fontWeight: 'bold', margin: 0, color: daily_stats.realized_pnl >= 0 ? '#00e676' : '#ff4444', letterSpacing: '-0.5px' }}>
+              <h2 style={{ fontSize: '1.2rem', fontWeight: 'bold', margin: 0, color: daily_stats.realized_pnl >= 0 ? '#00e676' : '#ff4444', letterSpacing: '-0.5px' }}>
                 <AnimatedNumber value={daily_stats.realized_pnl} prefix={daily_stats.realized_pnl > 0 ? '+' : ''} />&nbsp;€
               </h2>
               <span style={{ fontSize: '0.65rem', fontWeight: 'bold', color: daily_stats.realized_pnl >= 0 ? '#00e676' : '#ff4444', opacity: 0.8 }}>
