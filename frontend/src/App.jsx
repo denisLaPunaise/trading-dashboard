@@ -1,20 +1,26 @@
-import { useState, useEffect, useRef } from 'react'
-import axios from 'axios'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { Activity, Wallet, TrendingUp, TrendingDown, Settings, XCircle, Shield, ChevronDown, ChevronUp, Briefcase, AlertTriangle, Unlock, Power, BellOff, Target, Award, Crosshair, Calendar } from 'lucide-react'
 import './App.css'
+import { db, auth } from './firebase'
+import { doc, collection, onSnapshot, addDoc, serverTimestamp } from 'firebase/firestore'
+import { signInAnonymously } from 'firebase/auth'
 
-// 🚨 REMET TON URL CLOUDFLARE ICI
-const API_URL = "https://icing-jolly-drapery.ngrok-free.dev"
-
-axios.defaults.headers.common['ngrok-skip-browser-warning'] = 'true';
-
-// 🛡️ LE VIGILE REACT : On accroche le badge VIP juste avant chaque envoi
-axios.interceptors.request.use((config) => {
-  const tgInitData = window?.Telegram?.WebApp?.initData || "";
-  config.headers['x-telegram-init-data'] = tgInitData;
-  config.headers['ngrok-skip-browser-warning'] = 'true';
-  return config;
-});
+// Extrait l'ID Telegram de l'utilisateur depuis initData (signé par Telegram)
+const getTelegramUserId = () => {
+  try {
+    const initData = window?.Telegram?.WebApp?.initData || '';
+    if (initData) {
+      const params = new URLSearchParams(initData);
+      const user = JSON.parse(params.get('user') || '{}');
+      if (user.id) return String(user.id);
+    }
+    // Fallback dev : utilise le vrai TELEGRAM_DESTINATION_ID du bot pour tester en navigateur
+    if (import.meta.env.DEV) return import.meta.env.VITE_DEV_USER_ID || null;
+    return null;
+  } catch {
+    return null;
+  }
+};
 
 // --- COMPOSANT ODOMÈTRE (ÉTAPE 5) ---
 const AnimatedNumber = ({ value, duration = 800, prefix = '' }) => {
@@ -63,6 +69,11 @@ function App() {
 
   // --- OPTIMISATIONS TELEGRAM (POINTS 2B & 3B) ---
   const [isFetching, setIsFetching] = useState(false);
+
+  // --- FIREBASE SAAS ---
+  const [userId, setUserId] = useState(null);
+  const [loadingAction, setLoadingAction] = useState(null); // ex: 'close_123456', 'panic'
+  const [botOnline, setBotOnline] = useState(false);
 
 // Fonction ultra-sécurisée pour les retours haptiques (Vibrations)
   const triggerHaptic = (type = 'light') => {
@@ -118,55 +129,52 @@ function App() {
   const [globalPeriod, setGlobalPeriod] = useState('30'); // 👈 NOUVEAU : 30 jours par défaut
   const [dayWeekToggle, setDayWeekToggle] = useState('day'); // 'day' ou 'week'
 
-  // Fonction pour charger les stats depuis l'API
-  const fetchStats = async () => {
-    try {
-      // 👈 NOUVEAU : On envoie ?days=30, ?days=all, etc.
-      const res = await axios.get(`${API_URL}/api/stats?days=${globalPeriod}`);
-      setHistoricalStats(res.data);
-    } catch (err) { console.error("Erreur stats", err); }
-  };
-
-  // 👈 NOUVEAU : React recharge les stats si on change de période
+  // Stats dérivées du state Firestore (channels_lifetime et global_period pushés par le bot)
   useEffect(() => {
-    if (isStatsOpen) {
-      const period = statsTab === 'global' ? globalPeriod : (dayWeekToggle === 'week' ? 'week' : '1');
-      axios.get(`${API_URL}/api/stats?days=${period}`)
-           .then(res => setHistoricalStats(res.data))
-           .catch(err => console.error(err));
+    if (!dashboardData) return;
+    const channels = dashboardData.channels_lifetime;
+    const period = dashboardData.global_period;
+    if (channels !== undefined || period !== undefined) {
+      setHistoricalStats({ channels_lifetime: channels || {}, global_period: period || null });
     }
-  }, [isStatsOpen, globalPeriod, statsTab, dayWeekToggle]);
+  }, [dashboardData]);
 
-const fetchData = async () => {
-    // Si la page est cachée (arrière-plan du téléphone), on ne lance pas la requête pour économiser la batterie
-    if (document.hidden) return; 
-
-    try {
-      setIsFetching(true); // Déclenche l'animation du point vert
-      const response = await axios.get(`${API_URL}/api/dashboard`)
-      if (!isUpdating.current) setDashboardData(response.data)
-      setError(null)
-    } catch (err) {
-      setError("Impossible de joindre le VPS. Le tunnel est allumé ?")
-    } finally {
-      setTimeout(() => setIsFetching(false), 300); // Arrête l'animation après un bref délai
-    }
-  }
-
+  // Authentification Firebase + abonnement temps réel Firestore
   useEffect(() => {
-    fetchData()
-    // Optimisation : On utilise setInterval, mais fetchData vérifiera 'document.hidden'
-    const interval = setInterval(fetchData, 3000)
-    
-    // Écouteur pour forcer un rafraîchissement immédiat quand on revient sur l'application
-    const handleVisibilityChange = () => { if (!document.hidden) fetchData(); };
-    document.addEventListener("visibilitychange", handleVisibilityChange);
+    let unsubscribeState = null;
 
-    return () => {
-      clearInterval(interval);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    const setup = async () => {
+      try {
+        await signInAnonymously(auth);
+        const uid = getTelegramUserId();
+        if (!uid) {
+          setError("Impossible d'identifier l'utilisateur Telegram. Ouvre ce dashboard depuis ton bot Telegram.");
+          return;
+        }
+        setUserId(uid);
+        setIsFetching(true);
+        const userRef = doc(db, 'users', uid);
+        unsubscribeState = onSnapshot(userRef, (snap) => {
+          if (!snap.exists()) { setIsFetching(false); return; }
+          const data = snap.data();
+          setBotOnline(data.bot_online === true);
+          if (!isUpdating.current) setDashboardData(data);
+          setError(null);
+          setIsFetching(false);
+        }, (err) => {
+          console.error('Firestore error:', err);
+          setError('Connexion Firebase perdue. Vérifie ta connexion internet.');
+          setBotOnline(false);
+        });
+      } catch (err) {
+        console.error('Firebase setup error:', err);
+        setError('Erreur de connexion au cloud Firebase.');
+      }
     };
-  }, [])
+
+    setup();
+    return () => { if (unsubscribeState) unsubscribeState(); };
+  }, []);
 
   // --- FONCTION POUR OUVRIR LA MODAL ---
   const requestConfirm = (message, action, type = 'warning') => {
@@ -181,92 +189,89 @@ const fetchData = async () => {
     })
   }
 
-  // --- ACTIONS (Désormais branchées sur la Modal) ---
+  // Envoie une commande à Firestore et attend confirmation du bot (spinner intégré)
+  const sendCommand = useCallback(async (type, payload = {}, actionKey = type) => {
+    if (!userId) return;
+    setLoadingAction(actionKey);
+    try {
+      const cmdRef = await addDoc(collection(db, 'users', userId, 'commands'), {
+        type, payload, status: 'pending', created_at: serverTimestamp(),
+      });
+      await new Promise((resolve, reject) => {
+        const unsub = onSnapshot(doc(db, 'users', userId, 'commands', cmdRef.id), (snap) => {
+          const d = snap.data();
+          if (!d) return;
+          if (d.status === 'done')  { unsub(); resolve(d.result); }
+          if (d.status === 'error') { unsub(); reject(new Error(d.result?.message || 'Erreur bot')); }
+        });
+        setTimeout(() => { unsub(); reject(new Error('Timeout : le bot ne répond pas (15s).')); }, 15000);
+      });
+      triggerHaptic('success');
+    } catch (err) {
+      console.error('Commande échouée :', err);
+      triggerHaptic('error');
+      alert(`❌ ${err.message}`);
+    } finally {
+      setLoadingAction(null);
+    }
+  }, [userId]);
+
+  // --- ACTIONS ---
   const handleCloseTrade = (ticketId) => {
     requestConfirm(`Es-tu sûr de vouloir FERMER le trade #${ticketId} ?`, async () => {
-      try { await axios.post(`${API_URL}/api/close_trade`, { ticket: ticketId }); fetchData() } catch (err) {}
-    }, 'warning')
-  }
+      await sendCommand('close_trade', { ticket: ticketId }, `close_${ticketId}`);
+    }, 'warning');
+  };
 
   const handleBeTrade = (ticketId) => {
     requestConfirm(`Es-tu sûr de vouloir sécuriser (BE) le trade #${ticketId} ?`, async () => {
-      try { await axios.post(`${API_URL}/api/be_trade`, { ticket: ticketId }); fetchData() } catch (err) {}
-    }, 'warning')
-  }
+      await sendCommand('be_trade', { ticket: ticketId }, `be_${ticketId}`);
+    }, 'warning');
+  };
 
   const handleSuivre = (ticketId) => {
     requestConfirm(`Veux-tu que le bot prenne le contrôle de ce trade #${ticketId} ?`, async () => {
-      try { await axios.post(`${API_URL}/api/suivre`, { ticket: ticketId }); fetchData() } catch (err) {}
-    }, 'warning')
-  }
+      await sendCommand('suivre', { ticket: ticketId }, `suivre_${ticketId}`);
+    }, 'warning');
+  };
 
   const handlePanic = () => {
     requestConfirm("🚨 ALERTE ROUGE : Veux-tu VRAIMENT fermer TOUTES les positions en cours ?", async () => {
-      try { await axios.post(`${API_URL}/api/panic`); fetchData() } catch (err) {}
-    }, 'danger')
-  }
+      await sendCommand('panic', {}, 'panic');
+    }, 'danger');
+  };
 
   const handleKill = () => {
     requestConfirm("💀 ATTENTION : Le bot va s'éteindre. Tu devras te reconnecter au VPS pour le rallumer. Confirmer ?", async () => {
-      try { await axios.post(`${API_URL}/api/kill`); alert("Serveur éteint avec succès."); } catch (err) {}
-    }, 'danger')
-  }
+      await sendCommand('kill', {}, 'kill');
+    }, 'danger');
+  };
 
   const handleUnlock = () => {
     requestConfirm("⚠️ Es-tu sûr de vouloir forcer la reprise du trading après un Drawdown ?", async () => {
-      try { await axios.post(`${API_URL}/api/unlock`); fetchData() } catch (err) {}
-    }, 'warning')
-  }
+      await sendCommand('unlock', {}, 'unlock');
+    }, 'warning');
+  };
 
-// 1. Fonction générale pour les curseurs (Jours, Risques, etc.) avec Rollback
+  // Fonction pour les curseurs et réglages avec mise à jour optimiste + rollback
   const updateSetting = async (key, value) => {
-    // 1. On lève le bouclier pour bloquer le rafraîchissement auto
     isUpdating.current = true;
     if (updateTimeout.current) clearTimeout(updateTimeout.current);
-
-    // 📸 NOUVEAU : On sauvegarde l'état actuel en cas de crash
     const previousSettings = { ...dashboardData.settings };
-
-    // 2. Mise à jour visuelle immédiate (Anti-clignotement)
-    setDashboardData(prev => {
-      if (!prev) return prev;
-      return { 
-        ...prev, 
-        settings: { 
-          ...prev.settings, 
-          [key]: value 
-        } 
-      };
-    });
-
-    // 3. Envoi au VPS
-    try { 
-      await axios.post(`${API_URL}/api/update_setting`, { key, value }); 
-    } catch (err) { 
-      console.error("Erreur de sauvegarde", err); 
-      triggerHaptic('error'); // Petite vibration d'erreur si disponible
-      
-      // 🚨 NOUVEAU : ROLLBACK ! Si échec, on remet l'ancienne valeur
-      setDashboardData(prev => {
-        if (!prev) return prev;
-        return { 
-          ...prev, 
-          settings: previousSettings // On restaure la photo de sauvegarde
-        };
-      });
-      // Optionnel : un petit message pour prévenir l'utilisateur
-      // alert("Connexion perdue. Le réglage n'a pas été sauvegardé.");
+    setDashboardData(prev => prev ? { ...prev, settings: { ...prev.settings, [key]: value } } : prev);
+    try {
+      await sendCommand('update_setting', { key, value }, `setting_${key}`);
+    } catch (err) {
+      console.error("Erreur de sauvegarde", err);
+      triggerHaptic('error');
+      setDashboardData(prev => prev ? { ...prev, settings: previousSettings } : prev);
     }
-
-    // 4. On relance le chronomètre : le bouclier se baisse 1.5s APRÈS ton dernier clic
-    updateTimeout.current = setTimeout(() => { 
-      isUpdating.current = false; 
-    }, 1500);
-  }
+    updateTimeout.current = setTimeout(() => { isUpdating.current = false; }, 1500);
+  };
 
   const toggleMute = async (channelName) => {
-    try { await axios.post(`${API_URL}/api/toggle_mute`, { value: channelName }); fetchData() } catch (err) {}
-  }
+    await sendCommand('toggle_mute', { channel: channelName }, `mute_${channelName}`);
+  };
 
   // --- RENDU ---
   if (error) return <div style={{ color: '#ff4444', textAlign: 'center', padding: '50px', background: '#121212', height: '100vh' }}>{error}</div>
@@ -286,7 +291,7 @@ const fetchData = async () => {
             Système <strong style={{ fontWeight: '900' }}>Actif</strong>
           </h1>
           <p style={{ color: '#00e676', animation: 'textBlink 1.5s infinite ease-in-out', fontSize: '1rem', letterSpacing: '2px', fontWeight: 'bold', margin: 0 }}>
-            CONNEXION AU VPS...
+            CONNEXION AU CLOUD...
           </p>
         </div>
       </div>
@@ -448,12 +453,14 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
           <Activity size={24} color="#00e676" /> Dashboard {settings.security_triggered && <span style={{color: '#ff4444', fontSize:'0.9rem'}}>(SÉCURITÉ DD)</span>}
         </h1>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#aaa', fontSize: '0.9rem' }}>
-          <span style={{ 
-            height: '10px', width: '10px', backgroundColor: '#00e676', borderRadius: '50%', display: 'inline-block', 
-            boxShadow: '0 0 8px #00e676',
-            animation: isFetching ? 'fetchPulse 0.5s ease-out' : 'none' /* Animation activée lors du fetch */
+          <span style={{
+            height: '10px', width: '10px',
+            backgroundColor: botOnline ? '#00e676' : '#ff4444',
+            borderRadius: '50%', display: 'inline-block',
+            boxShadow: `0 0 8px ${botOnline ? '#00e676' : '#ff4444'}`,
+            animation: loadingAction ? 'fetchPulse 0.5s ease-out infinite' : 'none'
           }}></span>
-          Actif
+          {botOnline ? 'Actif' : 'Hors ligne'}
         </div>
       </header>
 
@@ -529,24 +536,26 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
 
       {/* BOUTON PANIC CENTRÉ SOUS LES STATS */}
       <div style={{ textAlign: 'center', marginBottom: '30px' }}>
-        <button 
+        <button
           onClick={handlePanic}
-          style={{ 
-            background: 'rgba(255, 68, 68, 0.1)', 
-            border: '1px solid #ff4444', 
-            color: '#ff4444', 
-            padding: '8px 20px', 
-            borderRadius: '20px', 
-            cursor: 'pointer', 
-            fontWeight: 'bold', 
-            display: 'inline-flex', 
-            alignItems: 'center', 
-            gap: '8px', 
+          disabled={!!loadingAction}
+          style={{
+            background: 'rgba(255, 68, 68, 0.1)',
+            border: '1px solid #ff4444',
+            color: '#ff4444',
+            padding: '8px 20px',
+            borderRadius: '20px',
+            cursor: 'pointer',
+            fontWeight: 'bold',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '8px',
             transition: '0.2s',
+            opacity: loadingAction === 'panic' ? 0.6 : 1,
             animation: isNearDD ? 'radioactive 3s infinite alternate' : 'none'
           }}
         >
-          <AlertTriangle size={16} /> TOUT COUPER
+          <AlertTriangle size={16} /> {loadingAction === 'panic' ? 'EN COURS...' : 'TOUT COUPER'}
         </button>
       </div>
 
@@ -628,17 +637,16 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
                 {/* --- COLONNE 3 : BOUTONS (Agrandis) --- */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', justifyContent: 'center' }}>
                   {!trade.managed ? (
-                    <button onClick={() => handleSuivre(trade.ticket)} className="btn-interactive" style={{ background: '#2196f3', border: 'none', color: 'white', padding: '12px 0', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '0.8rem', width: '100%' }}>
-                      Suivre
+                    <button onClick={() => handleSuivre(trade.ticket)} disabled={!!loadingAction} className="btn-interactive" style={{ background: '#2196f3', border: 'none', color: 'white', padding: '12px 0', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '0.8rem', width: '100%', opacity: loadingAction === `suivre_${trade.ticket}` ? 0.6 : 1 }}>
+                      {loadingAction === `suivre_${trade.ticket}` ? '...' : 'Suivre'}
                     </button>
                   ) : (
                     <>
-                      {/* Padding passé de 6px à 8px pour les agrandir en hauteur */}
-                      <button onClick={() => handleBeTrade(trade.ticket)} className="btn-interactive" style={{ background: 'rgba(255, 193, 7, 0.1)', border: '1px solid #ffc107', color: '#ffc107', padding: '8px 0', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', fontSize: '0.75rem', fontWeight: 'bold', width: '100%' }}>
-                        <Shield size={14} /> BE
+                      <button onClick={() => handleBeTrade(trade.ticket)} disabled={!!loadingAction} className="btn-interactive" style={{ background: 'rgba(255, 193, 7, 0.1)', border: '1px solid #ffc107', color: '#ffc107', padding: '8px 0', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', fontSize: '0.75rem', fontWeight: 'bold', width: '100%', opacity: loadingAction === `be_${trade.ticket}` ? 0.6 : 1 }}>
+                        {loadingAction === `be_${trade.ticket}` ? '...' : <><Shield size={14} /> BE</>}
                       </button>
-                      <button onClick={() => handleCloseTrade(trade.ticket)} className="btn-interactive" style={{ background: 'rgba(255, 68, 68, 0.1)', border: '1px solid #ff4444', color: '#ff4444', padding: '8px 0', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', fontSize: '0.75rem', fontWeight: 'bold', width: '100%' }}>
-                        <XCircle size={14} /> Close
+                      <button onClick={() => handleCloseTrade(trade.ticket)} disabled={!!loadingAction} className="btn-interactive" style={{ background: 'rgba(255, 68, 68, 0.1)', border: '1px solid #ff4444', color: '#ff4444', padding: '8px 0', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', fontSize: '0.75rem', fontWeight: 'bold', width: '100%', opacity: loadingAction === `close_${trade.ticket}` ? 0.6 : 1 }}>
+                        {loadingAction === `close_${trade.ticket}` ? '...' : <><XCircle size={14} /> Close</>}
                       </button>
                     </>
                   )}
@@ -1131,11 +1139,11 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
       <div style={{ display: 'grid', gridTemplateRows: isDangerOpen ? '1fr' : '0fr', transition: 'grid-template-rows 0.4s ease-out' }}>
         <div style={{ overflow: 'hidden' }}>
           <div style={{ background: 'rgba(255, 68, 68, 0.05)', border: '1px solid #ff4444', borderRadius: '12px', padding: '20px', display: 'flex', gap: '15px', flexWrap: 'wrap', marginTop: '15px', marginBottom: '10px' }}>
-          <button onClick={handleUnlock} style={{ flex: '1 1 200px', background: '#ffc107', border: 'none', color: '#000', padding: '15px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px' }}>
-            <Unlock size={18} /> Forcer Déverrouillage DD
+          <button onClick={handleUnlock} disabled={!!loadingAction} style={{ flex: '1 1 200px', background: '#ffc107', border: 'none', color: '#000', padding: '15px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px', opacity: loadingAction === 'unlock' ? 0.6 : 1 }}>
+            <Unlock size={18} /> {loadingAction === 'unlock' ? 'EN COURS...' : 'Forcer Déverrouillage DD'}
           </button>
-          <button onClick={handleKill} style={{ flex: '1 1 200px', background: '#000', border: '1px solid #333', color: '#ff4444', padding: '15px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px' }}>
-            <Power size={18} /> ARRÊT DU SERVEUR
+          <button onClick={handleKill} disabled={!!loadingAction} style={{ flex: '1 1 200px', background: '#000', border: '1px solid #333', color: '#ff4444', padding: '15px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px', opacity: loadingAction === 'kill' ? 0.6 : 1 }}>
+            <Power size={18} /> {loadingAction === 'kill' ? 'EXTINCTION...' : 'ARRÊT DU SERVEUR'}
           </button>
         </div>
       </div>

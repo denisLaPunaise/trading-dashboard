@@ -14,6 +14,9 @@ from logging.handlers import RotatingFileHandler
 from typing import Any
 import threading
 
+# --- FIREBASE SYNC ---
+import firebase_sync
+
 # --- LE VIDEUR POUR LE FICHIER SETTINGS ---
 SETTINGS_LOCK = threading.Lock() 
 
@@ -3703,6 +3706,10 @@ async def pairing_handler(event):
                 ADMIN_ID = event.sender_id
                 await run_bg(save_settings)
 
+                # Démarrage Firebase avec l'ID personnel du client (juste capturé)
+                if firebase_sync._firebase_initialized:
+                    asyncio.create_task(_start_firebase_sync(str(event.sender_id)))
+
                 await bot_user.send_message(
                     ADMIN_ID,
                     "✅ **BINGO !** Sécurité validée. Le bot est connecté.\n\nClique sur le bouton ci-dessous pour ouvrir ton interface si tu utilise telegram X :",
@@ -4676,6 +4683,224 @@ async def risk_schedule_monitor():
         # On vérifie toutes les 60 secondes pour ne pas rater l'heure pile
         await asyncio.sleep(60)
 
+# ==========================================
+# 🔥 FIREBASE — COLLECTE D'ÉTAT & HANDLER DE COMMANDES
+# ==========================================
+
+async def get_current_state_for_firebase() -> dict:
+    """Collecte l'état complet du bot pour le push Firebase."""
+    try:
+        acc = await run_bg(mt5.account_info)
+        if not acc:
+            return None
+
+        day_total, day_realized, day_float = get_accurate_daily_stats()
+        start_bal = acc.balance - day_realized
+        day_pct = (day_total / start_bal * 100) if start_bal > 0 else 0.0
+
+        pos_list = await run_bg(mt5.positions_get)
+        active_trades = []
+        if pos_list:
+            for p in pos_list:
+                is_managed = (p.magic == MAGIC_NUMBER or p.ticket in MANAGED_MANUAL_TICKETS)
+                otype = "BUY" if p.type == mt5.ORDER_TYPE_BUY else "SELL"
+                tick = mt5.symbol_info_tick(p.symbol)
+                current_p = tick.bid if otype == "BUY" else tick.ask
+                pips = calculate_pips(p.symbol, abs(p.price_open - current_p))
+                if (otype == "BUY" and current_p < p.price_open) or (otype == "SELL" and current_p > p.price_open):
+                    pips = -pips
+                open_time_str = (datetime.fromtimestamp(p.time) - timedelta(hours=1)).strftime('%H:%M')
+                active_trades.append({
+                    "ticket": p.ticket, "symbol": p.symbol, "type": otype,
+                    "volume": p.volume, "open_price": p.price_open, "current_price": current_p,
+                    "sl": p.sl, "tp": p.tp, "profit": p.profit, "pips": round(pips, 1),
+                    "open_time": open_time_str,
+                    "source": ACTIVE_TRADE_SOURCES.get(p.ticket, "Inconnu"),
+                    "managed": is_managed,
+                })
+
+        closed_trades_today = await run_bg(_get_closed_trades_today_blocking)
+
+        account = {
+            "balance": acc.balance, "equity": acc.equity, "free_margin": acc.margin_free,
+        }
+        stats = {
+            **daily_stats,
+            "total_pnl": day_total, "realized_pnl": day_realized,
+            "floating_pnl": day_float, "percentage": day_pct,
+        }
+        settings = {
+            "risk_gold": RISK_PERCENT_GOLD, "risk_indices": RISK_PERCENT_INDICES,
+            "risk_other": RISK_PERCENT_OTHER,
+            "risk_mdt_vip": RISK_PERCENT_MDT_VIP or 0, "risk_mdt_free": RISK_PERCENT_MDT_FREE or 0,
+            "risk_space": RISK_PERCENT_SPACE or 0, "risk_ligue": RISK_PERCENT_LIGUE or 0,
+            "risk_perso": RISK_PERCENT_PERSO or 0,
+            "sabr_lot_vip": FIXED_LOT_SABR_VIP, "sabr_lot_free": FIXED_LOT_SABR_FREE,
+            "sabr_anti_doublon": SABR_ANTI_DOUBLON_ACTIVE, "sabr_trailing": SABR_TRAILING_ACTIVE,
+            "sabr_forward": SABR_FORWARD_ACTIVE, "max_dd": MAX_DAILY_DRAWDOWN,
+            "sl_suiveur": TRAILING_STOP_PIPS, "sl_sell": SOFT_SL_PERCENT,
+            "muted_channels": MUTED_CHANNELS, "security_triggered": security_triggered,
+            "time_off_peak": TIME_OFF_PEAK_FACTOR, "prime_hours": PRIME_HOURS,
+            "day_factor_0": DAY_RISK_FACTORS.get(0, 1.0), "day_factor_1": DAY_RISK_FACTORS.get(1, 1.0),
+            "day_factor_2": DAY_RISK_FACTORS.get(2, 1.0), "day_factor_3": DAY_RISK_FACTORS.get(3, 1.0),
+            "day_factor_4": DAY_RISK_FACTORS.get(4, 1.0), "day_factor_5": DAY_RISK_FACTORS.get(5, 1.0),
+            "day_factor_6": DAY_RISK_FACTORS.get(6, 1.0),
+        }
+
+        return firebase_sync.build_state_document(
+            account, stats, settings, active_trades, closed_trades_today or [],
+            extra={"channels_lifetime": CHANNEL_STATS}
+        )
+    except Exception as e:
+        logger.error(f"Erreur collecte état Firebase : {e}")
+        return None
+
+
+async def handle_firebase_command(cmd_id: str, cmd_data: dict) -> None:
+    """Reçoit une commande depuis Firestore et l'exécute sur MT5."""
+    user_id = str(TELEGRAM_DESTINATION_ID)
+    cmd_type = cmd_data.get("type", "")
+    payload = cmd_data.get("payload", {})
+
+    def set_status(status, result=None):
+        firebase_sync.update_command_status(user_id, cmd_id, status, result)
+
+    set_status("executing")
+    try:
+        if cmd_type == "close_trade":
+            ticket = int(payload.get("ticket", 0))
+            pos = await run_bg(mt5.positions_get, ticket=ticket)
+            if pos:
+                p = pos[0]
+                otype = mt5.ORDER_TYPE_SELL if p.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
+                tick_p = mt5.symbol_info_tick(p.symbol)
+                price_p = tick_p.bid if otype == mt5.ORDER_TYPE_SELL else tick_p.ask
+                req = {"action": mt5.TRADE_ACTION_DEAL, "symbol": p.symbol, "volume": p.volume,
+                       "type": otype, "position": ticket, "price": price_p,
+                       "magic": MAGIC_NUMBER, "type_filling": mt5.ORDER_FILLING_IOC}
+                res = await run_bg(_send_order_blocking, req)
+                if res and res.retcode == mt5.TRADE_RETCODE_DONE:
+                    set_status("done", {"success": True})
+                else:
+                    set_status("error", {"success": False, "message": f"MT5 retcode: {res.retcode if res else 'None'}"})
+            else:
+                set_status("error", {"success": False, "message": "Trade introuvable"})
+
+        elif cmd_type == "be_trade":
+            ticket = int(payload.get("ticket", 0))
+            pos = await run_bg(mt5.positions_get, ticket=ticket)
+            if pos:
+                p = pos[0]
+                req = {"action": mt5.TRADE_ACTION_SLTP, "position": ticket, "sl": p.price_open, "tp": p.tp}
+                res = await run_bg(_send_order_blocking, req)
+                if res and res.retcode == mt5.TRADE_RETCODE_DONE:
+                    set_status("done", {"success": True})
+                else:
+                    set_status("error", {"success": False, "message": f"MT5 retcode: {res.retcode if res else 'None'}"})
+            else:
+                set_status("error", {"success": False, "message": "Trade introuvable"})
+
+        elif cmd_type == "panic":
+            pos_list = await run_bg(mt5.positions_get)
+            if pos_list:
+                for p in pos_list:
+                    if p.magic == MAGIC_NUMBER or p.ticket in MANAGED_MANUAL_TICKETS:
+                        otype = mt5.ORDER_TYPE_SELL if p.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
+                        req = {"action": mt5.TRADE_ACTION_DEAL, "symbol": p.symbol, "volume": p.volume,
+                               "type": otype, "position": p.ticket, "magic": MAGIC_NUMBER,
+                               "type_filling": mt5.ORDER_FILLING_IOC}
+                        await run_bg(_send_order_blocking, req)
+            set_status("done", {"success": True})
+
+        elif cmd_type == "unlock":
+            global security_triggered
+            security_triggered = False
+            set_status("done", {"success": True})
+
+        elif cmd_type == "suivre":
+            ticket = int(payload.get("ticket", 0))
+            MANAGED_MANUAL_TICKETS.add(ticket)
+            await run_bg(save_memory)
+            ACTIVE_TRADE_SOURCES[ticket] = "CANAL PERSO"
+            await run_bg(save_channel_data)
+            set_status("done", {"success": True})
+
+        elif cmd_type == "toggle_mute":
+            channel = payload.get("channel", "")
+            if channel in MUTED_CHANNELS:
+                MUTED_CHANNELS.remove(channel)
+            else:
+                MUTED_CHANNELS.append(channel)
+            await run_bg(save_settings)
+            set_status("done", {"success": True})
+
+        elif cmd_type == "update_setting":
+            # Réutilise la logique existante via appel direct
+            from pydantic import BaseModel as BM
+            class _S(BM):
+                key: str
+                value: Any
+            await api_update_setting(_S(key=payload.get("key", ""), value=payload.get("value")))
+            set_status("done", {"success": True})
+
+        elif cmd_type == "update_planning":
+            class _P(BM):
+                day_factors: dict
+                prime_hours: list
+                off_peak_factor: float
+            await api_update_planning(_P(
+                day_factors=payload.get("day_factors", {}),
+                prime_hours=payload.get("prime_hours", []),
+                off_peak_factor=payload.get("off_peak_factor", 0.5),
+            ))
+            set_status("done", {"success": True})
+
+        elif cmd_type == "kill":
+            set_status("done", {"success": True})
+            await mark_bot_offline_and_exit()
+
+        else:
+            set_status("error", {"success": False, "message": f"Type de commande inconnu : {cmd_type}"})
+
+    except Exception as e:
+        logger.error(f"Erreur exécution commande Firebase [{cmd_type}] : {e}")
+        set_status("error", {"success": False, "message": str(e)})
+
+
+async def _start_firebase_sync(user_id: str) -> None:
+    """Démarre le push loop et le listener Firebase pour un user_id donné."""
+    firebase_sync.start_command_listener(user_id, handle_firebase_command, asyncio.get_event_loop())
+    asyncio.create_task(firebase_sync.firebase_push_loop(user_id, get_current_state_for_firebase, interval_seconds=4))
+    asyncio.create_task(_firebase_push_stats_loop(user_id))
+    logger.info(f"🔥 Firebase SaaS activé pour user {user_id}.")
+
+
+async def _firebase_push_stats_loop(user_id: str) -> None:
+    """Pousse les stats historiques (30j) vers Firestore toutes les 60 secondes."""
+    while True:
+        await asyncio.sleep(60)
+        try:
+            stats_30d = await get_historical_stats(days=30)
+            if stats_30d and firebase_sync._firebase_initialized:
+                loop = asyncio.get_event_loop()
+                from firebase_admin import firestore as fs
+                def _push():
+                    firebase_sync.get_db().collection("users").document(user_id).set(
+                        {"global_period": firebase_sync._safe(stats_30d)}, merge=True
+                    )
+                await loop.run_in_executor(None, _push)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.warning(f"Erreur push stats historiques : {e}")
+
+
+async def mark_bot_offline_and_exit():
+    await firebase_sync.mark_bot_offline(str(TELEGRAM_DESTINATION_ID))
+    import os as _os
+    _os.exit(0)
+
+
 async def main():
     logger.info("\n" + "—"*50)
     logger.info("🔄 INITIALISATION DES COMPOSANTS...")
@@ -4701,6 +4926,20 @@ async def main():
     asyncio.create_task(monitor_positions())
     asyncio.create_task(license_watchdog())
     asyncio.create_task(safety_net_scanner())
+
+    # ─── Firebase : initialisation ───
+    _sa_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "serviceAccountKey.json")
+    if os.path.exists(_sa_path):
+        if firebase_sync.init_firebase(_sa_path):
+            if TELEGRAM_DESTINATION_ID != 0:
+                # Client déjà appairé : démarrage immédiat
+                await _start_firebase_sync(str(TELEGRAM_DESTINATION_ID))
+            else:
+                logger.info("🔥 Firebase initialisé. En attente de l'appairage Telegram (/start PIN)...")
+        else:
+            logger.warning("⚠️ Firebase non disponible (initialisation échouée). Mode local uniquement.")
+    else:
+        logger.warning(f"⚠️ serviceAccountKey.json introuvable ({_sa_path}). Firebase désactivé.")
 
     # ==========================================
     # 🎨 AFFICHAGE PRO POUR L'UTILISATEUR
