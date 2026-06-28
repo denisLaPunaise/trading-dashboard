@@ -4,6 +4,10 @@ service_account.json
 *.pem
 *.key
 
+# Réglages client réels (contiennent tokens/clés) — le template reste suivi
+settings.json
+backend/settings.json
+
 # Variables d'environnement
 .env
 .env.local
