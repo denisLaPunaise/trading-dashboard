@@ -546,6 +546,34 @@ async def main_handler(event):
             else: await event.reply(f"❌ {info}")
         except: pass
 
+    # C-bis. Provisionner un compte Firebase pour une clé EXISTANTE (/fbcreate Key)
+    elif msg.lower().startswith("/fbcreate"):
+        try:
+            parts = msg.split()
+            if len(parts) < 2:
+                await event.reply("❌ Usage: `/fbcreate CLE`")
+                return
+            key = parts[1]
+            # On vérifie d'abord que la clé existe dans la Sheet (évite les comptes orphelins)
+            found, _ = await asyncio.to_thread(get_license_info, key)
+            if not found:
+                await event.reply(f"❌ Clé `{key}` introuvable dans la Sheet. Crée-la d'abord (`/gen` ou `/add`).")
+                return
+            await event.reply("⏳ Création du compte Firebase...")
+            fb_email, fb_password = await asyncio.to_thread(fb_create_firebase_user, key)
+            if fb_email:
+                await event.reply(
+                    f"✅ **Compte Firebase provisionné**\n"
+                    f"🔑 Clé : `{key}`\n\n"
+                    f"À mettre dans le `settings.json` :\n"
+                    f"`FIREBASE_EMAIL` : `{fb_email}`\n"
+                    f"`FIREBASE_PASSWORD` : `{fb_password}`"
+                )
+            else:
+                await event.reply("❌ Échec (Firebase désactivé ou erreur). Voir les logs du bot.")
+        except Exception as e:
+            await event.reply(f"❌ Crash: {e}")
+
     # D. Broadcast (/say Message) -> Affiche le message dans le canal
     elif msg.lower().startswith("/say"):
         # Cette commande est simple : elle répète le message.
@@ -721,6 +749,7 @@ async def main_handler(event):
                           "`/add Pierre Clé` : Ajout manuel\n\n\n"
                           "🔧 **GESTION**\n\n"
                           "`/info Clé` : Voir détails (PC, Date...)\n"
+                          "`/fbcreate Clé` : Créer compte Firebase (clé existante)\n"
                           "`/reset Clé` : Changer de PC\n"
                           "`/ban Clé` : Bloquer accès\n"
                           "`/del Clé` : Supprimer ligne\n"
