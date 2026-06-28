@@ -1,55 +1,117 @@
 """
-Module de synchronisation Firebase pour le bot FTMO.
-- Push périodique de l'état vers Firestore (/users/{user_id}/state)
-- Listener temps réel sur les commandes (/users/{user_id}/commands/)
-- Résilience réseau : retry avec backoff exponentiel, buffer mémoire
+Module de synchronisation Firebase — V2 (Auth email/password, pas de serviceAccountKey.json)
+- Authentification via Firebase Auth REST API (email + password)
+- Push Firestore via REST API avec updateMask (merge safe)
+- Listener commandes via polling toutes les 3s
+- Refresh automatique du token toutes les 55 minutes
 """
 
 import asyncio
 import logging
+import math
 import time
-import os
+import threading
+import requests
 from datetime import datetime, timezone
-from typing import Callable, Any
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
-# ──────────────────────────────────────────────
-# Initialisation Firebase Admin SDK
-# ──────────────────────────────────────────────
-_firebase_initialized = False
-_db = None
+# ── Config Firebase (publique — déjà dans le frontend) ───────────────────────
+FIREBASE_API_KEY    = "AIzaSyDqyuWknI1fm-dV8bY_o6azfamm3XN3PKw"
+FIREBASE_PROJECT_ID = "ftmo-trading-bot-59dae"
+_FS_BASE  = f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT_ID}/databases/(default)/documents"
+_AUTH_URL = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_API_KEY}"
+_REFR_URL = f"https://securetoken.googleapis.com/v1/token?key={FIREBASE_API_KEY}"
 
-def init_firebase(service_account_path: str) -> bool:
-    global _firebase_initialized, _db
-    if _firebase_initialized:
-        return True
-    try:
-        import firebase_admin
-        from firebase_admin import credentials, firestore
-        if not firebase_admin._apps:
-            cred = credentials.Certificate(service_account_path)
-            firebase_admin.initialize_app(cred)
-        _db = firestore.client()
+# ── État interne ─────────────────────────────────────────────────────────────
+_firebase_initialized: bool    = False
+_id_token:             Optional[str] = None
+_refresh_token_val:    Optional[str] = None
+_token_expiry:         float   = 0.0
+_email:                Optional[str] = None
+_password:             Optional[str] = None
+_listener_running:     bool    = False
+_PUSH_RETRY_DELAYS = [1, 2, 4, 8, 16, 30]
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# INITIALISATION
+# ════════════════════════════════════════════════════════════════════════════
+
+def init_firebase(email: str, password: str) -> bool:
+    global _firebase_initialized, _email, _password
+    _email    = email
+    _password = password
+    if _signin():
         _firebase_initialized = True
-        logger.info("✅ Firebase initialisé avec succès.")
+        logger.info("✅ Firebase Auth initialisé (email/password).")
         return True
-    except Exception as e:
-        logger.error(f"❌ Échec initialisation Firebase : {e}")
-        return False
+    logger.error("❌ Échec authentification Firebase.")
+    return False
 
 
 def get_db():
-    return _db
+    """Compatibilité avec l'ancien code — non utilisé en V2."""
+    return None
 
 
-# ──────────────────────────────────────────────
-# Serialisation des données (Firestore n'accepte pas None ni certains types)
-# ──────────────────────────────────────────────
+# ════════════════════════════════════════════════════════════════════════════
+# GESTION DU TOKEN
+# ════════════════════════════════════════════════════════════════════════════
+
+def _signin() -> bool:
+    global _id_token, _refresh_token_val, _token_expiry
+    try:
+        r = requests.post(_AUTH_URL, json={
+            "email": _email, "password": _password, "returnSecureToken": True
+        }, timeout=10)
+        if r.status_code == 200:
+            d = r.json()
+            _id_token          = d["idToken"]
+            _refresh_token_val = d["refreshToken"]
+            _token_expiry      = time.time() + int(d["expiresIn"]) - 60
+            return True
+        logger.error(f"❌ Firebase signin {r.status_code}: {r.json().get('error', {}).get('message', r.text)}")
+        return False
+    except Exception as e:
+        logger.error(f"❌ Firebase signin exception: {e}")
+        return False
+
+
+def _refresh() -> bool:
+    global _id_token, _refresh_token_val, _token_expiry
+    if not _refresh_token_val:
+        return _signin()
+    try:
+        r = requests.post(_REFR_URL, json={
+            "grant_type": "refresh_token", "refresh_token": _refresh_token_val
+        }, timeout=10)
+        if r.status_code == 200:
+            d = r.json()
+            _id_token          = d["id_token"]
+            _refresh_token_val = d["refresh_token"]
+            _token_expiry      = time.time() + int(d["expires_in"]) - 60
+            return True
+        return _signin()
+    except:
+        return _signin()
+
+
+def _get_token() -> Optional[str]:
+    if time.time() > _token_expiry:
+        _refresh()
+    return _id_token
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# SÉRIALISATION Python ↔ Firestore REST
+# ════════════════════════════════════════════════════════════════════════════
+
 def _safe(val: Any) -> Any:
     if val is None:
         return 0
-    if isinstance(val, float) and (val != val):  # NaN
+    if isinstance(val, float) and (val != val):
         return 0.0
     if isinstance(val, (list, tuple)):
         return [_safe(x) for x in val]
@@ -58,201 +120,213 @@ def _safe(val: Any) -> Any:
     return val
 
 
-def build_state_document(
-    account: dict,
-    daily_stats: dict,
-    settings: dict,
-    active_trades: list,
-    closed_trades: list,
-    extra: dict = None,
-) -> dict:
-    """Construit le document Firestore à partir des données brutes du bot."""
-    from firebase_admin import firestore as fs
+def _to_fs(val: Any) -> dict:
+    if val is None:
+        return {"nullValue": None}
+    if isinstance(val, bool):
+        return {"booleanValue": val}
+    if isinstance(val, int):
+        return {"integerValue": str(val)}
+    if isinstance(val, float):
+        return {"doubleValue": 0.0 if (math.isnan(val) or math.isinf(val)) else val}
+    if isinstance(val, str):
+        return {"stringValue": val}
+    if isinstance(val, dict):
+        return {"mapValue": {"fields": {k: _to_fs(v) for k, v in val.items()}}}
+    if isinstance(val, (list, tuple)):
+        return {"arrayValue": {"values": [_to_fs(x) for x in val]}}
+    return {"stringValue": str(val)}
+
+
+def _doc(data: dict) -> dict:
+    return {"fields": {k: _to_fs(v) for k, v in data.items()}}
+
+
+def _from_fs(v: dict) -> Any:
+    if "stringValue"  in v: return v["stringValue"]
+    if "integerValue" in v: return int(v["integerValue"])
+    if "doubleValue"  in v: return float(v["doubleValue"])
+    if "booleanValue" in v: return v["booleanValue"]
+    if "nullValue"    in v: return None
+    if "mapValue"     in v: return {k: _from_fs(fv) for k, fv in v["mapValue"].get("fields", {}).items()}
+    if "arrayValue"   in v: return [_from_fs(av) for av in v["arrayValue"].get("values", [])]
+    return None
+
+
+def _from_doc(fields: dict) -> dict:
+    return {k: _from_fs(v) for k, v in fields.items()}
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# CONSTRUCTION DU DOCUMENT D'ÉTAT
+# ════════════════════════════════════════════════════════════════════════════
+
+def build_state_document(account, daily_stats, settings, active_trades, closed_trades, extra=None) -> dict:
     doc = {
-        "account": _safe(account),
-        "daily_stats": _safe(daily_stats),
-        "settings": _safe(settings),
+        "account":       _safe(account),
+        "daily_stats":   _safe(daily_stats),
+        "settings":      _safe(settings),
         "active_trades": _safe(active_trades),
         "closed_trades": _safe(closed_trades),
-        "last_push": fs.SERVER_TIMESTAMP,
-        "bot_online": True,
+        "bot_online":    True,
+        "last_push":     datetime.now(timezone.utc).isoformat(),
     }
     if extra:
         doc.update(_safe(extra))
     return doc
 
 
-# ──────────────────────────────────────────────
-# Push de l'état avec retry + backoff
-# ──────────────────────────────────────────────
-_PUSH_RETRY_DELAYS = [1, 2, 4, 8, 16, 30]  # secondes
-
+# ════════════════════════════════════════════════════════════════════════════
+# PUSH D'ÉTAT
+# ════════════════════════════════════════════════════════════════════════════
 
 async def push_state(user_id: str, state_doc: dict, executor=None) -> bool:
-    """
-    Pousse l'état vers /users/{user_id}/state.
-    Retry automatique avec backoff exponentiel si la connexion échoue.
-    Retourne True si succès, False si tous les retries ont échoué.
-    """
-    if not _firebase_initialized or _db is None:
-        logger.warning("Firebase non initialisé, push ignoré.")
+    if not _firebase_initialized:
         return False
 
-    import concurrent.futures
     loop = asyncio.get_event_loop()
 
-    def _do_push():
-        ref = _db.collection("users").document(str(user_id))
-        ref.set(state_doc, merge=True)
+    def _do():
+        token = _get_token()
+        if not token:
+            raise Exception("Token indisponible")
+        mask = "&".join(f"updateMask.fieldPaths={k}" for k in state_doc.keys())
+        url  = f"{_FS_BASE}/users/{user_id}?{mask}"
+        r = requests.patch(url, headers={"Authorization": f"Bearer {token}"},
+                           json=_doc(state_doc), timeout=10)
+        if r.status_code not in (200, 201):
+            raise Exception(f"PATCH {r.status_code}: {r.text[:200]}")
 
     for attempt, delay in enumerate(_PUSH_RETRY_DELAYS + [None]):
         try:
-            if executor:
-                await loop.run_in_executor(executor, _do_push)
-            else:
-                await loop.run_in_executor(None, _do_push)
-            if attempt > 0:
-                logger.info(f"✅ Push Firebase réussi après {attempt} retry(s).")
+            await loop.run_in_executor(executor, _do)
             return True
         except Exception as e:
             if delay is None:
-                logger.error(f"❌ Push Firebase abandonné après tous les retries : {e}")
+                logger.error(f"❌ Push Firebase abandonné: {e}")
                 return False
-            logger.warning(f"⚠️ Push Firebase échoué (tentative {attempt + 1}) : {e}. Retry dans {delay}s.")
+            logger.warning(f"⚠️ Push Firebase ({attempt+1}): {e}. Retry dans {delay}s.")
             await asyncio.sleep(delay)
-
     return False
 
 
-async def mark_bot_offline(user_id: str, executor=None) -> None:
-    """Marque le bot comme hors-ligne dans Firestore (appelé à l'arrêt propre)."""
-    if not _firebase_initialized or _db is None:
+# ════════════════════════════════════════════════════════════════════════════
+# STATUT COMMANDE
+# ════════════════════════════════════════════════════════════════════════════
+
+def update_command_status(user_id: str, cmd_id: str, status: str, result: dict = None) -> None:
+    if not _firebase_initialized:
         return
-    from firebase_admin import firestore as fs
-    import concurrent.futures
-    loop = asyncio.get_event_loop()
-
-    def _do_offline():
-        ref = _db.collection("users").document(str(user_id))
-        ref.set({"bot_online": False, "last_push": fs.SERVER_TIMESTAMP}, merge=True)
-
     try:
-        if executor:
-            await loop.run_in_executor(executor, _do_offline)
-        else:
-            await loop.run_in_executor(None, _do_offline)
-        logger.info("🔴 Bot marqué hors-ligne dans Firebase.")
+        token  = _get_token()
+        fields = {"status": status}
+        if result:
+            fields["result"] = _safe(result)
+        mask = "&".join(f"updateMask.fieldPaths={k}" for k in fields.keys())
+        url  = f"{_FS_BASE}/users/{user_id}/commands/{cmd_id}?{mask}"
+        requests.patch(url, headers={"Authorization": f"Bearer {token}"},
+                       json=_doc(fields), timeout=5)
     except Exception as e:
-        logger.warning(f"Impossible de marquer le bot hors-ligne : {e}")
+        logger.error(f"update_command_status error: {e}")
 
 
-# ──────────────────────────────────────────────
-# Listener de commandes
-# ──────────────────────────────────────────────
-_command_listener_handle = None
-
+# ════════════════════════════════════════════════════════════════════════════
+# LISTENER COMMANDES (polling 3s)
+# ════════════════════════════════════════════════════════════════════════════
 
 def start_command_listener(user_id: str, command_handler: Callable, loop: asyncio.AbstractEventLoop) -> None:
-    """
-    Démarre un listener Firestore sur /users/{user_id}/commands/ où status == "pending".
-    command_handler est une coroutine async def handler(cmd_id, cmd_data).
-    """
-    global _command_listener_handle
-    if not _firebase_initialized or _db is None:
+    global _listener_running
+    if not _firebase_initialized:
         logger.warning("Firebase non initialisé, listener non démarré.")
         return
 
-    from google.cloud.firestore_v1 import Watch
+    _listener_running = True
 
-    from google.cloud.firestore_v1.base_query import FieldFilter
-    ref = (
-        _db.collection("users")
-        .document(str(user_id))
-        .collection("commands")
-        .where(filter=FieldFilter("status", "==", "pending"))
-    )
+    def _poll():
+        seen_ids: set = set()
+        while _listener_running:
+            try:
+                token = _get_token()
+                url   = f"{_FS_BASE}/users/{user_id}:runQuery"
+                body  = {"structuredQuery": {
+                    "from":  [{"collectionId": "commands"}],
+                    "where": {"fieldFilter": {
+                        "field": {"fieldPath": "status"},
+                        "op":    "EQUAL",
+                        "value": {"stringValue": "pending"}
+                    }}
+                }}
+                r = requests.post(url, headers={"Authorization": f"Bearer {token}"},
+                                  json=body, timeout=5)
+                if r.status_code == 200:
+                    for item in r.json():
+                        doc = item.get("document")
+                        if not doc:
+                            continue
+                        doc_id = doc["name"].split("/")[-1]
+                        if doc_id in seen_ids:
+                            continue
+                        fields = doc.get("fields", {})
+                        if fields.get("status", {}).get("stringValue") == "pending":
+                            seen_ids.add(doc_id)
+                            cmd_data = _from_doc(fields)
+                            logger.info(f"📩 Commande reçue [{doc_id}] : {cmd_data.get('type')}")
+                            asyncio.run_coroutine_threadsafe(
+                                command_handler(doc_id, cmd_data), loop
+                            )
+            except Exception as e:
+                logger.debug(f"Listener poll error: {e}")
+            time.sleep(3)
 
-    def on_snapshot(col_snapshot, changes, read_time):
-        from google.cloud.firestore_v1.watch import ChangeType
-        for change in changes:
-            if change.type.name == "ADDED":
-                cmd_id = change.document.id
-                cmd_data = change.document.to_dict()
-                logger.info(f"📩 Commande reçue [{cmd_id}] : {cmd_data.get('type')}")
-                asyncio.run_coroutine_threadsafe(
-                    command_handler(cmd_id, cmd_data), loop
-                )
-
-    _command_listener_handle = ref.on_snapshot(on_snapshot)
-    logger.info(f"👂 Listener commandes démarré pour user {user_id}.")
+    t = threading.Thread(target=_poll, daemon=True)
+    t.start()
+    logger.info(f"👂 Listener commandes démarré (polling 3s) pour user {user_id}.")
 
 
 def stop_command_listener() -> None:
-    global _command_listener_handle
-    if _command_listener_handle:
-        _command_listener_handle.unsubscribe()
-        _command_listener_handle = None
-        logger.info("🔇 Listener commandes arrêté.")
+    global _listener_running
+    _listener_running = False
+    logger.info("🔇 Listener commandes arrêté.")
 
 
-# ──────────────────────────────────────────────
-# Mise à jour du statut d'une commande
-# ──────────────────────────────────────────────
-def update_command_status(user_id: str, cmd_id: str, status: str, result: dict = None) -> None:
-    """
-    Appelé depuis le handler de commandes (dans un thread executor).
-    status : "executing" | "done" | "error"
-    """
-    if not _firebase_initialized or _db is None:
+# ════════════════════════════════════════════════════════════════════════════
+# BOT OFFLINE / PUSH LOOP
+# ════════════════════════════════════════════════════════════════════════════
+
+async def mark_bot_offline(user_id: str, executor=None) -> None:
+    if not _firebase_initialized:
         return
-    from firebase_admin import firestore as fs
+    loop = asyncio.get_event_loop()
+    def _do():
+        token = _get_token()
+        url   = f"{_FS_BASE}/users/{user_id}?updateMask.fieldPaths=bot_online&updateMask.fieldPaths=last_push"
+        requests.patch(url, headers={"Authorization": f"Bearer {token}"},
+                       json=_doc({"bot_online": False,
+                                  "last_push":  datetime.now(timezone.utc).isoformat()}),
+                       timeout=5)
     try:
-        ref = (
-            _db.collection("users")
-            .document(str(user_id))
-            .collection("commands")
-            .document(cmd_id)
-        )
-        data = {"status": status, "executed_at": fs.SERVER_TIMESTAMP}
-        if result is not None:
-            data["result"] = _safe(result)
-        ref.update(data)
+        await loop.run_in_executor(executor, _do)
+        logger.info("🔴 Bot marqué hors-ligne dans Firebase.")
     except Exception as e:
-        logger.error(f"Impossible de mettre à jour le statut de la commande {cmd_id} : {e}")
+        logger.warning(f"mark_bot_offline error: {e}")
 
 
-# ──────────────────────────────────────────────
-# Boucle de push périodique
-# ──────────────────────────────────────────────
-async def firebase_push_loop(
-    user_id: str,
-    get_state_fn: Callable,
-    interval_seconds: float = 4.0,
-    executor=None,
-) -> None:
-    """
-    Boucle asyncio qui appelle get_state_fn() toutes les interval_seconds secondes
-    et pousse le résultat vers Firestore.
-    get_state_fn doit être une coroutine async retournant un dict (build_state_document).
-    """
-    logger.info(f"🔄 Boucle de push Firebase démarrée (intervalle : {interval_seconds}s).")
+async def firebase_push_loop(user_id: str, get_state_fn: Callable,
+                              interval_seconds: float = 4.0, executor=None) -> None:
+    logger.info(f"🔄 Boucle push Firebase démarrée ({interval_seconds}s).")
     consecutive_failures = 0
-
     while True:
         try:
             state_doc = await get_state_fn()
             if state_doc:
-                success = await push_state(user_id, state_doc, executor)
-                if success:
-                    consecutive_failures = 0
-                else:
-                    consecutive_failures += 1
-                    logger.warning(f"⚠️ {consecutive_failures} push(es) consécutif(s) échoué(s).")
+                ok = await push_state(user_id, state_doc, executor)
+                consecutive_failures = 0 if ok else consecutive_failures + 1
+                if consecutive_failures > 3:
+                    logger.warning(f"⚠️ {consecutive_failures} push(es) échoué(s) consécutifs.")
         except asyncio.CancelledError:
-            logger.info("🛑 Boucle de push Firebase annulée.")
+            logger.info("🛑 Boucle push Firebase annulée.")
             break
         except Exception as e:
-            logger.error(f"Erreur inattendue dans la boucle de push : {e}")
+            logger.error(f"Erreur boucle push: {e}")
             consecutive_failures += 1
-
         await asyncio.sleep(interval_seconds)

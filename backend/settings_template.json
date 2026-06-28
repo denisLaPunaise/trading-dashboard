@@ -1,5 +1,7 @@
 {
     "USER_LICENSE_KEY": "FTMO-XXXXXXXX",
+    "FIREBASE_EMAIL": "",
+    "FIREBASE_PASSWORD": "",
 
     "TELEGRAM_API_ID": 0,
     "TELEGRAM_API_HASH": "",

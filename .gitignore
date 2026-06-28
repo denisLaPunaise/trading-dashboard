@@ -33,6 +33,7 @@ dist/
 
 # Node
 node_modules/
+functions/node_modules/
 .npm
 
 # Vite / Build frontend

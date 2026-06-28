@@ -1115,11 +1115,13 @@ def save_settings():
 
 
 TELEGRAM_DESTINATION_ID = 0
+FIREBASE_EMAIL    = ""
+FIREBASE_PASSWORD = ""
 
 
 def load_settings():
     """Charge les réglages au démarrage"""
-    global RISK_PERCENT_GOLD, SABR_FORWARD_ACTIVE, RISK_PERCENT_OTHER, RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE, MAX_DAILY_DRAWDOWN, TRAILING_STOP_PIPS, RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO, SOFT_SL_PERCENT, MUTED_CHANNELS, CHANNEL_TP1_PCT, TELEGRAM_DESTINATION_ID, ADMIN_ID, RISK_PERCENT_INDICES, PRIME_HOURS, TIME_OFF_PEAK_FACTOR, DAY_RISK_FACTORS, FIXED_LOT_SABR_FREE, FIXED_LOT_SABR_VIP, SABR_TRAILING_ACTIVE, DASHBOARD_MSG_ID
+    global RISK_PERCENT_GOLD, SABR_FORWARD_ACTIVE, RISK_PERCENT_OTHER, RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE, MAX_DAILY_DRAWDOWN, TRAILING_STOP_PIPS, RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO, SOFT_SL_PERCENT, MUTED_CHANNELS, CHANNEL_TP1_PCT, TELEGRAM_DESTINATION_ID, ADMIN_ID, RISK_PERCENT_INDICES, PRIME_HOURS, TIME_OFF_PEAK_FACTOR, DAY_RISK_FACTORS, FIXED_LOT_SABR_FREE, FIXED_LOT_SABR_VIP, SABR_TRAILING_ACTIVE, DASHBOARD_MSG_ID, FIREBASE_EMAIL, FIREBASE_PASSWORD
 
     if os.path.exists(SETTINGS_FILENAME):
         try:
@@ -1151,11 +1153,13 @@ def load_settings():
                 if "PRIME_HOURS" in data: PRIME_HOURS = data["PRIME_HOURS"]
                 if "TIME_OFF_PEAK_FACTOR" in data: TIME_OFF_PEAK_FACTOR = data["TIME_OFF_PEAK_FACTOR"]
                 if "SABR_FORWARD_ACTIVE" in data: SABR_FORWARD_ACTIVE = data["SABR_FORWARD_ACTIVE"]
-                if "DAY_RISK_FACTORS" in data: 
+                if "DAY_RISK_FACTORS" in data:
                     # JSON stocke les clés (jours) en string "4", on remet en int 4
                     loaded_days = data["DAY_RISK_FACTORS"]
                     DAY_RISK_FACTORS = {int(k): v for k, v in loaded_days.items()}
-                 
+                if "FIREBASE_EMAIL" in data:    FIREBASE_EMAIL    = data["FIREBASE_EMAIL"]
+                if "FIREBASE_PASSWORD" in data: FIREBASE_PASSWORD = data["FIREBASE_PASSWORD"]
+
             logger.info(f"⚙️ Ensemble des réglages chargés avec succès.")
             logger.info(f"🔕 Canaux Ignorés : {MUTED_CHANNELS}")
         except Exception as e: logger.error(f"⚠️ Erreur Load Settings: {e}")
@@ -4948,21 +4952,17 @@ async def main():
     asyncio.create_task(safety_net_scanner())
 
     # ─── Firebase : initialisation ───
-    # En mode .exe PyInstaller, __file__ pointe vers le dossier tmp d'extraction.
-    # On utilise sys.executable pour obtenir le dossier réel de l'exécutable.
-    _base_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
-    _sa_path = os.path.join(_base_dir, "serviceAccountKey.json")
-    if os.path.exists(_sa_path):
-        if firebase_sync.init_firebase(_sa_path):
+    if FIREBASE_EMAIL and FIREBASE_PASSWORD:
+        if firebase_sync.init_firebase(FIREBASE_EMAIL, FIREBASE_PASSWORD):
             if TELEGRAM_DESTINATION_ID != 0:
                 # Client déjà appairé : démarrage immédiat
                 await _start_firebase_sync(str(TELEGRAM_DESTINATION_ID))
             else:
                 logger.info("🔥 Firebase initialisé. En attente de l'appairage Telegram (/start PIN)...")
         else:
-            logger.warning("⚠️ Firebase non disponible (initialisation échouée). Mode local uniquement.")
+            logger.warning("⚠️ Firebase non disponible (identifiants invalides). Mode local uniquement.")
     else:
-        logger.warning(f"⚠️ serviceAccountKey.json introuvable ({_sa_path}). Firebase désactivé.")
+        logger.warning("⚠️ FIREBASE_EMAIL/PASSWORD manquants dans settings.json. Firebase désactivé.")
 
     # ==========================================
     # 🎨 AFFICHAGE PRO POUR L'UTILISATEUR

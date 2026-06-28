@@ -1,0 +1,31 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Licences : lecture par le bot client (pour vérifier son propre statut) ──
+    // Le bot s'authentifie avec UID = license_key, il peut lire SA licence.
+    match /licenses/{licenseKey} {
+      allow read: if request.auth != null && request.auth.uid == licenseKey;
+      // Écriture réservée au backend admin (Admin SDK bypass les règles)
+      allow write: if false;
+    }
+
+    // ── Données utilisateur : lecture/écriture par le bot client ──
+    // Le bot est authentifié (UID = license_key).
+    // Il peut écrire dans /users/{userId}/ si sa licence est ACTIVE dans Firestore.
+    match /users/{userId} {
+      allow read: if request.auth != null;
+
+      allow write: if request.auth != null
+        && exists(/databases/$(database)/documents/licenses/$(request.auth.uid))
+        && get(/databases/$(database)/documents/licenses/$(request.auth.uid)).data.status == "ACTIVE";
+
+      // Sous-collection commandes : même règle
+      match /commands/{cmdId} {
+        allow read, write: if request.auth != null
+          && exists(/databases/$(database)/documents/licenses/$(request.auth.uid))
+          && get(/databases/$(database)/documents/licenses/$(request.auth.uid)).data.status == "ACTIVE";
+      }
+    }
+  }
+}

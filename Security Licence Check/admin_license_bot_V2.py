@@ -6,6 +6,85 @@ from datetime import datetime, timedelta
 from oauth2client.service_account import ServiceAccountCredentials
 from telethon import TelegramClient, events
 
+# --- FIREBASE ADMIN SDK (pour sync licences vers Firestore + création comptes Auth) ---
+try:
+    import firebase_admin
+    from firebase_admin import credentials as fb_creds, firestore as fb_firestore, auth as fb_auth
+    _fb_cred = fb_creds.Certificate("serviceAccountKey.json")
+    firebase_admin.initialize_app(_fb_cred)
+    _fb_db = fb_firestore.client()
+    FIREBASE_ENABLED = True
+    print("✅ Firebase Admin initialisé.")
+except Exception as e:
+    FIREBASE_ENABLED = False
+    _fb_db = None
+    print(f"⚠️ Firebase non disponible (mode dégradé) : {e}")
+
+def fb_sync_license(key, user, status, ver_min="14.0.0", hwid="", date_fin=""):
+    """Écrit/met à jour une licence dans Firestore /licenses/{key}"""
+    if not FIREBASE_ENABLED or not _fb_db:
+        return
+    try:
+        _fb_db.collection("licenses").document(key).set({
+            "user": user,
+            "status": status,
+            "ver_min": ver_min,
+            "hwid": hwid,
+            "date_fin": date_fin,
+            "updated_at": fb_firestore.SERVER_TIMESTAMP,
+        }, merge=True)
+    except Exception as e:
+        print(f"⚠️ fb_sync_license error: {e}")
+
+
+def fb_create_firebase_user(key):
+    """Crée un compte Firebase Auth pour un nouveau client.
+    UID = license_key, email = key@ftmobot.com, mot de passe aléatoire.
+    Retourne (email, password) ou (None, None) en cas d'échec."""
+    if not FIREBASE_ENABLED:
+        return None, None
+    import secrets, string
+    alphabet = string.ascii_letters + string.digits + "!@#$%"
+    password = "".join(secrets.choice(alphabet) for _ in range(20))
+    email = f"{key.lower()}@ftmobot.com"
+    try:
+        # Si l'utilisateur existe déjà (re-génération), on le met à jour
+        try:
+            fb_auth.get_user(key)
+            fb_auth.update_user(key, email=email, password=password, disabled=False)
+        except fb_auth.UserNotFoundError:
+            fb_auth.create_user(uid=key, email=email, password=password)
+        # Stocke email/password dans Firestore pour référence admin
+        if _fb_db:
+            _fb_db.collection("licenses").document(key).set(
+                {"firebase_email": email, "firebase_password": password},
+                merge=True
+            )
+        return email, password
+    except Exception as e:
+        print(f"⚠️ fb_create_firebase_user error: {e}")
+        return None, None
+
+
+def fb_disable_firebase_user(key):
+    """Désactive le compte Firebase Auth d'un client banni."""
+    if not FIREBASE_ENABLED:
+        return
+    try:
+        fb_auth.update_user(key, disabled=True)
+    except Exception as e:
+        print(f"⚠️ fb_disable_firebase_user error: {e}")
+
+
+def fb_enable_firebase_user(key):
+    """Réactive le compte Firebase Auth d'un client."""
+    if not FIREBASE_ENABLED:
+        return
+    try:
+        fb_auth.update_user(key, disabled=False)
+    except Exception as e:
+        print(f"⚠️ fb_enable_firebase_user error: {e}")
+
 # --- PATCH COMPATIBILITÉ PYTHON < 3.9 ---
 if not hasattr(asyncio, 'to_thread'):
     import contextvars, functools
@@ -108,6 +187,7 @@ def update_sheet(license_key, pc_id):
 
             if not current_hwid or current_hwid == "":
                 sheet.update_cell(cell.row, COL_HWID, pc_id)
+                fb_sync_license(license_key, row_vals[0] if 'row_vals' in dir() else "", sheet.cell(cell.row, COL_STATUS).value or "ACTIVE", hwid=pc_id)
                 print(f"💾 SUCCÈS : HWID {pc_id} enregistré pour {license_key}")
                 return "NEW_REGISTER"
             
@@ -166,12 +246,14 @@ def add_license_row(user, key, days=None):
             date_fin = fin.strftime("%d/%m/%Y")
 
         # 3. On inscrit la ligne avec la version dynamique
-        row_data = [user, key, "ACTIVE", version_to_use, "", date_fin] 
+        row_data = [user, key, "ACTIVE", version_to_use, "", date_fin]
         sheet.append_row(row_data)
-        
+        fb_sync_license(key, user, "ACTIVE", version_to_use, "", date_fin)
+        # 4. Création du compte Firebase Auth pour ce client
+        fb_email, fb_password = fb_create_firebase_user(key)
         msg_fin = f" (Expire le {date_fin})" if date_fin else " (Illimité)"
-        return True, f"Licence ajoutée [v{version_to_use}]{msg_fin}."
-    except Exception as e: return False, str(e)
+        return True, f"Licence ajoutée [v{version_to_use}]{msg_fin}.", fb_email, fb_password
+    except Exception as e: return False, str(e), None, None
 
 def delete_license_row(key):
     try:
@@ -197,6 +279,8 @@ def ban_license(key):
         cell = sheet.find(key)
         if not cell: return False, "Clé introuvable."
         sheet.update_cell(cell.row, COL_STATUS, "BANNED")
+        fb_sync_license(key, "", "BANNED")
+        fb_disable_firebase_user(key)
         return True, "Licence BANNIE."
     except Exception as e: return False, str(e)
 
@@ -257,10 +341,9 @@ def update_license_time(key, value):
 
         # Mise à jour DATE (Col 6)
         sheet.update_cell(cell.row, COL_EXP, new_date_str)
-        
-        # Mise à jour STATUT (Col 3) -> On réactive automatiquement !
         sheet.update_cell(cell.row, COL_STATUS, "ACTIVE")
-        
+        fb_sync_license(key, "", "ACTIVE", date_fin=new_date_str)
+        fb_enable_firebase_user(key)
         return True, new_date_str
 
     except Exception as e: return False, str(e)
@@ -329,14 +412,22 @@ async def main_handler(event):
             new_key = f"FTMO-{unique_id}"
             
             await event.reply("⏳ Création...")
-            success, info = await asyncio.to_thread(add_license_row, user, new_key, days)
-            
+            success, info, fb_email, fb_password = await asyncio.to_thread(add_license_row, user, new_key, days)
+
             if success:
-                await event.reply(f"✅ **CLÉ GÉNÉRÉE**\n"
-                                  f"👤 Client: {user}\n"
-                                  f"🔑 Clé: `{new_key}`\n"
-                                  f"📝 {info}")
-            else: await event.reply(f"❌ Erreur: {info}")
+                reply = (f"✅ **CLÉ GÉNÉRÉE**\n"
+                         f"👤 Client: {user}\n"
+                         f"🔑 Clé: `{new_key}`\n"
+                         f"📝 {info}")
+                if fb_email:
+                    reply += (f"\n\n🔐 **Credentials Firebase (à mettre dans settings.json)**\n"
+                              f"`FIREBASE_EMAIL`: `{fb_email}`\n"
+                              f"`FIREBASE_PASSWORD`: `{fb_password}`")
+                else:
+                    reply += "\n\n⚠️ Compte Firebase non créé (Firebase désactivé)."
+                await event.reply(reply)
+            else:
+                await event.reply(f"❌ Erreur: {info}")
             
         except Exception as e: await event.reply(f"❌ Crash: {e}")
 
@@ -349,10 +440,15 @@ async def main_handler(event):
                 return
             
             days = parts[3] if len(parts) > 3 else None
-            success, info = await asyncio.to_thread(add_license_row, parts[1], parts[2], days)
-            
-            if success: await event.reply(f"✅ Ajouté: {info}")
-            else: await event.reply(f"❌ {info}")
+            success, info, fb_email, fb_password = await asyncio.to_thread(add_license_row, parts[1], parts[2], days)
+
+            if success:
+                reply = f"✅ Ajouté: {info}"
+                if fb_email:
+                    reply += (f"\n\n🔐 **Firebase:** `{fb_email}` / `{fb_password}`")
+                await event.reply(reply)
+            else:
+                await event.reply(f"❌ {info}")
         except: pass
 
     # C. Info Licence (/info Key)
