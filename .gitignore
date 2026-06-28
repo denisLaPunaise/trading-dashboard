@@ -1,0 +1,48 @@
+# Clés et credentials — ne JAMAIS committer
+serviceAccountKey.json
+service_account.json
+*.pem
+*.key
+
+# Variables d'environnement
+.env
+.env.local
+.env.*.local
+
+# Sessions Telethon
+*.session
+*.session-journal
+
+# Logs
+*.log
+bot_ftmo.log
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# PyInstaller
+*.spec.bak
+
+# Node
+node_modules/
+.npm
+
+# Vite / Build frontend
+frontend/dist/
+frontend/.vite/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# CSV trades (données client locales)
+trades_detailed.csv

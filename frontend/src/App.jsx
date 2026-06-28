@@ -128,16 +128,44 @@ function App() {
   const [historicalStats, setHistoricalStats] = useState(null);
   const [globalPeriod, setGlobalPeriod] = useState('30'); // 👈 NOUVEAU : 30 jours par défaut
   const [dayWeekToggle, setDayWeekToggle] = useState('day'); // 'day' ou 'week'
+  const [isLoadingStats, setIsLoadingStats] = useState(false);
+  const requestedPeriods = useRef(new Set());
 
-  // Stats dérivées du state Firestore (channels_lifetime et global_period pushés par le bot)
+  // Stats dérivées du state Firestore — chaque période dans sa propre clé
   useEffect(() => {
     if (!dashboardData) return;
     const channels = dashboardData.channels_lifetime;
-    const period = dashboardData.global_period;
-    if (channels !== undefined || period !== undefined) {
-      setHistoricalStats({ channels_lifetime: channels || {}, global_period: period || null });
-    }
-  }, [dashboardData]);
+    const periodKey = `global_period_${globalPeriod}`;
+    // Fallback sur global_period (poussé par l'exe) si la clé spécifique n'existe pas encore
+    const period = dashboardData[periodKey] || (globalPeriod === '30' ? dashboardData.global_period : null);
+    setHistoricalStats({ channels_lifetime: channels || {}, global_period: period || null });
+    if (period) setIsLoadingStats(false);
+  }, [dashboardData, globalPeriod]);
+
+  // Déclenche une requête au bot quand la période change (sans alert, sans doublon)
+  useEffect(() => {
+    if (!isStatsOpen || !userId || statsTab !== 'global') return;
+    const periodKey = `global_period_${globalPeriod}`;
+    if (dashboardData?.[periodKey]) return; // données déjà en cache
+    if (requestedPeriods.current.has(globalPeriod)) return; // requête déjà envoyée
+    requestedPeriods.current.add(globalPeriod);
+    setIsLoadingStats(true);
+    (async () => {
+      try {
+        const cmdRef = await addDoc(collection(db, 'users', userId, 'commands'), {
+          type: 'request_stats', payload: { days: globalPeriod }, status: 'pending', created_at: serverTimestamp(),
+        });
+        await new Promise((resolve) => {
+          const unsub = onSnapshot(doc(db, 'users', userId, 'commands', cmdRef.id), (snap) => {
+            const d = snap.data();
+            if (d?.status === 'done' || d?.status === 'error') { unsub(); resolve(); }
+          });
+          setTimeout(() => { unsub(); resolve(); }, 20000);
+        });
+      } catch { /* silencieux */ }
+      setIsLoadingStats(false);
+    })();
+  }, [isStatsOpen, statsTab, globalPeriod, userId]); // ← PAS dashboardData ici
 
   // Authentification Firebase + abonnement temps réel Firestore
   useEffect(() => {
@@ -1085,6 +1113,13 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
                   </button>
                 ))}
               </div>
+
+              {/* SPINNER CHARGEMENT */}
+              {isLoadingStats && (
+                <div style={{ textAlign: 'center', padding: '12px', color: '#00e676', fontSize: '0.82rem', background: 'rgba(0,230,118,0.05)', borderRadius: '8px', border: '1px solid rgba(0,230,118,0.2)', animation: 'textBlink 1s infinite' }}>
+                  ⏳ Calcul en cours...
+                </div>
+              )}
 
               {/* CARTES DE DONNÉES */}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '15px' }}>

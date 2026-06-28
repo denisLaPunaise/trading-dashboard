@@ -4855,6 +4855,26 @@ async def handle_firebase_command(cmd_id: str, cmd_data: dict) -> None:
             ))
             set_status("done", {"success": True})
 
+        elif cmd_type == "request_stats":
+            days = payload.get("days", "30")
+            if days == "week":
+                now = datetime.now()
+                monday = now - timedelta(days=now.weekday())
+                monday = monday.replace(hour=0, minute=0, second=0, microsecond=0)
+                stats = await get_historical_stats(start_date_custom=monday)
+            else:
+                days_int = 9999 if days == "all" else int(days)
+                stats = await get_historical_stats(days=days_int)
+            if stats and firebase_sync._firebase_initialized:
+                field_key = f"global_period_{days}"
+                loop = asyncio.get_event_loop()
+                def _push_stats():
+                    firebase_sync.get_db().collection("users").document(user_id).set(
+                        {field_key: firebase_sync._safe(stats)}, merge=True
+                    )
+                await loop.run_in_executor(None, _push_stats)
+            set_status("done", {"success": True})
+
         elif cmd_type == "kill":
             set_status("done", {"success": True})
             await mark_bot_offline_and_exit()
@@ -4886,7 +4906,7 @@ async def _firebase_push_stats_loop(user_id: str) -> None:
                 from firebase_admin import firestore as fs
                 def _push():
                     firebase_sync.get_db().collection("users").document(user_id).set(
-                        {"global_period": firebase_sync._safe(stats_30d)}, merge=True
+                        {"global_period_30": firebase_sync._safe(stats_30d)}, merge=True
                     )
                 await loop.run_in_executor(None, _push)
         except asyncio.CancelledError:
@@ -4928,7 +4948,10 @@ async def main():
     asyncio.create_task(safety_net_scanner())
 
     # ─── Firebase : initialisation ───
-    _sa_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "serviceAccountKey.json")
+    # En mode .exe PyInstaller, __file__ pointe vers le dossier tmp d'extraction.
+    # On utilise sys.executable pour obtenir le dossier réel de l'exécutable.
+    _base_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
+    _sa_path = os.path.join(_base_dir, "serviceAccountKey.json")
     if os.path.exists(_sa_path):
         if firebase_sync.init_firebase(_sa_path):
             if TELEGRAM_DESTINATION_ID != 0:
