@@ -7,6 +7,8 @@ Module de synchronisation Firebase — V2 (Auth email/password, pas de serviceAc
 """
 
 import asyncio
+import hashlib
+import json
 import logging
 import math
 import time
@@ -54,6 +56,42 @@ def init_firebase(email: str, password: str) -> bool:
 def get_db():
     """Compatibilité avec l'ancien code — non utilisé en V2."""
     return None
+
+
+def publish_client_metadata(user_id: str, bot_token: str, license_key: str) -> None:
+    """Publie les métadonnées nécessaires à l'authentification du dashboard (Phase 1).
+
+    - telegram_id dans /licenses/{key}        → permet aux règles Firestore de lier la licence au user
+    - bot_token   dans /users/{id}/private/config → permet au serveur Vercel de valider la signature Telegram
+
+    L'ordre importe : on écrit telegram_id AVANT bot_token, car la règle du doc privé
+    vérifie que license.telegram_id == user_id.
+    """
+    if not _firebase_initialized:
+        return
+    try:
+        token = _get_token()
+        if not token:
+            return
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # 1. telegram_id dans la licence (le bot ne peut écrire QUE ce champ sur SA licence)
+        if license_key:
+            url1 = f"{_FS_BASE}/licenses/{license_key}?updateMask.fieldPaths=telegram_id"
+            r1 = requests.patch(url1, headers=headers, json=_doc({"telegram_id": user_id}), timeout=10)
+            if r1.status_code not in (200, 201):
+                logger.warning(f"⚠️ publish telegram_id: {r1.status_code} {r1.text[:120]}")
+
+        # 2. bot_token dans le doc privé (lisible par l'Admin SDK serveur uniquement)
+        if bot_token:
+            url2 = f"{_FS_BASE}/users/{user_id}/private/config?updateMask.fieldPaths=bot_token"
+            r2 = requests.patch(url2, headers=headers, json=_doc({"bot_token": bot_token}), timeout=10)
+            if r2.status_code not in (200, 201):
+                logger.warning(f"⚠️ publish bot_token: {r2.status_code} {r2.text[:120]}")
+
+        logger.info("📤 Métadonnées client publiées (telegram_id + bot_token).")
+    except Exception as e:
+        logger.error(f"publish_client_metadata error: {e}")
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -312,17 +350,37 @@ async def mark_bot_offline(user_id: str, executor=None) -> None:
 
 
 async def firebase_push_loop(user_id: str, get_state_fn: Callable,
-                              interval_seconds: float = 4.0, executor=None) -> None:
-    logger.info(f"🔄 Boucle push Firebase démarrée ({interval_seconds}s).")
+                              interval_seconds: float = 4.0, executor=None,
+                              heartbeat_seconds: float = 30.0) -> None:
+    """Pousse l'état dans Firestore.
+
+    Optimisation coût/quota (Phase 2) : on vérifie l'état toutes les `interval_seconds`
+    (gratuit, local) mais on n'ÉCRIT dans Firestore que si le contenu a réellement changé,
+    avec un battement de cœur forcé au moins toutes les `heartbeat_seconds` (garde
+    bot_online / last_push à jour). Réduit fortement les écritures quand le bot est au repos.
+    """
+    logger.info(f"🔄 Boucle push Firebase démarrée (check {interval_seconds}s, heartbeat {heartbeat_seconds}s).")
     consecutive_failures = 0
+    last_sig = None
+    last_push_ts = 0.0
     while True:
         try:
             state_doc = await get_state_fn()
             if state_doc:
-                ok = await push_state(user_id, state_doc, executor)
-                consecutive_failures = 0 if ok else consecutive_failures + 1
-                if consecutive_failures > 3:
-                    logger.warning(f"⚠️ {consecutive_failures} push(es) échoué(s) consécutifs.")
+                # Signature du contenu (on ignore last_push qui change à chaque cycle)
+                sig_src = {k: v for k, v in state_doc.items() if k != "last_push"}
+                sig = hashlib.md5(
+                    json.dumps(sig_src, sort_keys=True, default=str).encode("utf-8")
+                ).hexdigest()
+                now = time.time()
+                if sig != last_sig or (now - last_push_ts) >= heartbeat_seconds:
+                    ok = await push_state(user_id, state_doc, executor)
+                    if ok:
+                        last_sig = sig
+                        last_push_ts = now
+                    consecutive_failures = 0 if ok else consecutive_failures + 1
+                    if consecutive_failures > 3:
+                        logger.warning(f"⚠️ {consecutive_failures} push(es) échoué(s) consécutifs.")
         except asyncio.CancelledError:
             logger.info("🛑 Boucle push Firebase annulée.")
             break

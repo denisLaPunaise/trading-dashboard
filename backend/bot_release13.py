@@ -96,6 +96,7 @@ ADMIN_SECURITY_TOKEN = '8330960414:AAEBWKUyOODxVPPpwx3DppXjKX2gOrxT7W0'
 API_ID = 0
 API_HASH = ""
 BOT_TOKEN = ""
+USER_LICENSE_KEY = ""
 
 if os.path.exists("settings.json"):
     try:
@@ -104,6 +105,7 @@ if os.path.exists("settings.json"):
             API_ID = st_data.get("TELEGRAM_API_ID", 0)
             API_HASH = st_data.get("TELEGRAM_API_HASH", "")
             BOT_TOKEN = st_data.get("TELEGRAM_BOT_TOKEN", "")
+            USER_LICENSE_KEY = st_data.get("USER_LICENSE_KEY", "")
     except Exception as e:
         print(f"Impossible de lire les clés API Telegram : {e}")
 
@@ -4871,12 +4873,7 @@ async def handle_firebase_command(cmd_id: str, cmd_data: dict) -> None:
                 stats = await get_historical_stats(days=days_int)
             if stats and firebase_sync._firebase_initialized:
                 field_key = f"global_period_{days}"
-                loop = asyncio.get_event_loop()
-                def _push_stats():
-                    firebase_sync.get_db().collection("users").document(user_id).set(
-                        {field_key: firebase_sync._safe(stats)}, merge=True
-                    )
-                await loop.run_in_executor(None, _push_stats)
+                await firebase_sync.push_state(user_id, {field_key: firebase_sync._safe(stats)})
             set_status("done", {"success": True})
 
         elif cmd_type == "kill":
@@ -4893,6 +4890,9 @@ async def handle_firebase_command(cmd_id: str, cmd_data: dict) -> None:
 
 async def _start_firebase_sync(user_id: str) -> None:
     """Démarre le push loop et le listener Firebase pour un user_id donné."""
+    # Publie d'abord les métadonnées (telegram_id + bot_token) nécessaires à l'auth du dashboard
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, firebase_sync.publish_client_metadata, user_id, BOT_TOKEN, USER_LICENSE_KEY)
     firebase_sync.start_command_listener(user_id, handle_firebase_command, asyncio.get_event_loop())
     asyncio.create_task(firebase_sync.firebase_push_loop(user_id, get_current_state_for_firebase, interval_seconds=4))
     asyncio.create_task(_firebase_push_stats_loop(user_id))
@@ -4906,13 +4906,7 @@ async def _firebase_push_stats_loop(user_id: str) -> None:
         try:
             stats_30d = await get_historical_stats(days=30)
             if stats_30d and firebase_sync._firebase_initialized:
-                loop = asyncio.get_event_loop()
-                from firebase_admin import firestore as fs
-                def _push():
-                    firebase_sync.get_db().collection("users").document(user_id).set(
-                        {"global_period_30": firebase_sync._safe(stats_30d)}, merge=True
-                    )
-                await loop.run_in_executor(None, _push)
+                await firebase_sync.push_state(user_id, {"global_period_30": firebase_sync._safe(stats_30d)})
         except asyncio.CancelledError:
             break
         except Exception as e:

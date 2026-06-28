@@ -2,29 +2,39 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // ── Licences : lecture par le bot client (pour vérifier son propre statut) ──
-    // Le bot s'authentifie avec UID = license_key, il peut lire SA licence.
-    match /licenses/{licenseKey} {
-      allow read: if request.auth != null && request.auth.uid == licenseKey;
-      // Écriture réservée au backend admin (Admin SDK bypass les règles)
-      allow write: if false;
+    // La licence du writer (uid == license_key) est-elle ACTIVE et liée à ce user ?
+    function licenseOwns(userId) {
+      return exists(/databases/$(database)/documents/licenses/$(request.auth.uid))
+        && get(/databases/$(database)/documents/licenses/$(request.auth.uid)).data.status == 'ACTIVE'
+        && get(/databases/$(database)/documents/licenses/$(request.auth.uid)).data.telegram_id == userId;
     }
 
-    // ── Données utilisateur : lecture/écriture par le bot client ──
-    // Le bot est authentifié (UID = license_key).
-    // Il peut écrire dans /users/{userId}/ si sa licence est ACTIVE dans Firestore.
+    // ── Licences ───────────────────────────────────────────────────────────
+    match /licenses/{licenseKey} {
+      // Le bot lit sa propre licence
+      allow read: if request.auth != null && request.auth.uid == licenseKey;
+      // Le bot peut écrire UNIQUEMENT le champ telegram_id sur SA licence (liaison)
+      allow update: if request.auth != null && request.auth.uid == licenseKey
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['telegram_id']);
+      // Création / suppression : Admin SDK uniquement (le bot de licence bypass les règles)
+      allow create, delete: if false;
+    }
+
+    // ── Données utilisateur ────────────────────────────────────────────────
     match /users/{userId} {
-      allow read: if request.auth != null;
+      // Dashboard (uid == telegram_id) OU bot (licence active liée à ce user)
+      allow read, write: if request.auth != null
+        && (request.auth.uid == userId || licenseOwns(userId));
 
-      allow write: if request.auth != null
-        && exists(/databases/$(database)/documents/licenses/$(request.auth.uid))
-        && get(/databases/$(database)/documents/licenses/$(request.auth.uid)).data.status == "ACTIVE";
+      // Sous-doc privé (bot_token) : bot UNIQUEMENT, jamais le dashboard
+      match /private/{document=**} {
+        allow read, write: if request.auth != null && licenseOwns(userId);
+      }
 
-      // Sous-collection commandes : même règle
+      // Commandes : dashboard ou bot
       match /commands/{cmdId} {
         allow read, write: if request.auth != null
-          && exists(/databases/$(database)/documents/licenses/$(request.auth.uid))
-          && get(/databases/$(database)/documents/licenses/$(request.auth.uid)).data.status == "ACTIVE";
+          && (request.auth.uid == userId || licenseOwns(userId));
       }
     }
   }

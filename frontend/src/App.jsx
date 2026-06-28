@@ -3,7 +3,7 @@ import { Activity, Wallet, TrendingUp, TrendingDown, Settings, XCircle, Shield, 
 import './App.css'
 import { db, auth } from './firebase'
 import { doc, collection, onSnapshot, addDoc, serverTimestamp } from 'firebase/firestore'
-import { signInAnonymously } from 'firebase/auth'
+import { signInAnonymously, signInWithCustomToken } from 'firebase/auth'
 
 // Extrait l'ID Telegram de l'utilisateur depuis initData (signé par Telegram)
 const getTelegramUserId = () => {
@@ -173,7 +173,27 @@ function App() {
 
     const setup = async () => {
       try {
-        await signInAnonymously(auth);
+        const initData = window?.Telegram?.WebApp?.initData || '';
+        if (initData) {
+          // Production : on échange l'initData signé par Telegram contre un token Firebase lié au telegram_id
+          const resp = await fetch('/api/dashboard-auth', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ initData }),
+          });
+          if (!resp.ok) {
+            setError("Authentification refusée. Ouvre ce dashboard depuis ton bot Telegram.");
+            return;
+          }
+          const { token } = await resp.json();
+          await signInWithCustomToken(auth, token);
+        } else if (import.meta.env.DEV) {
+          // Dev local uniquement (hors Telegram) — accès limité par les règles strictes
+          await signInAnonymously(auth);
+        } else {
+          setError("Impossible d'identifier l'utilisateur Telegram. Ouvre ce dashboard depuis ton bot Telegram.");
+          return;
+        }
         const uid = getTelegramUserId();
         if (!uid) {
           setError("Impossible d'identifier l'utilisateur Telegram. Ouvre ce dashboard depuis ton bot Telegram.");
