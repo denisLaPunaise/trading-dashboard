@@ -1,5 +1,9 @@
 import asyncio
+import io
+import json
+import os
 import re
+import zipfile
 import gspread
 import uuid
 from datetime import datetime, timedelta
@@ -119,6 +123,73 @@ COL_HWID = 5       # E: L'ID du PC
 COL_EXP = 6        # F: Date Expiration (JJ/MM/AAAA)
 COL_CONFIG_VER = 8 # H: Config Version min
 ROW_CONFIG_VER = 2 # Ligne Config Version min
+
+# ── Package client ────────────────────────────────────────────────────────────
+# Chemin vers le .exe compilé (à mettre à jour à chaque nouvelle version)
+BOT_EXE_PATH = os.path.join(os.path.dirname(__file__), "Bot_FTMO_V14.0.0.exe")
+
+SETTINGS_TEMPLATE = {
+    "USER_LICENSE_KEY": "",
+    "FIREBASE_EMAIL": "",
+    "FIREBASE_PASSWORD": "",
+    "TELEGRAM_API_ID": 0,
+    "TELEGRAM_API_HASH": "",
+    "TELEGRAM_BOT_TOKEN": "",
+    "TELEGRAM_DESTINATION_ID": 0,
+    "MT5_PATH": "C:\\Program Files\\MetaTrader 5\\terminal64.exe",
+    "RISK_PERCENT_GOLD": 0.008,
+    "RISK_PERCENT_OTHER": 0.008,
+    "RISK_PERCENT_VIP": 0.008,
+    "RISK_PERCENT_FREE": 0.008,
+    "RISK_PERCENT_SPACE": 0.008,
+    "RISK_PERCENT_LIGUE": 0.008,
+    "RISK_PERCENT_PERSO": 0.008,
+    "RISK_PERCENT_INDICES": 0.008,
+    "RISK_PERCENT_MDT_VIP": 0.008,
+    "RISK_PERCENT_MDT_FREE": 0.008,
+    "FIXED_LOT_SABR_FREE": 0.06,
+    "FIXED_LOT_SABR_VIP": 0.06,
+    "MAX_DAILY_DRAWDOWN": 0.05,
+    "TRAILING_STOP_PIPS": 85,
+    "SOFT_SL_PERCENT": 0.3,
+    "SABR_TRAILING_ACTIVE": False,
+    "SABR_ANTI_DOUBLON_ACTIVE": True,
+    "SABR_FORWARD_ACTIVE": True,
+    "MUTED_CHANNELS": [],
+    "CHANNEL_TP1_PCT": {},
+    "TIME_PRIME_RANGES": [[8, 17]],
+    "TIME_OFF_PEAK_FACTOR": 0.5,
+    "DAY_RISK_FACTORS": {"0": 1.0, "1": 1.0, "2": 1.0, "3": 1.0, "4": 1.0, "5": 1.0, "6": 1.0}
+}
+
+def generate_client_package(client_name: str, key: str, fb_email: str, fb_password: str) -> tuple:
+    """
+    Génère un ZIP en mémoire contenant :
+    - settings.json pré-rempli (clé + Firebase + valeurs par défaut)
+    - Bot_FTMO_V14.0.0.exe (si disponible sur le VPS)
+
+    Retourne (zip_bytes: io.BytesIO, filename: str, exe_included: bool)
+    """
+    settings = dict(SETTINGS_TEMPLATE)
+    settings["USER_LICENSE_KEY"] = key
+    settings["FIREBASE_EMAIL"]   = fb_email or ""
+    settings["FIREBASE_PASSWORD"] = fb_password or ""
+
+    settings_bytes = json.dumps(settings, indent=4, ensure_ascii=False).encode("utf-8")
+
+    buf = io.BytesIO()
+    exe_included = False
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("settings.json", settings_bytes)
+        if os.path.isfile(BOT_EXE_PATH):
+            zf.write(BOT_EXE_PATH, arcname="Bot_FTMO_V14.0.0.exe")
+            exe_included = True
+    buf.seek(0)
+
+    safe_name = re.sub(r"[^a-zA-Z0-9_-]", "", client_name) or "client"
+    filename = f"FTMO_Bot_{safe_name}.zip"
+    return buf, filename, exe_included
+
 
 # ==========================================
 # 🔌 CONNEXION GOOGLE SHEET
@@ -411,21 +482,32 @@ async def main_handler(event):
             unique_id = str(uuid.uuid4()).split('-')[1].upper() + str(uuid.uuid4()).split('-')[2].upper()
             new_key = f"FTMO-{unique_id}"
             
-            await event.reply("⏳ Création...")
+            await event.reply("⏳ Création de la licence et du package client...")
             success, info, fb_email, fb_password = await asyncio.to_thread(add_license_row, user, new_key, days)
 
             if success:
-                reply = (f"✅ **CLÉ GÉNÉRÉE**\n"
-                         f"👤 Client: {user}\n"
-                         f"🔑 Clé: `{new_key}`\n"
-                         f"📝 {info}")
-                if fb_email:
-                    reply += (f"\n\n🔐 **Credentials Firebase (à mettre dans settings.json)**\n"
-                              f"`FIREBASE_EMAIL`: `{fb_email}`\n"
-                              f"`FIREBASE_PASSWORD`: `{fb_password}`")
-                else:
-                    reply += "\n\n⚠️ Compte Firebase non créé (Firebase désactivé)."
-                await event.reply(reply)
+                # Génération du ZIP
+                zip_buf, zip_name, exe_included = generate_client_package(user, new_key, fb_email, fb_password)
+
+                recap = (f"✅ **PACKAGE CLIENT GÉNÉRÉ**\n"
+                         f"👤 Client : {user}\n"
+                         f"🔑 Clé : `{new_key}`\n"
+                         f"📝 {info}\n\n"
+                         f"📦 Le ZIP contient :\n"
+                         f"  • `settings.json` pré-rempli\n"
+                         f"{'  • `Bot_FTMO_V14.0.0.exe`' if exe_included else '  ⚠️ exe absent du VPS (ajouter `Bot_FTMO_V14.0.0.exe` à côté du bot)'}\n\n"
+                         f"📋 **Ce que le client doit remplir dans settings.json :**\n"
+                         f"  • `TELEGRAM_API_ID` et `TELEGRAM_API_HASH` → my.telegram.org\n"
+                         f"  • `TELEGRAM_BOT_TOKEN` → BotFather `/newbot`")
+
+                await event.reply(recap)
+                await event.client.send_file(
+                    event.chat_id,
+                    zip_buf,
+                    file_name=zip_name,
+                    force_document=True,
+                    caption=f"📦 Package prêt pour {user}"
+                )
             else:
                 await event.reply(f"❌ Erreur: {info}")
             
