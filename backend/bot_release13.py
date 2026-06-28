@@ -78,7 +78,7 @@ SECURITY_PIN = str(random.randint(1000, 9999))
 # ==========================================
 # 🔐 CONFIGURATION DISTRIBUTION (LICENCE)
 # ==========================================
-VERSION_BOT = "13.5.8"
+VERSION_BOT = "14.0.0"
 URL_LICENCE = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR15Wf5C2MTeG_4pb9rCfrTpt-qWHa-Pp49LdKXtuTsx6Rq1YiVRDo4Zi2L9-w3d19ruenFNDBRaknm/pub?gid=0&single=true&output=csv"
 
 # ==========================================
