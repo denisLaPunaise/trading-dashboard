@@ -9,6 +9,7 @@ import uuid
 from datetime import datetime, timedelta
 from oauth2client.service_account import ServiceAccountCredentials
 from telethon import TelegramClient, events
+from telethon.tl.types import DocumentAttributeFilename
 
 # --- FIREBASE ADMIN SDK (pour sync licences vers Firestore + création comptes Auth) ---
 try:
@@ -188,6 +189,7 @@ def generate_client_package(client_name: str, key: str, fb_email: str, fb_passwo
 
     safe_name = re.sub(r"[^a-zA-Z0-9_-]", "", client_name) or "client"
     filename = f"FTMO_Bot_{safe_name}.zip"
+    buf.name = filename  # Telethon utilise .name pour nommer un fichier en mémoire
     return buf, filename, exe_included
 
 
@@ -504,7 +506,7 @@ async def main_handler(event):
                 await event.client.send_file(
                     event.chat_id,
                     zip_buf,
-                    file_name=zip_name,
+                    attributes=[DocumentAttributeFilename(zip_name)],
                     force_document=True,
                     caption=f"📦 Package prêt pour {user}"
                 )
