@@ -69,6 +69,7 @@ def publish_client_metadata(user_id: str, bot_token: str, license_key: str) -> N
     """
     if not _firebase_initialized:
         return
+    ok = True
     try:
         token = _get_token()
         if not token:
@@ -80,6 +81,7 @@ def publish_client_metadata(user_id: str, bot_token: str, license_key: str) -> N
             url1 = f"{_FS_BASE}/licenses/{license_key}?updateMask.fieldPaths=telegram_id"
             r1 = requests.patch(url1, headers=headers, json=_doc({"telegram_id": user_id}), timeout=10)
             if r1.status_code not in (200, 201):
+                ok = False
                 logger.warning(f"⚠️ publish telegram_id: {r1.status_code} {r1.text[:120]}")
 
         # 2. bot_token dans le doc privé (lisible par l'Admin SDK serveur uniquement)
@@ -87,9 +89,13 @@ def publish_client_metadata(user_id: str, bot_token: str, license_key: str) -> N
             url2 = f"{_FS_BASE}/users/{user_id}/private/config?updateMask.fieldPaths=bot_token"
             r2 = requests.patch(url2, headers=headers, json=_doc({"bot_token": bot_token}), timeout=10)
             if r2.status_code not in (200, 201):
+                ok = False
                 logger.warning(f"⚠️ publish bot_token: {r2.status_code} {r2.text[:120]}")
 
-        logger.info("📤 Métadonnées client publiées (telegram_id + bot_token).")
+        if ok:
+            logger.info("📤 Métadonnées client publiées (telegram_id + bot_token).")
+        else:
+            logger.warning("⚠️ Publication métadonnées INCOMPLÈTE — déploie les règles Firestore strictes (Phase 1).")
     except Exception as e:
         logger.error(f"publish_client_metadata error: {e}")
 
