@@ -173,32 +173,40 @@ function App() {
 
     const setup = async () => {
       try {
-        const initData = window?.Telegram?.WebApp?.initData || '';
-        if (initData) {
-          // Production : on échange l'initData signé par Telegram contre un token Firebase lié au telegram_id
-          const resp = await fetch('/api/dashboard-auth', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ initData }),
-          });
-          if (!resp.ok) {
-            setError("Authentification refusée. Ouvre ce dashboard depuis ton bot Telegram.");
+        const tgId = getTelegramUserId();
+        if (!tgId) {
+          setError("Impossible d'identifier l'utilisateur Telegram. Ouvre ce dashboard depuis ton bot Telegram.");
+          return;
+        }
+
+        // Réutilisation de session : si Firebase a déjà une session valide pour ce telegram_id,
+        // on saute l'appel à la fonction Vercel (ouverture quasi instantanée, pas de cold start).
+        await auth.authStateReady();
+        if (auth.currentUser?.uid !== tgId) {
+          const initData = window?.Telegram?.WebApp?.initData || '';
+          if (initData) {
+            // On échange l'initData signé par Telegram contre un token Firebase lié au telegram_id
+            const resp = await fetch('/api/dashboard-auth', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ initData }),
+            });
+            if (!resp.ok) {
+              setError("Authentification refusée. Ouvre ce dashboard depuis ton bot Telegram.");
+              return;
+            }
+            const { token } = await resp.json();
+            await signInWithCustomToken(auth, token);
+          } else if (import.meta.env.DEV) {
+            // Dev local uniquement (hors Telegram) — accès limité par les règles strictes
+            await signInAnonymously(auth);
+          } else {
+            setError("Impossible d'identifier l'utilisateur Telegram. Ouvre ce dashboard depuis ton bot Telegram.");
             return;
           }
-          const { token } = await resp.json();
-          await signInWithCustomToken(auth, token);
-        } else if (import.meta.env.DEV) {
-          // Dev local uniquement (hors Telegram) — accès limité par les règles strictes
-          await signInAnonymously(auth);
-        } else {
-          setError("Impossible d'identifier l'utilisateur Telegram. Ouvre ce dashboard depuis ton bot Telegram.");
-          return;
         }
-        const uid = getTelegramUserId();
-        if (!uid) {
-          setError("Impossible d'identifier l'utilisateur Telegram. Ouvre ce dashboard depuis ton bot Telegram.");
-          return;
-        }
+
+        const uid = tgId;
         setUserId(uid);
         setIsFetching(true);
         const userRef = doc(db, 'users', uid);
