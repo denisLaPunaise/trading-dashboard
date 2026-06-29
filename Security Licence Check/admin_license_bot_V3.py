@@ -265,7 +265,7 @@ def update_sheet(license_key, pc_id):
 
             if not current_hwid or current_hwid == "":
                 sheet.update_cell(cell.row, COL_HWID, pc_id)
-                fb_sync_license(license_key, row_vals[0] if 'row_vals' in dir() else "", sheet.cell(cell.row, COL_STATUS).value or "ACTIVE", hwid=pc_id)
+                fb_sync_license(license_key, sheet.cell(cell.row, COL_USER).value or "", sheet.cell(cell.row, COL_STATUS).value or "ACTIVE", hwid=pc_id)
                 print(f"💾 SUCCÈS : HWID {pc_id} enregistré pour {license_key}")
                 return "NEW_REGISTER"
             
