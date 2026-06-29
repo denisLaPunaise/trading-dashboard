@@ -3,6 +3,7 @@ import math
 import re
 import time
 import random
+import secrets
 import os
 import json
 import csv
@@ -61,8 +62,8 @@ from telethon.errors import MessageNotModifiedError, MessageIdInvalidError
 import subprocess # <--- Pour la commande heure
 
 # --- SÉCURITÉ ---
-# On génère un code PIN aléatoire à 4 chiffres à chaque démarrage
-SECURITY_PIN = str(random.randint(1000, 9999))
+# Code PIN à 6 chiffres, source cryptographique (secrets), régénéré à chaque démarrage
+SECURITY_PIN = str(secrets.randbelow(900000) + 100000)
 
 # ==========================================
 # 🔐 CONFIGURATION DISTRIBUTION (LICENCE)

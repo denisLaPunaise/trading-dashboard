@@ -1,27 +1,14 @@
 # -*- mode: python ; coding: utf-8 -*-
-# V14.0.0 — Migration SaaS Firebase (push Firestore + listener commandes)
-# serviceAccountKey.json doit être placé à côté du .exe (non embarqué)
+# V14.0.0 — Migration SaaS Firebase V2 (Auth email/password REST, pas d'Admin SDK côté client)
 
 from PyInstaller.utils.hooks import collect_all
 
-# Collecte automatique de toutes les dépendances Firebase + gRPC + certifi
-fb_d,    fb_b,    fb_h    = collect_all('firebase_admin')
-fs_d,    fs_b,    fs_h    = collect_all('google.cloud.firestore_v1')
-auth_d,  auth_b,  auth_h  = collect_all('google.auth')
-api_d,   api_b,   api_h   = collect_all('google.api_core')
-grpc_d,  grpc_b,  grpc_h  = collect_all('grpc')
-proto_d, proto_b, proto_h = collect_all('proto')
-cert_d,  cert_b,  cert_h  = collect_all('certifi')
+cert_d, cert_b, cert_h = collect_all('certifi')
 
-all_datas    = fb_d    + fs_d    + auth_d  + api_d   + grpc_d  + proto_d + cert_d
-all_binaries = fb_b    + fs_b    + auth_b  + api_b   + grpc_b  + proto_b + cert_b
-all_hidden   = fb_h    + fs_h    + auth_h  + api_h   + grpc_h  + proto_h + cert_h + [
+all_datas    = cert_d
+all_binaries = cert_b
+all_hidden   = cert_h + [
     'firebase_sync',
-    'google.oauth2.service_account',
-    'google.oauth2.credentials',
-    'google.protobuf',
-    'google.protobuf.descriptor',
-    'google.protobuf.message',
     'requests',
     'urllib3',
     'charset_normalizer',
