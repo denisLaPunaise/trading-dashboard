@@ -68,7 +68,7 @@ SECURITY_PIN = str(random.randint(1000, 9999))
 # 🔐 CONFIGURATION DISTRIBUTION (LICENCE)
 # ==========================================
 VERSION_BOT = "14.0.0"
-URL_LICENCE = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR15Wf5C2MTeG_4pb9rCfrTpt-qWHa-Pp49LdKXtuTsx6Rq1YiVRDo4Zi2L9-w3d19ruenFNDBRaknm/pub?gid=0&single=true&output=csv"
+# (URL_LICENCE retire — licence verifiee via Firestore, Phase 4)
 
 # ==========================================
 # ⚙️ CONFIGURATION GLOBALE
@@ -79,7 +79,7 @@ URL_LICENCE = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR15Wf5C2MTeG_4pb
 #API_HASH = '37b283f8c146b27dcd4915102cc50da8'
 #BOT_TOKEN = '8330960414:AAEBWKUyOODxVPPpwx3DppXjKX2gOrxT7W0'
 
-ADMIN_SECURITY_TOKEN = '8330960414:AAEBWKUyOODxVPPpwx3DppXjKX2gOrxT7W0'
+# (ADMIN_SECURITY_TOKEN retire de l'exe — alertes relayees par le VPS, Phase 4)
 
 # --- SÉCURITÉ : Lecture des clés API depuis settings.json ---
 API_ID = 0
@@ -131,7 +131,7 @@ CHANNEL_LIST = [-1002139883659, -1001890808461, -5093508256, -1002684710444, -10
 # Ton Groupe de Logs
 ADMIN_ID = 0 #-1003692316672
 # Groupe gestion utilisation key
-SECURITY_CHANNEL_ID = -1003872071233
+# (SECURITY_CHANNEL_ID retire — gere cote VPS)
 
 # --- Identité du Bot ---
 MAGIC_NUMBER = 999000          # ID unique des trades de ce bot
@@ -433,153 +433,129 @@ def sync_windows_time():
         logger.warning("⚠️ Impossible de synchro l'heure (Lancer en Admin recommandé).")
 
 def get_pc_fingerprint():
-    """Génère un ID unique basé sur le matériel (Carte mère/Réseau)"""
+    """Empreinte machine stable basée sur le MachineGuid Windows (repli : adresse MAC)."""
+    import hashlib as _hl
+    src = None
     try:
-        # On prend l'adresse MAC convertie en hexadécimal
-        return ':'.join(['{:02x}'.format((uuid.getnode() >> ele) & 0xff)
-        for ele in range(0,8*6,8)][::-1]).upper()
-    except:
-        return "UNKNOWN_ID"
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography") as _k:
+            src, _ = winreg.QueryValueEx(_k, "MachineGuid")
+    except Exception:
+        src = None
+    if not src:
+        try:
+            src = str(uuid.getnode())
+        except Exception:
+            return "UNKNOWN_ID"
+    return _hl.sha256(str(src).encode()).hexdigest()[:32].upper()
+
 
 def check_license_online(silent=False):
-    """Vérifie la licence, le HWID et la Date d'expiration"""
-    if not silent: logger.info("🌍 Vérification de la licence en cours...")
-    
-    # 1. Charger la clé locale
-    my_key = ""
+    """Vérifie la licence via Firestore (statut, version, HWID, expiration).
+
+    Les alertes (connexion / vol / expiration) sont écrites dans Firestore et relayées
+    sur Telegram par le bot de licence (VPS) — aucun token Telegram n'est embarqué dans l'exe.
+    """
+    if not silent:
+        logger.info("🌍 Vérification de la licence en cours...")
+
+    # 1. Clé + identifiants Firebase depuis settings.json
+    my_key = fb_email = fb_password = ""
     if os.path.exists("settings.json"):
         try:
-            with open("settings.json", "r") as f:
+            with open("settings.json", "r", encoding="utf-8") as f:
                 data = json.load(f)
                 my_key = data.get("USER_LICENSE_KEY", "").strip()
-        except: pass
-    
+                fb_email = data.get("FIREBASE_EMAIL", "").strip()
+                fb_password = data.get("FIREBASE_PASSWORD", "").strip()
+        except Exception:
+            pass
+
     if not my_key:
-        if not silent: logger.error("❌ ERREUR: Aucune clé de licence trouvée dans settings.json")
+        if not silent: logger.error("❌ ERREUR : aucune clé de licence dans settings.json")
+        return False
+    if not fb_email or not fb_password:
+        if not silent: logger.error("❌ ERREUR : identifiants Firebase manquants dans settings.json")
         return False
 
-    # 2. Générer l'ID Unique de ce PC
-    current_pc_id = get_pc_fingerprint()
-
-    # 3. Vérifier sur Google Sheet
-    try:
-        response = requests.get(URL_LICENCE)
-        if response.status_code != 200:
-            if not silent: logger.error("❌ Erreur de connexion au serveur de licence.")
-            return False
-            
-        lines = response.text.splitlines()
-        reader = csv.DictReader(lines)
-        
-        found = False
-        user_name = "Inconnu"
-        
-        for row in reader:
-            if row['CLE_LICENCE'] == my_key:
-                found = True
-                user_name = row['UTILISATEUR']
-                status = row['STATUS']
-                ver_min = row['VERSION_MIN']
-                registered_hwid = row.get('HWID', '').strip()
-                # On récupère la date (Colonne F). Adapte le nom 'DATE_FIN' si ton entête CSV est différent
-                date_fin_str = row.get('DATE_FIN', '').strip() 
-                
-                # --- A. Vérification BAN ---
-                if status != "ACTIVE":
-                    if not silent: logger.error(f"⛔ ACCÈS REFUSÉ. Statut: {status}")
-                    return False
-                
-                # --- B. Vérification Version (Seulement au démarrage, pas en silent) ---
-                if not silent and is_version_older(VERSION_BOT, ver_min):
-                    logger.error("\n" + "="*40)
-                    logger.error(f"⛔ VERSION OBSOLÈTE DÉTECTÉE")
-                    logger.error(f"📉 Votre version   : {VERSION_BOT}")
-                    logger.error(f"📈 Version requise : {ver_min}")
-                    logger.error("="*40)
-                    logger.error("💡 Une mise à jour est disponible sur Telegram.")
-                    logger.error("="*40 + "\n")
-                    # On ne bloque pas forcément ici pour le watchdog, mais au démarrage oui
-                    if not silent:
-                        logger.info("Appuyez sur Entrée pour quitter...")
-                        # input() # On évite le input() bloquant si c'est un restart auto
-                        return False
-                
-                # --- C. VÉRIFICATION ID PC ---
-                if registered_hwid != "" and registered_hwid != current_pc_id:
-                    if not silent:
-                        logger.error("⛔ ERREUR : Licence liée à un autre ordinateur.")
-                        logger.error(f"ID Attendu : {registered_hwid}")
-                        logger.error(f"Votre ID   : {current_pc_id}")
-                        
-                        # Alerte Vol (Seulement si pas silent)
-                        try:
-                            msg_vol = (f"🚨 **ALERTE SÉCURITÉ**\n"
-                                       f"Tentative clé `{my_key}` ({user_name})\n"
-                                       f"ID Voleur: `{current_pc_id}`")
-                            url = f"https://api.telegram.org/bot{ADMIN_SECURITY_TOKEN}/sendMessage"
-                            payload = {"chat_id": SECURITY_CHANNEL_ID, "text": msg_vol, "parse_mode": "Markdown"}            
-                            requests.post(url, json=payload, timeout=5)
-                        except: pass
-
-                    return False
-
-                # --- D. VÉRIFICATION DATE ---
-                if date_fin_str and date_fin_str.lower() not in ["unlimited", "", "vie"]:
-                    try:
-                        exp_date = datetime.strptime(date_fin_str, "%d/%m/%Y")
-                        exp_date = exp_date + timedelta(days=1)
-                        
-                        if datetime.now() > exp_date:
-                            # 👇 LE SIGNAL DE LA MORT (Toujours envoyé, même en silent) 👇
-                            try:
-                                msg_die = (f"⌛ **SIGNAL EXPIRATION**\n"
-                                           f"Clé: `{my_key}`")
-                                url = f"https://api.telegram.org/bot{ADMIN_SECURITY_TOKEN}/sendMessage"
-                                # On envoie le message au canal de sécurité
-                                requests.post(url, json={"chat_id": SECURITY_CHANNEL_ID, "text": msg_die, "parse_mode": "Markdown"}, timeout=5)
-                            except: pass
-                            # 👆 FIN DU SIGNAL 👆
-
-                            if not silent: 
-                                logger.error(f"⛔ LICENCE EXPIRÉE LE {date_fin_str}")
-
-                            return False
-                    except: pass
-                
-        if not found:
-            if not silent: logger.error(f"❌ Clé de licence inconnue : {my_key}")
+    # 2. Authentification Firebase (échec = compte désactivé = licence bannie)
+    if not firebase_sync._firebase_initialized:
+        if not firebase_sync.init_firebase(fb_email, fb_password):
+            if not silent:
+                logger.error("⛔ ACCÈS REFUSÉ : authentification Firebase échouée (licence bannie ou identifiants invalides).")
             return False
 
-        # --- E. LE MOUCHARD (Succès) ---
-        # On n'envoie le message Telegram QUE si on n'est PAS en mode silencieux
+    # 3. Lecture de la licence dans Firestore
+    lic = firebase_sync.get_license(my_key)
+    if lic is None:
+        # Tolérance : ne pas tuer un bot déjà lancé sur un simple incident réseau
+        if silent:
+            return True
+        logger.error(f"❌ Licence introuvable ou serveur injoignable : {my_key}")
+        return False
+
+    user_name       = lic.get("user", "Inconnu") or "Inconnu"
+    status          = lic.get("status", "")
+    ver_min         = str(lic.get("ver_min", "") or "")
+    registered_hwid = str(lic.get("hwid", "") or "").strip()
+    date_fin_str    = str(lic.get("date_fin", "") or "").strip()
+    current_pc_id   = get_pc_fingerprint()
+
+    # --- A. Statut (BAN / EXPIRED / ...) ---
+    if status != "ACTIVE":
+        if not silent: logger.error(f"⛔ ACCÈS REFUSÉ. Statut : {status}")
+        return False
+
+    # --- B. Version minimale ---
+    if not silent and ver_min and is_version_older(VERSION_BOT, ver_min):
+        logger.error("\n" + "=" * 40)
+        logger.error("⛔ VERSION OBSOLÈTE DÉTECTÉE")
+        logger.error(f"📉 Votre version   : {VERSION_BOT}")
+        logger.error(f"📈 Version requise : {ver_min}")
+        logger.error("=" * 40)
+        logger.error("💡 Une mise à jour est disponible sur Telegram.")
+        logger.error("=" * 40 + "\n")
+        return False
+
+    # --- C. Expiration ---
+    if date_fin_str and date_fin_str.lower() not in ["unlimited", "", "vie"]:
+        try:
+            exp_date = datetime.strptime(date_fin_str, "%d/%m/%Y") + timedelta(days=1)
+            if datetime.now() > exp_date:
+                firebase_sync.write_security_event(
+                    "expiry", my_key, f"⌛ Licence expirée le {date_fin_str}", {"user": user_name})
+                if not silent: logger.error(f"⛔ LICENCE EXPIRÉE LE {date_fin_str}")
+                return False
+        except Exception:
+            pass
+
+    # --- D. HWID ---
+    if registered_hwid == "":
+        # Première inscription de cette machine
+        firebase_sync.register_hwid(my_key, current_pc_id)
+        if not silent: logger.info("💾 HWID enregistré pour cette machine.")
+    elif registered_hwid != current_pc_id:
+        firebase_sync.write_security_event(
+            "theft", my_key,
+            f"🚨 Tentative sur une autre machine — clé `{my_key}` ({user_name})",
+            {"expected_hwid": registered_hwid, "got_hwid": current_pc_id})
         if not silent:
-            try:
-                ip_public = requests.get('https://api.ipify.org', timeout=5).text
-                
-                msg_spy = (f"🕵️ **CONNEXION RÉUSSIE**\n\n"
-                           f"👤 Client: **{user_name}**\n"
-                           f"🔑 Clé: `{my_key}`\n"
-                           f"💻 PC ID: `{current_pc_id}`\n"
-                           f"🌐 IP: {ip_public}")
-                
-                url = f"https://api.telegram.org/bot{ADMIN_SECURITY_TOKEN}/sendMessage"
-                payload = {
-                    "chat_id": SECURITY_CHANNEL_ID, 
-                    "text": msg_spy, 
-                    "parse_mode": "Markdown"
-                }            
-                requests.post(url, json=payload, timeout=5)
-                
-            except Exception as e:
-                logger.error(f"Spy Error: {e}")
+            logger.error("⛔ ERREUR : licence liée à un autre ordinateur.")
+        return False
 
-            logger.info(f"✅ Licence Validée. Bienvenue {user_name} !")
-            
-        return True
+    # --- E. Mouchard de connexion (succès, au démarrage uniquement) ---
+    if not silent:
+        try:
+            ip_public = requests.get("https://api.ipify.org", timeout=5).text
+        except Exception:
+            ip_public = "?"
+        firebase_sync.write_security_event(
+            "connection", my_key, f"🕵️ Connexion réussie — {user_name}",
+            {"user": user_name, "pc_id": current_pc_id, "ip": ip_public})
+        logger.info(f"✅ Licence Validée. Bienvenue {user_name} !")
 
-    except Exception as e:
-        if not silent: logger.error(f"❌ Erreur critique licence : {e}")
-        return False # Dans le doute, on bloque ou on laisse passer selon ta sévérité
+    return True
+
     
 def is_version_older(current_ver, min_ver):
     """Compare deux versions (ex: '10.1.1' et '7.2'). Retourne True si obsolète."""

@@ -5,6 +5,7 @@ import os
 import re
 import zipfile
 import gspread
+import requests
 import uuid
 from datetime import datetime, timedelta
 from oauth2client.service_account import ServiceAccountCredentials
@@ -113,7 +114,11 @@ API_HASH = '37b283f8c146b27dcd4915102cc50da8'
 SHEET_NAME = "FTMO_BOT_LICENSES" # <--- METS LE VRAI NOM ICI
 
 # ID du canal de sécurité où arrivent les messages (Check Licence)
-SECURITY_CHANNEL_ID = -1003872071233 
+SECURITY_CHANNEL_ID = -1003872071233
+
+# Token du bot de sécurité — UNIQUEMENT sur le VPS, jamais dans l'exe distribué.
+# À remplir avec le NOUVEAU token (après révocation de l'ancien via BotFather).
+SECURITY_BOT_TOKEN = ""
 
 # MAPPAGE DES COLONNES 
 COL_USER = 1       # A: Nom du client
@@ -343,7 +348,10 @@ def reset_hwid(key):
         cell = sheet.find(key)
         if not cell: return False, "Clé introuvable."
         sheet.update_cell(cell.row, COL_HWID, "")
-        return True, "HWID Reset OK."
+        # Efface aussi le HWID dans Firestore (sinon le bot resterait bloqué « autre PC »)
+        if FIREBASE_ENABLED and _fb_db:
+            _fb_db.collection("licenses").document(key).set({"hwid": ""}, merge=True)
+        return True, "HWID Reset OK (Sheet + Firestore)."
     except Exception as e: return False, str(e)
 
 def ban_license(key):
@@ -767,8 +775,54 @@ async def main_handler(event):
                           "     - 'unlimited' pour (illimité)")
 
 
+async def security_events_relay():
+    """Relaie les /security_events (écrits par les bots clients) vers le canal Telegram.
+    Aucun token côté client : c'est le compte du bot de licence qui poste."""
+    if not (FIREBASE_ENABLED and _fb_db):
+        return
+    print("📡 Relais des événements de sécurité activé.")
+    seen = set()
+    while True:
+        try:
+            def _fetch():
+                docs = _fb_db.collection("security_events").where("relayed", "==", False).limit(20).stream()
+                return [(d.id, d.to_dict()) for d in docs]
+            for doc_id, data in await asyncio.to_thread(_fetch):
+                if doc_id in seen:
+                    continue
+                seen.add(doc_id)
+                msg = data.get("message", "Événement sécurité")
+                details = []
+                if data.get("user"):    details.append(f"👤 {data['user']}")
+                if data.get("ip"):       details.append(f"🌐 IP : {data['ip']}")
+                if data.get("pc_id"):    details.append(f"💻 PC : {data['pc_id']}")
+                if data.get("got_hwid"): details.append(f"💻 Machine : {data['got_hwid']}")
+                full = msg + ("\n" + "\n".join(details) if details else "")
+                if not SECURITY_BOT_TOKEN:
+                    print("⚠️ SECURITY_BOT_TOKEN non configuré — événement non relayé.")
+                    seen.discard(doc_id)
+                    continue
+                try:
+                    def _send(_t=full):
+                        requests.post(
+                            f"https://api.telegram.org/bot{SECURITY_BOT_TOKEN}/sendMessage",
+                            json={"chat_id": SECURITY_CHANNEL_ID, "text": _t}, timeout=10)
+                    await asyncio.to_thread(_send)
+                except Exception as e:
+                    print(f"⚠️ relais envoi : {e}")
+                    seen.discard(doc_id)  # on réessaiera au prochain tour
+                    continue
+                await asyncio.to_thread(
+                    lambda _id=doc_id: _fb_db.collection("security_events").document(_id).update({"relayed": True})
+                )
+        except Exception as e:
+            print(f"⚠️ security_events_relay : {e}")
+        await asyncio.sleep(5)
+
+
 async def main():
     print("🤖 ADMIN BOT : Prêt à gérer les licences.")
+    asyncio.create_task(security_events_relay())
     await client_tg.run_until_disconnected()
 
 if __name__ == '__main__':

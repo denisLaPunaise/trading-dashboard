@@ -101,6 +101,71 @@ def publish_client_metadata(user_id: str, bot_token: str, license_key: str) -> N
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# LICENCE & SÉCURITÉ (lecture synchrone — utilisé au démarrage)
+# ════════════════════════════════════════════════════════════════════════════
+
+def get_license(license_key: str):
+    """Lit /licenses/{key} via REST (synchrone). Retourne le dict des champs, ou None."""
+    if not _firebase_initialized:
+        return None
+    try:
+        token = _get_token()
+        url = f"{_FS_BASE}/licenses/{license_key}"
+        r = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=10)
+        if r.status_code == 200:
+            return _from_doc(r.json().get("fields", {}))
+        if r.status_code == 404:
+            return None
+        logger.error(f"get_license {r.status_code}: {r.text[:120]}")
+        return None
+    except Exception as e:
+        logger.error(f"get_license error: {e}")
+        return None
+
+
+def register_hwid(license_key: str, hwid: str) -> bool:
+    """Inscrit le HWID sur la licence du bot (autorisé par les règles si le champ était vide)."""
+    if not _firebase_initialized:
+        return False
+    try:
+        token = _get_token()
+        url = f"{_FS_BASE}/licenses/{license_key}?updateMask.fieldPaths=hwid"
+        r = requests.patch(url, headers={"Authorization": f"Bearer {token}"},
+                           json=_doc({"hwid": hwid}), timeout=10)
+        if r.status_code in (200, 201):
+            return True
+        logger.warning(f"register_hwid {r.status_code}: {r.text[:120]}")
+        return False
+    except Exception as e:
+        logger.error(f"register_hwid error: {e}")
+        return False
+
+
+def write_security_event(event_type: str, license_key: str, message: str, extra: dict = None) -> None:
+    """Écrit un événement dans /security_events ; le bot de licence (VPS) le relaie sur Telegram."""
+    if not _firebase_initialized:
+        return
+    try:
+        token = _get_token()
+        doc = {
+            "type":        event_type,
+            "license_key": license_key,
+            "message":     message,
+            "created_at":  datetime.now(timezone.utc).isoformat(),
+            "relayed":     False,
+        }
+        if extra:
+            doc.update(_safe(extra))
+        url = f"{_FS_BASE}/security_events"
+        r = requests.post(url, headers={"Authorization": f"Bearer {token}"},
+                          json=_doc(doc), timeout=10)
+        if r.status_code not in (200, 201):
+            logger.warning(f"write_security_event {r.status_code}: {r.text[:120]}")
+    except Exception as e:
+        logger.error(f"write_security_event error: {e}")
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # GESTION DU TOKEN
 # ════════════════════════════════════════════════════════════════════════════
 
