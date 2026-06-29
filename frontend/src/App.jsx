@@ -322,13 +322,13 @@ function App() {
   };
 
   // --- RENDU ---
-  if (error) return <div style={{ color: '#ff4444', textAlign: 'center', padding: '50px', background: '#121212', height: '100vh' }}>{error}</div>
+  if (error) return <div style={{ color: '#ff4444', textAlign: 'center', padding: '50px', background: '#121212', minHeight: '100vh', boxSizing: 'border-box', overflowX: 'hidden' }}>{error}</div>
 
   // --- ÉCRAN DE DÉMARRAGE (SPLASH SCREEN) ---
   if (!dashboardData) {
     return (
-      <div style={{ width: '800px', maxWidth: '100%', margin: '0 auto', padding: '20px', backgroundColor: '#121212', minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
-        
+      <div style={{ width: '800px', maxWidth: '100%', boxSizing: 'border-box', overflowX: 'hidden', margin: '0 auto', padding: '20px', backgroundColor: '#121212', minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
+
         {/* CONTENU CENTRAL DU SPLASH SCREEN */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center' }}>
           <div style={{ animation: 'logoPulse 2s infinite ease-in-out', marginBottom: '30px' }}>
