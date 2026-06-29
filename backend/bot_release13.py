@@ -20,18 +20,7 @@ import firebase_sync
 # --- LE VIDEUR POUR LE FICHIER SETTINGS ---
 SETTINGS_LOCK = threading.Lock() 
 
-# --- IMPORTS FASTAPI ---
-from fastapi import FastAPI, BackgroundTasks, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-import uvicorn
 from pydantic import BaseModel
-
-# --- security ---
-import hmac
-import hashlib
-from urllib.parse import parse_qsl
-from fastapi import Request
-from starlette.responses import JSONResponse
 
 from telethon.tl.types import KeyboardButtonWebView
 
@@ -378,75 +367,7 @@ INITIAL_VOLUMES = {} # Cache pour éviter de spammer l'historique MT5
 
 DASHBOARD_MSG_ID = None
 
-# ==========================================
-# 🌐 INITIALISATION DE L'API WEB (FASTAPI)
-# ==========================================
-app = FastAPI(title="FTMO Bot API", version="1.0")
-
-# 🛡️ CONFIGURATION CORS (Crucial pour la Web App)
-# Pour l'instant on autorise tout ('*'), on sécurisera plus tard avec le domaine Vercel exact
-# 🛡️ CONFIGURATION CORS STRICTE
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["https://trading-dashboard-three-beige.vercel.app"], # 👈 URL EXACTE ICI
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# ==========================================
-# 🛡️ LE VIGILE DE SÉCURITÉ TELEGRAM (ANTI-HACK & ANTI-REPLAY)
-# ==========================================
-@app.middleware("http")
-async def telegram_auth_middleware(request: Request, call_next):
-    # On laisse passer les requêtes de "pré-vérification" et la documentation
-    if request.method == "OPTIONS" or request.url.path in ["/docs", "/openapi.json"]:
-        return await call_next(request)
-
-    # 1. On cherche la carte d'identité Telegram
-    init_data = request.headers.get("x-telegram-init-data")
-    if not init_data:
-        return JSONResponse(status_code=401, content={"detail": "Accès refusé. Veuillez ouvrir l'application depuis Telegram."})
-
-    try:
-        parsed_data = dict(parse_qsl(init_data))
-        if 'hash' not in parsed_data:
-            return JSONResponse(status_code=401, content={"detail": "Signature manquante."})
-        
-        # --- ⏱️ NOUVEAU : VÉRIFICATION EXPIRATION (ANTI REPLAY ATTACK) ---
-        if 'auth_date' not in parsed_data:
-            return JSONResponse(status_code=401, content={"detail": "Date d'authentification manquante."})
-            
-        auth_date = int(parsed_data.get('auth_date', 0))
-        # Si le lien a été généré il y a plus de 24h (86400 secondes), on bloque !
-        if time.time() - auth_date > 86400:
-            logger.warning("🚨 TENTATIVE DE REPLAY ATTACK BLOQUÉE (Signature expirée).")
-            return JSONResponse(status_code=401, content={"detail": "Session expirée. Veuillez relancer l'application depuis Telegram."})
-        # -----------------------------------------------------------------
-
-        # 2. On vérifie la signature cryptographique
-        received_hash = parsed_data.pop('hash')
-        data_check_string = '\n'.join(f"{k}={v}" for k, v in sorted(parsed_data.items()))
-        
-        secret_key = hmac.new(b"WebAppData", BOT_TOKEN.encode(), hashlib.sha256).digest()
-        expected_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
-        
-        if expected_hash != received_hash:
-            return JSONResponse(status_code=401, content={"detail": "Piratage détecté : Mauvaise signature."})
-            
-        # 3. On vérifie que c'est bien LE MAÎTRE du bot (Toi)
-        user_data = json.loads(parsed_data.get('user', '{}'))
-        user_id = user_data.get('id')
-        
-        if ADMIN_ID != 0 and user_id != ADMIN_ID:
-            logger.warning(f"🚨 TENTATIVE D'INTRUSION BLOQUÉE ! L'utilisateur ID {user_id} a essayé d'utiliser votre lien Ngrok.")
-            return JSONResponse(status_code=403, content={"detail": "Accès refusé : Vous n'êtes pas le propriétaire de ce bot."})
-            
-    except Exception as e:
-        return JSONResponse(status_code=401, content={"detail": "Erreur de validation."})
-
-    # Si tout est bon, on laisse la requête passer vers les boutons !
-    return await call_next(request)
+# --- Ancien serveur FastAPI/Web (port 8000) retire en Phase 3 — le dashboard passe par Firebase ---
 
 # 🛡️ GLOBAL SESSION POUR EVITER LE SEMAPHORE TIMEOUT
 http_session = None
@@ -2756,119 +2677,7 @@ def _get_closed_trades_today_blocking():
     closed_list.sort(key=lambda x: x["last_time"], reverse=True)
     return closed_list
 
-@app.get("/api/dashboard")
-async def api_get_dashboard(): 
-    try:
-        acc = await run_bg(mt5.account_info)
-        day_total, day_realized, day_float = get_accurate_daily_stats()
-        
-        start_bal = acc.balance - day_realized
-        day_pct = (day_total / start_bal * 100) if start_bal > 0 else 0.0
-
-        pos_list = await run_bg(mt5.positions_get)
-        active_trades = []
-        if pos_list:
-            for p in pos_list:
-                # 🛑 NOUVEAU : On vérifie si le bot connaît ce trade
-                is_managed = (p.magic == MAGIC_NUMBER or p.ticket in MANAGED_MANUAL_TICKETS)
-                
-                otype = "BUY" if p.type == mt5.ORDER_TYPE_BUY else "SELL"
-                tick = mt5.symbol_info_tick(p.symbol)
-                current_p = tick.bid if otype == "BUY" else tick.ask
-                pips = calculate_pips(p.symbol, abs(p.price_open - current_p))
-                if (otype == "BUY" and current_p < p.price_open) or (otype == "SELL" and current_p > p.price_open):
-                    pips = -pips
-
-                open_time_str = (datetime.fromtimestamp(p.time) - timedelta(hours=1)).strftime('%H:%M')
-
-                active_trades.append({
-                    "ticket": p.ticket,
-                    "symbol": p.symbol,
-                    "type": otype,
-                    "volume": p.volume,
-                    "open_price": p.price_open,
-                    "current_price": current_p,
-                    "sl": p.sl,
-                    "tp": p.tp,
-                    "profit": p.profit,
-                    "pips": round(pips, 1),
-                    "open_time": open_time_str,
-                    "source": ACTIVE_TRADE_SOURCES.get(p.ticket, "Inconnu"),
-                    "managed": is_managed # <-- L'info cruciale pour le bouton "Suivre"
-                })
-
-        closed_trades_today = await run_bg(_get_closed_trades_today_blocking)
-
-        return {
-            "account": {
-                "balance": acc.balance,
-                "equity": acc.equity,
-                "free_margin": acc.margin_free
-            },
-            "daily_stats": {
-                **daily_stats,
-                "total_pnl": day_total,
-                "realized_pnl": day_realized,
-                "floating_pnl": day_float,
-                "percentage": day_pct
-            },
-            "settings": {
-                "risk_gold": RISK_PERCENT_GOLD,
-                "risk_indices": RISK_PERCENT_INDICES,
-                "risk_other": RISK_PERCENT_OTHER,
-                "risk_mdt_vip": RISK_PERCENT_MDT_VIP if RISK_PERCENT_MDT_VIP else 0,
-                "risk_mdt_free": RISK_PERCENT_MDT_FREE if RISK_PERCENT_MDT_FREE else 0,
-                "risk_space": RISK_PERCENT_SPACE if RISK_PERCENT_SPACE else 0,
-                "risk_ligue": RISK_PERCENT_LIGUE if RISK_PERCENT_LIGUE else 0,
-                "risk_perso": RISK_PERCENT_PERSO if RISK_PERCENT_PERSO else 0,
-                "sabr_lot_vip": FIXED_LOT_SABR_VIP,
-                "sabr_lot_free": FIXED_LOT_SABR_FREE,
-                "sabr_anti_doublon": SABR_ANTI_DOUBLON_ACTIVE,
-                "sabr_trailing": SABR_TRAILING_ACTIVE,
-                "sabr_forward": SABR_FORWARD_ACTIVE,
-                "max_dd": MAX_DAILY_DRAWDOWN,
-                "sl_suiveur": TRAILING_STOP_PIPS,
-                "sl_sell": SOFT_SL_PERCENT,
-                "muted_channels": MUTED_CHANNELS,
-                "security_triggered": security_triggered,
-                "time_off_peak": TIME_OFF_PEAK_FACTOR,
-                "prime_hours": PRIME_HOURS,
-                "day_factor_0": DAY_RISK_FACTORS.get(0, 1.0),
-                "day_factor_1": DAY_RISK_FACTORS.get(1, 1.0),
-                "day_factor_2": DAY_RISK_FACTORS.get(2, 1.0),
-                "day_factor_3": DAY_RISK_FACTORS.get(3, 1.0),
-                "day_factor_4": DAY_RISK_FACTORS.get(4, 1.0),
-                "day_factor_5": DAY_RISK_FACTORS.get(5, 1.0),
-                "day_factor_6": DAY_RISK_FACTORS.get(6, 1.0)
-            },
-            "active_trades": active_trades,
-            "closed_trades": closed_trades_today
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    
-@app.get("/api/stats")
-async def api_get_stats(days: str = "30"):
-    global CHANNEL_STATS, daily_stats # <-- Ajout de daily_stats ici
-    
-    if days == "week":
-        now = datetime.now()
-        monday = now - timedelta(days=now.weekday())
-        monday = monday.replace(hour=0, minute=0, second=0, microsecond=0)
-        data_period = await get_historical_stats(start_date_custom=monday)
-        
-        # 👇 INJECTION MAGIQUE DES PIPS EN MÉMOIRE 👇
-        data_period["pips"] = daily_stats.get("weekly_pips", 0.0)
-    else:
-        days_int = 9999 if days == "all" else int(days)
-        data_period = await get_historical_stats(days=days_int)
-        
-    return {
-        "channels_lifetime": CHANNEL_STATS,
-        "global_period": data_period
-    }
-
-@app.post("/api/update_planning")
+# ===== Logique reglages reutilisee par le handler de commandes Firebase =====
 async def api_update_planning(data: PlanningUpdate):
     global DAY_RISK_FACTORS, PRIME_HOURS, TIME_OFF_PEAK_FACTOR
     DAY_RISK_FACTORS = {int(k): v for k, v in data.day_factors.items()}
@@ -2877,107 +2686,6 @@ async def api_update_planning(data: PlanningUpdate):
     await run_bg(save_settings)
     return {"status": "success"}
 
-# --- MODÈLES DE DONNÉES (Ce qu'on attend du React) ---
-class RiskData(BaseModel):
-    asset: str
-    value: float
-
-class ToggleData(BaseModel):
-    setting: str
-
-class TradeData(BaseModel):
-    ticket: int
-
-# --- ROUTES D'ACTION ---
-@app.post("/api/update_risk")
-async def api_update_risk(data: RiskData):
-    global RISK_PERCENT_GOLD, RISK_PERCENT_INDICES, RISK_PERCENT_OTHER
-    val = data.value / 100.0
-    if data.asset == "risk_gold": RISK_PERCENT_GOLD = val
-    elif data.asset == "risk_indices": RISK_PERCENT_INDICES = val
-    elif data.asset == "risk_other": RISK_PERCENT_OTHER = val
-    await run_bg(save_settings)
-    return {"status": "success"}
-
-@app.post("/api/toggle")
-async def api_toggle(data: ToggleData):
-    global SABR_ANTI_DOUBLON_ACTIVE, SABR_TRAILING_ACTIVE
-    if data.setting == "sabr_anti_doublon": SABR_ANTI_DOUBLON_ACTIVE = not SABR_ANTI_DOUBLON_ACTIVE
-    elif data.setting == "sabr_trailing": SABR_TRAILING_ACTIVE = not SABR_TRAILING_ACTIVE
-    await run_bg(save_settings)
-    return {"status": "success"}
-
-@app.post("/api/close_trade")
-async def api_close_trade(data: TradeData):
-    # Logique pour fermer un trade depuis la Web App
-    pos = await run_bg(mt5.positions_get, ticket=data.ticket)
-    if pos:
-        p = pos[0]
-        otype = mt5.ORDER_TYPE_SELL if p.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
-        tick_p = mt5.symbol_info_tick(p.symbol)
-        price_p = tick_p.bid if otype == mt5.ORDER_TYPE_SELL else tick_p.ask
-        req = {"action": mt5.TRADE_ACTION_DEAL, "symbol": p.symbol, "volume": p.volume, "type": otype, "position": data.ticket, "price": price_p, "magic": MAGIC_NUMBER, "type_filling": mt5.ORDER_FILLING_IOC}
-        res = await run_bg(_send_order_blocking, req)
-        if res and res.retcode == mt5.TRADE_RETCODE_DONE:
-            return {"status": "success"}
-    return {"status": "error"}
-
-@app.post("/api/be_trade")
-async def api_be_trade(data: TradeData):
-    pos = await run_bg(mt5.positions_get, ticket=data.ticket)
-    if pos:
-        p = pos[0]
-        # On déplace le SL au prix d'ouverture (BE)
-        req = {"action": mt5.TRADE_ACTION_SLTP, "position": data.ticket, "sl": p.price_open, "tp": p.tp}
-        res = await run_bg(_send_order_blocking, req)
-        if res and res.retcode == mt5.TRADE_RETCODE_DONE:
-            return {"status": "success"}
-    return {"status": "error"}
-
-# --- NOUVEAUX MODÈLES DE DONNÉES ---
-class SettingUpdate(BaseModel):
-    key: str
-    value: Any
-
-class StringUpdate(BaseModel):
-    value: str
-
-# --- ROUTES D'URGENCE ---
-@app.post("/api/panic")
-async def api_panic():
-    pos_list = await run_bg(mt5.positions_get)
-    if pos_list:
-        for p in pos_list:
-            if p.magic == MAGIC_NUMBER or p.ticket in MANAGED_MANUAL_TICKETS:
-                otype = mt5.ORDER_TYPE_SELL if p.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
-                req = {"action": mt5.TRADE_ACTION_DEAL, "symbol": p.symbol, "volume": p.volume, "type": otype, "position": p.ticket, "magic": MAGIC_NUMBER, "type_filling": mt5.ORDER_FILLING_IOC}
-                await run_bg(_send_order_blocking, req)
-    return {"status": "success"}
-
-@app.post("/api/kill")
-async def api_kill():
-    # On écrit le fichier d'arrêt et on force la fermeture du serveur Python
-    with open("STOP_ME", "w") as f: f.write("STOP")
-    import os
-    os._exit(0) 
-
-@app.post("/api/unlock")
-async def api_unlock():
-    global security_triggered
-    security_triggered = False
-    return {"status": "success"}
-
-# --- ROUTE DE SUIVI MANUEL ---
-@app.post("/api/suivre")
-async def api_suivre(data: TradeData):
-    MANAGED_MANUAL_TICKETS.add(data.ticket)
-    await run_bg(save_memory)
-    ACTIVE_TRADE_SOURCES[data.ticket] = "CANAL PERSO"
-    await run_bg(save_channel_data)
-    return {"status": "success"}
-
-# --- ROUTE UNIVERSELLE POUR LES RÉGLAGES (Curseurs et Champs) ---
-@app.post("/api/update_setting")
 async def api_update_setting(data: SettingUpdate):
     global RISK_PERCENT_GOLD, RISK_PERCENT_INDICES, RISK_PERCENT_OTHER
     global RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE, RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO
@@ -3014,16 +2722,6 @@ async def api_update_setting(data: SettingUpdate):
     await run_bg(save_settings)
     return {"status": "success"}
 
-# --- ROUTE POUR LES BOUTONS MUTE ---
-@app.post("/api/toggle_mute")
-async def api_toggle_mute(data: StringUpdate):
-    channel = data.value
-    if channel in MUTED_CHANNELS:
-        MUTED_CHANNELS.remove(channel)
-    else:
-        MUTED_CHANNELS.append(channel)
-    await run_bg(save_settings)
-    return {"status": "success"}
 
 # ==========================================
 # 💓 HEARTBEAT (BATTEMENT DE COEUR)
@@ -5111,16 +4809,9 @@ if __name__ == '__main__':
             # 1. On lance le bot de trading dans l'Event Loop
             loop.create_task(run_bot_safe())
             
-            # 2. On configure Uvicorn (Le serveur web pour FastAPI)
-            # host="0.0.0.0" permet d'écouter sur toutes les interfaces réseau
-            # port=8000 est le port standard de l'API
-            config = uvicorn.Config(app=app, host="0.0.0.0", port=8000, loop="asyncio", access_log=False)
-            server = uvicorn.Server(config)
-            
-            logger.info("🌐 Lancement de l'API Web (FastAPI) sur le port 8000...")
-            
-            # On lance le serveur web qui va faire tourner la boucle asynchrone indéfiniment
-            loop.run_until_complete(server.serve())
+            # On maintient la boucle asyncio en vie via le client Telegram (Telethon)
+            logger.info("🔄 Boucle principale active (Telegram + Firebase).")
+            loop.run_until_complete(client.run_until_disconnected())
             
         except KeyboardInterrupt:
             pass
