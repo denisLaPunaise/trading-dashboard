@@ -52,8 +52,8 @@ function App() {
   const isUpdating = useRef(false)
   const updateTimeout = useRef(null)
   
-  const [isTradesOpen, setIsTradesOpen] = useState(true)
-  const [isSettingsOpen, setIsSettingsOpen] = useState(true)
+  const [isTradesOpen, setIsTradesOpen] = useState(false) // (#9) fermé par défaut
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false) // (#9) fermé par défaut
   const [isDangerOpen, setIsDangerOpen] = useState(false)
 
   const [isClosedTradesOpen, setIsClosedTradesOpen] = useState(false) // Fermé par défaut pour ne pas polluer l'écran
@@ -331,6 +331,14 @@ function App() {
 
   const toggleDrawdown = async () => {
     await sendCommand('toggle_drawdown', {}, 'toggle_drawdown');
+  };
+
+  const toggleSlSuiveur = async () => {
+    await sendCommand('toggle_sl_suiveur', {}, 'toggle_sl_suiveur');
+  };
+
+  const toggleSoftSl = async () => {
+    await sendCommand('toggle_soft_sl', {}, 'toggle_soft_sl');
   };
 
   // --- RENDU ---
@@ -954,6 +962,32 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
                     <span style={{ fontSize: '0.9rem' }}>Disjoncteur Drawdown{!ddActive && <span style={{ color: '#ff6b6b', fontSize: '0.7rem', display: 'block' }}>⚠️ Protection désactivée</span>}</span>
                     <button onClick={() => { triggerHaptic('medium'); toggleDrawdown(); }} style={{ padding: '6px 14px', borderRadius: '20px', border: 'none', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'bold', background: ddActive ? '#00c853' : '#ff4444', color: '#fff', minWidth: '70px' }}>
                       {ddActive ? 'ON 🟢' : 'OFF 🔴'}
+                    </button>
+                  </div>
+                );
+              })()}
+
+              {/* Toggle ON/OFF SL Suiveur (#10) */}
+              {(() => {
+                const slActive = settings.sl_suiveur_active !== false; // défaut = actif
+                return (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '10px', background: '#2a2a2a', padding: '10px', borderRadius: '8px' }}>
+                    <span style={{ fontSize: '0.9rem' }}>SL Suiveur</span>
+                    <button onClick={() => { triggerHaptic('medium'); toggleSlSuiveur(); }} style={{ padding: '6px 14px', borderRadius: '20px', border: 'none', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'bold', background: slActive ? '#00c853' : '#ff4444', color: '#fff', minWidth: '70px' }}>
+                      {slActive ? 'ON 🟢' : 'OFF 🔴'}
+                    </button>
+                  </div>
+                );
+              })()}
+
+              {/* Toggle ON/OFF Soft SL Vente (#10) */}
+              {(() => {
+                const softActive = settings.soft_sl_active !== false; // défaut = actif
+                return (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '10px', background: '#2a2a2a', padding: '10px', borderRadius: '8px' }}>
+                    <span style={{ fontSize: '0.9rem' }}>Soft SL Vente</span>
+                    <button onClick={() => { triggerHaptic('medium'); toggleSoftSl(); }} style={{ padding: '6px 14px', borderRadius: '20px', border: 'none', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'bold', background: softActive ? '#00c853' : '#ff4444', color: '#fff', minWidth: '70px' }}>
+                      {softActive ? 'ON 🟢' : 'OFF 🔴'}
                     </button>
                   </div>
                 );

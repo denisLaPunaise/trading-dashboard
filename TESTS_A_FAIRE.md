@@ -76,3 +76,25 @@ Décision retenue : **OR = lots fixes (inchangé)** ; **hors-or = sizing par ris
 - [ ] Zone hors-or : la répartition 45/35/20 reste correcte sur le volume total calculé par le risque.
 - [ ] ⚠️ **Détection du symbole** : vérifier que la paire envoyée par SABR est bien reconnue (sinon retombe sur GOLD). Si une paire n'est pas reconnue, l'ajouter à `SYMBOL_MAPPING` / `BASE_LOTS_FOR_01_PCT`.
 - [ ] Paire **inconnue / sans SL** : fallback sûr (FIXED_LOT_OTHER), pas d'ordre aberrant.
+
+---
+
+## #9 — Sections fermées par défaut (`frontend/src/App.jsx`)
+Redéployer le frontend avant test.
+
+- [ ] À l'ouverture du dashboard, « Trades Actifs » est **fermée**.
+- [ ] À l'ouverture du dashboard, « Panneau de Contrôle » est **fermée**.
+- [ ] Le clic ouvre/ferme toujours correctement (animation OK).
+
+---
+
+## #10 — Toggles ON/OFF SL Suiveur + Soft SL Vente (`backend` + `frontend`)
+Recompiler l'exe **ET** redéployer le frontend avant test.
+
+- [ ] Deux boutons ON/OFF visibles **sous** le toggle Drawdown (SL Suiveur, Soft SL Vente).
+- [ ] **SL Suiveur OFF** : le bot **ne déplace plus** le SL (ni BE, ni trailing, ni paliers) sur les trades non-SABR. Message Telegram `🔒 SL Suiveur : 🔴 DÉSACTIVÉ`.
+- [ ] **SL Suiveur ON** : déplacement du SL comme avant.
+- [ ] **Soft SL Vente OFF** : plus de clôture partielle sur repli (« REPLI DÉTECTÉ » ne se déclenche plus). Message `📉 Soft SL Vente : 🔴 DÉSACTIVÉ`.
+- [ ] **Soft SL Vente ON** : clôture partielle sur repli comme avant.
+- [ ] Les deux états **survivent à un redémarrage** (persistés dans settings.json).
+- [ ] ⚠️ Ces toggles concernent le trailing **général** (hors SABR, qui garde son propre `SABR_TRAILING_ACTIVE`).

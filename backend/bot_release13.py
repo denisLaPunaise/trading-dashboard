@@ -207,6 +207,9 @@ TP3_PIPS = 140
 TP4_PIPS = 200
 TRAILING_STOP_PIPS = 85
 SOFT_SL_PERCENT = 0.30
+# (#10) Interrupteurs ON/OFF (dashboard) pour la gestion du SL général (hors SABR)
+SL_SUIVEUR_ACTIVE = True   # False -> le bot ne déplace plus le SL (BE/trailing/paliers)
+SOFT_SL_ACTIVE = True      # False -> pas de clôture partielle sur repli (Soft SL Vente)
 BTC_ENTRY_OFFSET = 70
 DEFAULT_TP1_PCT = 0.50
 
@@ -1001,6 +1004,8 @@ def save_settings():
                 "DRAWDOWN_ACTIVE": DRAWDOWN_ACTIVE,
                 "TRAILING_STOP_PIPS": TRAILING_STOP_PIPS,
                 "SOFT_SL_PERCENT": SOFT_SL_PERCENT,
+                "SL_SUIVEUR_ACTIVE": SL_SUIVEUR_ACTIVE,
+                "SOFT_SL_ACTIVE": SOFT_SL_ACTIVE,
                 "SABR_TRAILING_ACTIVE": SABR_TRAILING_ACTIVE,
                 "SABR_ANTI_DOUBLON_ACTIVE": SABR_ANTI_DOUBLON_ACTIVE,
                 "MUTED_CHANNELS": MUTED_CHANNELS,
@@ -1032,7 +1037,7 @@ FIREBASE_PASSWORD = ""
 
 def load_settings():
     """Charge les réglages au démarrage"""
-    global RISK_PERCENT_GOLD, SABR_FORWARD_ACTIVE, RISK_PERCENT_OTHER, RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE, MAX_DAILY_DRAWDOWN, DRAWDOWN_ACTIVE, TRAILING_STOP_PIPS, RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO, SOFT_SL_PERCENT, MUTED_CHANNELS, CHANNEL_TP1_PCT, TELEGRAM_DESTINATION_ID, ADMIN_ID, RISK_PERCENT_INDICES, PRIME_HOURS, TIME_OFF_PEAK_FACTOR, DAY_RISK_FACTORS, FIXED_LOT_SABR_FREE, FIXED_LOT_SABR_VIP, RISK_PERCENT_SABR_OTHER, SABR_TRAILING_ACTIVE, DASHBOARD_MSG_ID, FIREBASE_EMAIL, FIREBASE_PASSWORD
+    global RISK_PERCENT_GOLD, SABR_FORWARD_ACTIVE, RISK_PERCENT_OTHER, RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE, MAX_DAILY_DRAWDOWN, DRAWDOWN_ACTIVE, TRAILING_STOP_PIPS, RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO, SOFT_SL_PERCENT, MUTED_CHANNELS, CHANNEL_TP1_PCT, TELEGRAM_DESTINATION_ID, ADMIN_ID, RISK_PERCENT_INDICES, PRIME_HOURS, TIME_OFF_PEAK_FACTOR, DAY_RISK_FACTORS, FIXED_LOT_SABR_FREE, FIXED_LOT_SABR_VIP, RISK_PERCENT_SABR_OTHER, SABR_TRAILING_ACTIVE, SL_SUIVEUR_ACTIVE, SOFT_SL_ACTIVE, DASHBOARD_MSG_ID, FIREBASE_EMAIL, FIREBASE_PASSWORD
 
     if os.path.exists(SETTINGS_FILENAME):
         try:
@@ -1056,6 +1061,8 @@ def load_settings():
                 if "DRAWDOWN_ACTIVE" in data: DRAWDOWN_ACTIVE = data["DRAWDOWN_ACTIVE"]
                 if "TRAILING_STOP_PIPS" in data: TRAILING_STOP_PIPS = data["TRAILING_STOP_PIPS"]
                 if "SOFT_SL_PERCENT" in data: SOFT_SL_PERCENT = data["SOFT_SL_PERCENT"]
+                if "SL_SUIVEUR_ACTIVE" in data: SL_SUIVEUR_ACTIVE = data["SL_SUIVEUR_ACTIVE"]
+                if "SOFT_SL_ACTIVE" in data: SOFT_SL_ACTIVE = data["SOFT_SL_ACTIVE"]
                 if "SABR_TRAILING_ACTIVE" in data: SABR_TRAILING_ACTIVE = data["SABR_TRAILING_ACTIVE"] 
                 if "MUTED_CHANNELS" in data: MUTED_CHANNELS = data["MUTED_CHANNELS"]
                 if "CHANNEL_TP1_PCT" in data: CHANNEL_TP1_PCT = data["CHANNEL_TP1_PCT"]
@@ -3209,8 +3216,8 @@ async def monitor_positions():
                             
                             if update_hard_sl: new_sl_price = potential_sl; sl_reason = "Secu BE (Mode Soft Trail)"
 
-                        current_max_pips = cur_max 
-                        if current_max_pips >= TRAILING_STOP_PIPS:
+                        current_max_pips = cur_max
+                        if SOFT_SL_ACTIVE and current_max_pips >= TRAILING_STOP_PIPS:  # (#10) toggle Soft SL
                             soft_trigger_pips = current_max_pips - TRAILING_STOP_PIPS
                             if pips <= soft_trigger_pips:
                                 tag = "SOFT_SL_HIT"
@@ -3241,7 +3248,7 @@ async def monitor_positions():
                             if sl_pips < tgt_pips - 1: update_needed = True
                             if update_needed: new_sl_price = potential_sl; sl_reason = f"Palier {tgt_pips} pips"
 
-                    if new_sl_price:
+                    if new_sl_price and SL_SUIVEUR_ACTIVE:  # (#10) toggle SL Suiveur
                         info_sl = mt5.symbol_info(sym)
                         new_sl_price = round(new_sl_price / info_sl.point) * info_sl.point
                         
@@ -4482,6 +4489,7 @@ async def get_current_state_for_firebase() -> dict:
             "sabr_forward": SABR_FORWARD_ACTIVE, "max_dd": MAX_DAILY_DRAWDOWN,
             "drawdown_active": DRAWDOWN_ACTIVE,
             "sl_suiveur": TRAILING_STOP_PIPS, "sl_sell": SOFT_SL_PERCENT,
+            "sl_suiveur_active": SL_SUIVEUR_ACTIVE, "soft_sl_active": SOFT_SL_ACTIVE,
             "muted_channels": MUTED_CHANNELS, "security_triggered": security_triggered,
             "time_off_peak": TIME_OFF_PEAK_FACTOR, "prime_hours": PRIME_HOURS,
             "day_factor_0": DAY_RISK_FACTORS.get(0, 1.0), "day_factor_1": DAY_RISK_FACTORS.get(1, 1.0),
@@ -4583,6 +4591,22 @@ async def handle_firebase_command(cmd_id: str, cmd_data: dict) -> None:
             DRAWDOWN_ACTIVE = not DRAWDOWN_ACTIVE
             await run_bg(save_settings)
             await send_alert(f"📉 Disjoncteur Drawdown : {'🟢 ACTIVÉ' if DRAWDOWN_ACTIVE else '🔴 DÉSACTIVÉ'}")
+            set_status("done", {"success": True})
+
+        elif cmd_type == "toggle_sl_suiveur":
+            # (#10) Active/désactive le déplacement du SL (BE/trailing/paliers)
+            global SL_SUIVEUR_ACTIVE
+            SL_SUIVEUR_ACTIVE = not SL_SUIVEUR_ACTIVE
+            await run_bg(save_settings)
+            await send_alert(f"🔒 SL Suiveur : {'🟢 ACTIVÉ' if SL_SUIVEUR_ACTIVE else '🔴 DÉSACTIVÉ'}")
+            set_status("done", {"success": True})
+
+        elif cmd_type == "toggle_soft_sl":
+            # (#10) Active/désactive la clôture partielle sur repli (Soft SL Vente)
+            global SOFT_SL_ACTIVE
+            SOFT_SL_ACTIVE = not SOFT_SL_ACTIVE
+            await run_bg(save_settings)
+            await send_alert(f"📉 Soft SL Vente : {'🟢 ACTIVÉ' if SOFT_SL_ACTIVE else '🔴 DÉSACTIVÉ'}")
             set_status("done", {"success": True})
 
         elif cmd_type == "update_setting":
