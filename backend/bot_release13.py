@@ -2057,6 +2057,16 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
             parts = price_signal.split('|') if '|' in price_signal else [price_signal, price_signal]
             p1 = float(parts[0]) # Début zone (Proche)
             p2 = float(parts[1]) # Fin zone (Loin)
+
+            # --- NORMALISATION DIRECTIONNELLE (#6) ---
+            # La répartition gros lot -> petit lot ne doit PAS dépendre de l'ordre d'écriture
+            # des prix ("buy 4005-4000" et "buy 4000-4005" doivent donner le même découpage).
+            # p1 = borne "début/gros lot" (proche du marché) ; p2 = borne "fin/petit lot" (loin).
+            # ACHAT  -> gros lot sur le prix le plus HAUT (zone sous le marché, touchée par le haut).
+            # VENTE  -> gros lot sur le prix le plus BAS  (zone au-dessus, touchée par le bas).
+            hi, lo = max(p1, p2), min(p1, p2)
+            p1, p2 = (hi, lo) if action == "ACHAT" else (lo, hi)
+
             p_mid = (p1 + p2) / 2
             
             if sl_val == 0.0:

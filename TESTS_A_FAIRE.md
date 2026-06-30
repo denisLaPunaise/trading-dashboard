@@ -14,3 +14,14 @@ Recompiler l'exe avant test.
 - [ ] Formats variés OK : `TP1: 3975`, `TP1 3975`, `TP: 4750`, `Target 4750`.
 - [ ] **L'ordre passe maintenant réellement sur MT5** (avant : refusé car TP invalide type 750).
 - [ ] Aucun TP "rogné" dans le diagnostic SABR du log (`🎯 TP lu`).
+
+---
+
+## #6 — Zone SABR : ordre d'écriture des prix (`backend/bot_release13.py`, branche ZONE)
+Recompiler l'exe avant test.
+
+- [ ] `buy 4005-4000` ET `buy 4000-4005` → **même découpage** : gros lot (45%) sur le prix le plus HAUT (4005), petit (20%) sur le plus bas (4000).
+- [ ] `sell 4015-4021` ET `sell 4021-4015` → **même découpage** : gros lot (45%) sur le prix le plus BAS (4015), petit (20%) sur le plus haut (4021).
+- [ ] Vérifier dans le log `🪓 Découpage (Prix, Lot)` que la répartition ne dépend plus de l'ordre.
+- [ ] SL global par défaut cohérent (sous la zone en ACHAT, au-dessus en VENTE).
+- [ ] ⚠️ **Valider la règle SELL sur un vrai signal SELL** (déduite par symétrie).
