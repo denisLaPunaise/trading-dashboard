@@ -693,7 +693,9 @@ def parse_signal(raw_text, channel_id=None):
         def extract_sabr_tp(txt, act):
             tps = []
             # On cherche TP, TP1, TP 2, suivi ou non de :, -, =
-            for m in re.finditer(r"(?:TP|TARGET)\s*(?:\d)?\s*[:=\-]?\s*([\d\.,]+)", txt, re.IGNORECASE):
+            # NB: l'index du TP (\d) n'est consommé que s'il est suivi d'un séparateur ou d'un espace
+            # (lookahead), sinon il mordait sur le 1er chiffre du prix ("Tp 4750" -> 750).
+            for m in re.finditer(r"(?:TP|TARGET)\s*(?:\d(?=[\s:=\-]))?\s*[:=\-]?\s*([\d\.,]+)", txt, re.IGNORECASE):
                 try: 
                     val = float(m.group(1).replace(',', '.'))
                     if val > 10: tps.append(val) # Vérifie que c'est un vrai prix et pas juste "TP 2"
