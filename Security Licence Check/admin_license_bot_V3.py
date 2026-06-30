@@ -832,16 +832,21 @@ async def main_handler(event):
 
 
 async def security_events_relay():
-    """Relaie les /security_events (écrits par les bots clients) vers le canal Telegram.
-    Aucun token côté client : c'est le compte du bot de licence qui poste."""
+    """Relaie les /security_events (écrits par les bots clients) vers le canal Telegram,
+    via SECURITY_BOT_TOKEN qui reste sur le VPS (jamais dans l'exe distribué)."""
     if not (FIREBASE_ENABLED and _fb_db):
         return
+    if not SECURITY_BOT_TOKEN:
+        print("⚠️ SECURITY_BOT_TOKEN vide — relais en pause. Remplis-le puis relance le bot.")
+        return
+    from google.cloud.firestore_v1.base_query import FieldFilter
     print("📡 Relais des événements de sécurité activé.")
     seen = set()
     while True:
         try:
             def _fetch():
-                docs = _fb_db.collection("security_events").where("relayed", "==", False).limit(20).stream()
+                docs = _fb_db.collection("security_events").where(
+                    filter=FieldFilter("relayed", "==", False)).limit(20).stream()
                 return [(d.id, d.to_dict()) for d in docs]
             for doc_id, data in await asyncio.to_thread(_fetch):
                 if doc_id in seen:
@@ -854,10 +859,6 @@ async def security_events_relay():
                 if data.get("pc_id"):    details.append(f"💻 PC : {data['pc_id']}")
                 if data.get("got_hwid"): details.append(f"💻 Machine : {data['got_hwid']}")
                 full = msg + ("\n" + "\n".join(details) if details else "")
-                if not SECURITY_BOT_TOKEN:
-                    print("⚠️ SECURITY_BOT_TOKEN non configuré — événement non relayé.")
-                    seen.discard(doc_id)
-                    continue
                 try:
                     def _send(_t=full):
                         requests.post(
