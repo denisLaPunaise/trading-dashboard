@@ -76,10 +76,7 @@ VERSION_BOT = "14.0.0"
 # ==========================================
 
 # --- Telegram API ---
-#API_ID = 32708194
-#API_HASH = '37b283f8c146b27dcd4915102cc50da8'
-#BOT_TOKEN = '8330960414:AAEBWKUyOODxVPPpwx3DppXjKX2gOrxT7W0'
-
+# (Clés lues depuis settings.json — jamais en dur dans le code)
 # (ADMIN_SECURITY_TOKEN retire de l'exe — alertes relayees par le VPS, Phase 4)
 
 # --- SÉCURITÉ : Lecture des clés API depuis settings.json ---
@@ -180,6 +177,9 @@ FIXED_LOT_GOLD = 0.06
 FIXED_LOT_OTHER = 0.2       
 
 MUTED_CHANNELS = []
+# (#7) Pack du client : liste blanche des canaux VISIBLES (logs + dashboard).
+# Vide = tout visible (rétro-compatible). Purement cosmétique : ne touche pas au trading.
+ALLOWED_CHANNELS = []
 ID_CANAL_PERSO = -5093508256
 CHANNEL_TP1_PCT = {}
 SABR_ZONE_MIN_DIST = {} # Mémorise la distance la plus proche atteinte par le marché
@@ -1009,6 +1009,7 @@ def save_settings():
                 "SABR_TRAILING_ACTIVE": SABR_TRAILING_ACTIVE,
                 "SABR_ANTI_DOUBLON_ACTIVE": SABR_ANTI_DOUBLON_ACTIVE,
                 "MUTED_CHANNELS": MUTED_CHANNELS,
+                "ALLOWED_CHANNELS": ALLOWED_CHANNELS,
                 "CHANNEL_TP1_PCT": CHANNEL_TP1_PCT,
                 "RISK_PERCENT_INDICES": RISK_PERCENT_INDICES,
                 "PRIME_HOURS": PRIME_HOURS,
@@ -1037,7 +1038,7 @@ FIREBASE_PASSWORD = ""
 
 def load_settings():
     """Charge les réglages au démarrage"""
-    global RISK_PERCENT_GOLD, SABR_FORWARD_ACTIVE, RISK_PERCENT_OTHER, RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE, MAX_DAILY_DRAWDOWN, DRAWDOWN_ACTIVE, TRAILING_STOP_PIPS, RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO, SOFT_SL_PERCENT, MUTED_CHANNELS, CHANNEL_TP1_PCT, TELEGRAM_DESTINATION_ID, ADMIN_ID, RISK_PERCENT_INDICES, PRIME_HOURS, TIME_OFF_PEAK_FACTOR, DAY_RISK_FACTORS, FIXED_LOT_SABR_FREE, FIXED_LOT_SABR_VIP, RISK_PERCENT_SABR_OTHER, SABR_TRAILING_ACTIVE, SL_SUIVEUR_ACTIVE, SOFT_SL_ACTIVE, DASHBOARD_MSG_ID, FIREBASE_EMAIL, FIREBASE_PASSWORD
+    global RISK_PERCENT_GOLD, SABR_FORWARD_ACTIVE, RISK_PERCENT_OTHER, RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE, MAX_DAILY_DRAWDOWN, DRAWDOWN_ACTIVE, TRAILING_STOP_PIPS, RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO, SOFT_SL_PERCENT, MUTED_CHANNELS, ALLOWED_CHANNELS, CHANNEL_TP1_PCT, TELEGRAM_DESTINATION_ID, ADMIN_ID, RISK_PERCENT_INDICES, PRIME_HOURS, TIME_OFF_PEAK_FACTOR, DAY_RISK_FACTORS, FIXED_LOT_SABR_FREE, FIXED_LOT_SABR_VIP, RISK_PERCENT_SABR_OTHER, SABR_TRAILING_ACTIVE, SL_SUIVEUR_ACTIVE, SOFT_SL_ACTIVE, DASHBOARD_MSG_ID, FIREBASE_EMAIL, FIREBASE_PASSWORD
 
     if os.path.exists(SETTINGS_FILENAME):
         try:
@@ -1065,6 +1066,7 @@ def load_settings():
                 if "SOFT_SL_ACTIVE" in data: SOFT_SL_ACTIVE = data["SOFT_SL_ACTIVE"]
                 if "SABR_TRAILING_ACTIVE" in data: SABR_TRAILING_ACTIVE = data["SABR_TRAILING_ACTIVE"] 
                 if "MUTED_CHANNELS" in data: MUTED_CHANNELS = data["MUTED_CHANNELS"]
+                if "ALLOWED_CHANNELS" in data: ALLOWED_CHANNELS = data["ALLOWED_CHANNELS"]  # (#7) pack du client
                 if "CHANNEL_TP1_PCT" in data: CHANNEL_TP1_PCT = data["CHANNEL_TP1_PCT"]
                 if "TELEGRAM_DESTINATION_ID" in data: 
                     TELEGRAM_DESTINATION_ID = data["TELEGRAM_DESTINATION_ID"]
@@ -1082,6 +1084,7 @@ def load_settings():
 
             logger.info(f"⚙️ Ensemble des réglages chargés avec succès.")
             logger.info(f"🔕 Canaux Ignorés : {MUTED_CHANNELS}")
+            logger.info(f"📦 Pack client (canaux visibles) : {ALLOWED_CHANNELS if ALLOWED_CHANNELS else 'TOUS'}")
         except Exception as e: logger.error(f"⚠️ Erreur Load Settings: {e}")
 
 def load_channel_data():
@@ -2068,9 +2071,9 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
 
         # --- B. Logique BLIND (ATTENTE) ---
         if "BLIND" in channel_source:
-            await send_alert(f"⏳ **SIGNAL SABR EN APPROCHE**\n\n"
+            await send_channel_alert(f"⏳ **SIGNAL SABR EN APPROCHE**\n\n"
                              f"Action : {action} {symbol} (À l'aveugle)\n\n"
-                             f"Le bot est prêt et attend le prix exact.\n(Délai de veille: 3 minutes max...)")
+                             f"Le bot est prêt et attend le prix exact.\n(Délai de veille: 3 minutes max...)", channel_source)
             return None # On s'arrête ici, pas d'exécution.
 
         # --- C. Logique SNIPER (Hybride) ---
@@ -2286,11 +2289,12 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
                 sabr_type_line = f"\nType: {clean_type}"
             
             # --- MODIFICATION TELEGRAM ICI ---
-            await send_alert(
+            await send_channel_alert(
                 f"🔥 **ORDRE {t_str}**\n\n{symbol} {action}\n\n"
                 f"Prix: {final_px}\nSL: {final_sl} & TP: {final_tp}\n"
                 f"Signal: {sig_time}\nLot: **{lot}** (Risque: {risk_str})\n"
                 f"Source: {safe_source}{sabr_type_line}",
+                channel_source,
             )
 
             if tact == mt5.TRADE_ACTION_PENDING: PENDING_ORDER_TICKETS.add(res.order)
@@ -2309,7 +2313,7 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
                 ACTIVE_TRADE_SOURCES[res2.order] = channel_source
                 await run_bg(save_channel_data)
                 # --- MODIFICATION TELEGRAM SECOURS ICI ---
-                await send_alert(f"🔥 **ORDRE MARKET (RESCUE)**\n{symbol} {action}\nLot: **{lot}** (Risque: {risk_str})\n\n🛑 SL: {final_sl} & 🎯 TP: {final_tp}")
+                await send_channel_alert(f"🔥 **ORDRE MARKET (RESCUE)**\n{symbol} {action}\nLot: **{lot}** (Risque: {risk_str})\n\n🛑 SL: {final_sl} & 🎯 TP: {final_tp}", channel_source)
                 tickets_opened.append(res2.order)
         else:
             logger.error(f"❌ REJET MT5 ({res.retcode}) sur {symbol} : {res.comment}")
@@ -2326,6 +2330,42 @@ async def send_alert(msg, buttons=None):
         await bot_user.send_message(ADMIN_ID, msg, buttons=buttons, parse_mode='md')
     except Exception as e:
         logger.error(f"⚠️ Erreur Envoi Alerte: {e}")
+
+
+def _channel_base_token(name):
+    """(#7) Normalise un nom de canal en jeton de base pour comparaison.
+    Ex: 'CANAL SABR_VIP_SNIPER' / 'CANAL SABR VIP' -> 'SABR_VIP'."""
+    if not name:
+        return ""
+    t = str(name).upper().replace("CANAL", "").strip().replace(" ", "_")
+    while "__" in t:
+        t = t.replace("__", "_")
+    for suf in ("_SNIPER", "_ZONE", "_BLIND"):
+        if t.endswith(suf):
+            t = t[: -len(suf)]
+    return t.strip("_")
+
+
+def channel_allowed(source):
+    """(#7) True si le canal source est visible pour ce client (filtre cosmétique des logs).
+    ALLOWED_CHANNELS vide = tout visible (rétro-compatible). Source inconnue = visible (sécurité)."""
+    try:
+        if not ALLOWED_CHANNELS:
+            return True
+        base = _channel_base_token(source)
+        if not base:
+            return True
+        allowed = {_channel_base_token(c) for c in ALLOWED_CHANNELS}
+        return base in allowed
+    except Exception:
+        return True
+
+
+async def send_channel_alert(msg, source, buttons=None):
+    """(#7) Comme send_alert, mais n'envoie au canal du client que si le canal source
+    fait partie de son pack (ALLOWED_CHANNELS). N'affecte JAMAIS le trading."""
+    if channel_allowed(source):
+        await send_alert(msg, buttons=buttons)
 
 async def check_closed_positions():
     global watched_tickets, daily_stats, active_trades_max_pips, TELEGRAM_TO_TICKET, TRADES_PROCESSED_LEVELS, ACTIVE_TRADE_SOURCES, CHANNEL_STATS
@@ -2842,10 +2882,10 @@ async def monitor_positions():
                         act_time = (datetime.fromtimestamp(pos.time) - timedelta(hours=1)).strftime('%H:%M')
                         src_raw = ACTIVE_TRADE_SOURCES.get(ticket, "INCONNU")
                         src_clean = src_raw.replace("CANAL ", "").replace("_", " ")
-                        await send_alert(f"⚡ **ORDRE ACTIVÉ**\n\n"
+                        await send_channel_alert(f"⚡ **ORDRE ACTIVÉ**\n\n"
                                          f"Symbole: {pos.symbol} ({act_time})\n"
                                          f"Source: {src_clean}\n"
-                                         f"Ticket: {ticket}")                        
+                                         f"Ticket: {ticket}", src_raw)
                         
                         tickets_to_remove.add(ticket)
                     else:
@@ -2899,10 +2939,10 @@ async def monitor_positions():
                             res = await run_bg(_send_order_blocking, req)
                             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                                 src_clean = src.replace("CANAL ", "").replace("_", " ")
-                                await send_alert(f"🗑️ **ORDRE EXPIRÉ (>12h)**\n\n"
+                                await send_channel_alert(f"🗑️ **ORDRE EXPIRÉ (>12h)**\n\n"
                                                  f"Symbole: {o.symbol}\n\n"
                                                  f"Source: {src_clean}\n"
-                                                 f"Ticket: {o.ticket}")
+                                                 f"Ticket: {o.ticket}", src)
                     
                     # 2️⃣ Nettoyage SABR (Préparation des groupes)
                     else:
@@ -2969,10 +3009,10 @@ async def monitor_positions():
                                 count_cancelled += 1
                                 
                         if count_cancelled > 0:
-                            await send_alert(f"🗑️ **ORDRE SABR ANNULÉ**\n\n"
+                            await send_channel_alert(f"🗑️ **ORDRE SABR ANNULÉ**\n\n"
                                              f"Symbole: {sym}\nSource: {src_clean}\n"
                                              f"Raison: Trade activé (+150p) OU Frôlé puis envolé (+400p).\n"
-                                             f"Ordres restants annulés: {count_cancelled}")
+                                             f"Ordres restants annulés: {count_cancelled}", src)
                         
                         if key_dist in SABR_ZONE_MIN_DIST: del SABR_ZONE_MIN_DIST[key_dist]
             
@@ -3088,11 +3128,11 @@ async def monitor_positions():
 
                              src_clean = src_trade.replace("CANAL ", "").replace("_", " ")
                              
-                             await send_alert(f"☠️ **ZONE DE LA MORT** ({sym})\n\n"
+                             await send_channel_alert(f"☠️ **ZONE DE LA MORT** ({sym})\n\n"
                                               f"Symbole: {sym} ({open_time})\n\n"
                                               f"Source: {src_clean}\n\n"
                                               f"Drawdown > {MAX_DEATH_ZONE_PIPS} pips.\n"
-                                              f"Fermeture de sécurité immédiate.")
+                                              f"Fermeture de sécurité immédiate.", src_trade)
                                               
                              await run_bg(_send_order_blocking, req_k)
                              continue
@@ -3114,7 +3154,7 @@ async def monitor_positions():
                                     req = {"action": mt5.TRADE_ACTION_SLTP, "symbol": sym, "position": pos.ticket, "sl": new_sl_price, "tp": pos.tp}
                                     res = await run_bg(_send_order_blocking, req)
                                     if res and res.retcode == mt5.TRADE_RETCODE_DONE:
-                                        await send_alert(f"🛡️ **SL SÉCURISÉ BE (MDT FREE)**\n\nSymbole: {sym}\nTicket: {pos.ticket}")
+                                        await send_channel_alert(f"🛡️ **SL SÉCURISÉ BE (MDT FREE)**\n\nSymbole: {sym}\nTicket: {pos.ticket}", src_trade)
                                         processed.add("MDT_FREE_60_BE")
                                         await run_bg(save_memory)
 
@@ -3145,7 +3185,7 @@ async def monitor_positions():
                                     req = {"action": mt5.TRADE_ACTION_SLTP, "symbol": sym, "position": pos.ticket, "sl": new_sl_price, "tp": pos.tp}
                                     res = await run_bg(_send_order_blocking, req)
                                     if res and res.retcode == mt5.TRADE_RETCODE_DONE:
-                                        await send_alert(f"🛡️ **SL SÉCURISÉ BE (MDT VIP)**\n\nSymbole: {sym}\nTicket: {pos.ticket}")
+                                        await send_channel_alert(f"🛡️ **SL SÉCURISÉ BE (MDT VIP)**\n\nSymbole: {sym}\nTicket: {pos.ticket}", src_trade)
                                         processed.add("MDT_VIP_30_BE")
                                         await run_bg(save_memory)
 
@@ -3172,7 +3212,7 @@ async def monitor_positions():
                     # NIVEAU 2 
                     if pips >= TP2_PIPS and "TP2" not in processed:
                         # 1. On envoie ton message d'alerte classique
-                        await send_alert(f"🚀 **TP2 ({TP2_PIPS} pips) ATTEINT (+{int(pips)} pips)**\n\nSymbole: {sym} ({open_time})\nSource: {src_clean}")
+                        await send_channel_alert(f"🚀 **TP2 ({TP2_PIPS} pips) ATTEINT (+{int(pips)} pips)**\n\nSymbole: {sym} ({open_time})\nSource: {src_clean}", src_trade)
                         
                         # 2. On encaisse 50% du trade (ce qui enverra le ticket de caisse)
                         lbl_part = f"TP2 ({TP2_PIPS}p)"
@@ -3182,12 +3222,12 @@ async def monitor_positions():
                     # NIVEAU 3 
                     if pips >= TP3_PIPS and "TP3" not in processed:
                         daily_stats["tp3_reached"] += 1; processed.add("TP3"); await run_bg(save_memory)
-                        await send_alert(f"🚀 **TP3 ({TP3_PIPS} pips) ATTEINT (+{int(pips)} pips)**\n\nSymbole: {sym} ({open_time})\nSource: {src_clean}")
+                        await send_channel_alert(f"🚀 **TP3 ({TP3_PIPS} pips) ATTEINT (+{int(pips)} pips)**\n\nSymbole: {sym} ({open_time})\nSource: {src_clean}", src_trade)
 
                     # NIVEAU 4 (140 pips)
                     if pips >= TP4_PIPS and "TP4" not in processed:
                         processed.add("TP4"); daily_stats["tp4_reached"] += 1; await run_bg(save_memory)
-                        await send_alert(f"🚀 **TP4 ({TP4_PIPS} pips) ATTEINT (+{int(pips)} pips)**\n\nSymbole: {sym} ({open_time})\nSource: {src_clean}")
+                        await send_channel_alert(f"🚀 **TP4 ({TP4_PIPS} pips) ATTEINT (+{int(pips)} pips)**\n\nSymbole: {sym} ({open_time})\nSource: {src_clean}", src_trade)
 
                     # NIVEAU 5 (200 pips)
                     #if pips >= TP5_PIPS and "TP5" not in processed:
@@ -3200,7 +3240,7 @@ async def monitor_positions():
                         tag = f"TP_INF_{hundreds}"
                         if tag not in processed: 
                             processed.add(tag); await run_bg(save_memory)
-                            await send_alert(f"🚀 **TP ZONE {hundreds} ATTEINT (+{int(pips)} pips)**\n\nSymbole: {sym} ({open_time})\nSource: {src_clean}")
+                            await send_channel_alert(f"🚀 **TP ZONE {hundreds} ATTEINT (+{int(pips)} pips)**\n\nSymbole: {sym} ({open_time})\nSource: {src_clean}", src_trade)
 
                     # --- GESTION SL (CORRIGÉE) ---
                     new_sl_price = None; sl_reason = ""
@@ -3225,10 +3265,10 @@ async def monitor_positions():
                                     TRADES_PROCESSED_LEVELS[pos.ticket].add(tag); await run_bg(save_memory)
                                     pct_txt = int(SOFT_SL_PERCENT * 100)
                                     
-                                    await send_alert(f"📉 **REPLI DÉTECTÉ (Soft SL)**\n\n"
+                                    await send_channel_alert(f"📉 **REPLI DÉTECTÉ (Soft SL)**\n\n"
                                                      f"Symbole: {sym} ({open_time})\n\n"
                                                      f"Sommet: +{int(current_max_pips)}p | Actuel: +{int(pips)}p\n"
-                                                     f"Action: Clôture {pct_txt}%. Le reste court avec SL à BE.")
+                                                     f"Action: Clôture {pct_txt}%. Le reste court avec SL à BE.", src_trade)
 
                                     success = await close_partial(pos, SOFT_SL_PERCENT, "Soft Trailing", pips)
                                     # Si ça rate (sauf petit lot), on enlève le tag pour réessayer
@@ -3268,10 +3308,10 @@ async def monitor_positions():
                         elif res.retcode == mt5.TRADE_RETCODE_DONE:
                             log(f"🛡️ SL DÉPLACÉ: {sym} -> {new_sl_price} ({sl_reason})", important=True)
                             if "Palier" in sl_reason or "Secu BE" in sl_reason: 
-                                await send_alert(f"🛡️ **SL SÉCURISÉ** ({sym})\n\n"
+                                await send_channel_alert(f"🛡️ **SL SÉCURISÉ** ({sym})\n\n"
                                                  f"Symbole: {sym} ({open_time})\n"
                                                  f"Source: {src_clean}\n"
-                                                 f"Niveau : {sl_reason}")
+                                                 f"Niveau : {sl_reason}", src_trade)
 
                 # --- SABR CASCADE (150 PIPS PAR PALIERS JUSQU'À 15%) ---
                 for sym, positions in sabr_groups.items():
@@ -3392,10 +3432,10 @@ async def monitor_positions():
                                     if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                                         p_open_time = (datetime.fromtimestamp(p.time) - timedelta(hours=1)).strftime('%H:%M')
                                         p_src_clean = ACTIVE_TRADE_SOURCES.get(p.ticket, "INCONNU").replace("CANAL ", "").replace("_", " ")
-                                        await send_alert(f"☄️ **SABR: BE ACTIVÉ (+150p)**\n\n"
+                                        await send_channel_alert(f"☄️ **SABR: BE ACTIVÉ (+150p)**\n\n"
                                                          f"Symbole: {sym} ({p_open_time})\n"
                                                          f"Source: {p_src_clean}\n"
-                                                         f"Ticket: {p.ticket}")
+                                                         f"Ticket: {p.ticket}", ACTIVE_TRADE_SOURCES.get(p.ticket, ""))
 
                         # --- TRAILING STOP (200 PIPS) ---
                         if SABR_TRAILING_ACTIVE and pips_indiv >= 200:
@@ -4227,7 +4267,7 @@ async def main_handler(event):
                 opened_tickets = await execute_trade(sym, act, sl, tp, p_msg, event.date, final_source)
 
                 if opened_tickets == SABR_DUPLICATE:
-                    await send_alert(f"🛡️ Signal SABR bloqué (anti-doublon) : {act} {sym}")
+                    await send_channel_alert(f"🛡️ Signal SABR bloqué (anti-doublon) : {act} {sym}", final_source)
                 else:
                     # Attribution du numéro du jour UNIQUEMENT si non bloqué
                     global SABR_DAILY_SIGNALS, SABR_SIGNAL_DAY
@@ -4242,19 +4282,19 @@ async def main_handler(event):
                     }
                     display_type_line = f"\n\nType : **{clean_type}**\n🆔 **Signal : {sig_id}**"
 
-                    await send_alert(f"✔️ Signal traité ({display_source}) :{display_type_line}\n\n {act} {sym} à {log_p}\n\n🛑 SL: {sl} & 🎯 TP: {tp}")
+                    await send_channel_alert(f"✔️ Signal traité ({display_source}) :{display_type_line}\n\n {act} {sym} à {log_p}\n\n🛑 SL: {sl} & 🎯 TP: {tp}", final_source)
 
                     if opened_tickets:
                         TELEGRAM_TO_TICKET[event.id] = opened_tickets
             else:
                 # --- CANAUX NON-SABR : comportement inchangé ---
-                await send_alert(f"✔️ Signal traité ({display_source}) :{display_type_line}\n\n {act} {sym} à {log_p}\n\n🛑 SL: {sl} & 🎯 TP: {tp}")
+                await send_channel_alert(f"✔️ Signal traité ({display_source}) :{display_type_line}\n\n {act} {sym} à {log_p}\n\n🛑 SL: {sl} & 🎯 TP: {tp}", final_source)
 
                 opened_tickets = await execute_trade(sym, act, sl, tp, p_msg, event.date, final_source)
 
                 if opened_tickets:
                     TELEGRAM_TO_TICKET[event.id] = opened_tickets
-                    await send_alert(f"✔️ **Signal Accepté** ({display_source}){display_type_line}\n🛑 SL: {sl} | 🎯 TP: {tp}")
+                    await send_channel_alert(f"✔️ **Signal Accepté** ({display_source}){display_type_line}\n🛑 SL: {sl} | 🎯 TP: {tp}", final_source)
         else:
             logger.info(f"⚠️ Ignoré (Parsing échoué) sur : {cleaned}")
 
@@ -4490,7 +4530,8 @@ async def get_current_state_for_firebase() -> dict:
             "drawdown_active": DRAWDOWN_ACTIVE,
             "sl_suiveur": TRAILING_STOP_PIPS, "sl_sell": SOFT_SL_PERCENT,
             "sl_suiveur_active": SL_SUIVEUR_ACTIVE, "soft_sl_active": SOFT_SL_ACTIVE,
-            "muted_channels": MUTED_CHANNELS, "security_triggered": security_triggered,
+            "muted_channels": MUTED_CHANNELS, "allowed_channels": ALLOWED_CHANNELS,
+            "security_triggered": security_triggered,
             "time_off_peak": TIME_OFF_PEAK_FACTOR, "prime_hours": PRIME_HOURS,
             "day_factor_0": DAY_RISK_FACTORS.get(0, 1.0), "day_factor_1": DAY_RISK_FACTORS.get(1, 1.0),
             "day_factor_2": DAY_RISK_FACTORS.get(2, 1.0), "day_factor_3": DAY_RISK_FACTORS.get(3, 1.0),
@@ -4608,6 +4649,19 @@ async def handle_firebase_command(cmd_id: str, cmd_data: dict) -> None:
             await run_bg(save_settings)
             await send_alert(f"📉 Soft SL Vente : {'🟢 ACTIVÉ' if SOFT_SL_ACTIVE else '🔴 DÉSACTIVÉ'}")
             set_status("done", {"success": True})
+
+        elif cmd_type == "set_allowed_channels":
+            # (#7) Met à jour à distance le pack du client (canaux visibles).
+            # Envoyé par la commande /channels du bot de licence via Firestore.
+            global ALLOWED_CHANNELS
+            new_list = payload.get("channels", cmd_data.get("channels", []))
+            if isinstance(new_list, str):
+                new_list = [c.strip() for c in new_list.split(",") if c.strip()]
+            ALLOWED_CHANNELS = [c for c in (new_list or []) if c]
+            await run_bg(save_settings)
+            pack_txt = ", ".join(c.replace("CANAL ", "") for c in ALLOWED_CHANNELS) if ALLOWED_CHANNELS else "TOUS les canaux"
+            await send_alert(f"📦 **Pack mis à jour**\n\nCanaux visibles : {pack_txt}")
+            set_status("done", {"success": True, "allowed_channels": ALLOWED_CHANNELS})
 
         elif cmd_type == "update_setting":
             # Réutilise la logique existante via appel direct

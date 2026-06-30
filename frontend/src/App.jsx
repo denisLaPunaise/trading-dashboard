@@ -368,6 +368,24 @@ function App() {
 
 const { account, daily_stats, settings, active_trades, closed_trades = [] } = dashboardData
 
+  // (#7) Pack du client : on n'affiche que les canaux de son pack (réglages, mute, stats).
+  // Liste vide/absente = tout afficher (rétro-compatible). Filtre purement cosmétique.
+  const allowedChannels = settings.allowed_channels || [];
+  const channelBaseToken = (name) => {
+    if (!name) return '';
+    let t = String(name).toUpperCase().replace('CANAL', '').trim().replace(/\s+/g, '_').replace(/_+/g, '_');
+    for (const suf of ['_SNIPER', '_ZONE', '_BLIND']) {
+      if (t.endsWith(suf)) t = t.slice(0, -suf.length);
+    }
+    return t.replace(/^_+|_+$/g, '');
+  };
+  const isChannelVisible = (name) => {
+    if (!allowedChannels.length) return true;        // pack vide = tout visible
+    const base = channelBaseToken(name);
+    if (!base) return true;
+    return allowedChannels.some((c) => channelBaseToken(c) === base);
+  };
+
   // 1. On déclare d'abord la balance
   const balanceMinuit = account.balance - daily_stats.realized_pnl;
   // Détection du mode Panic (réel du backend ou via le bouton de test)
@@ -798,12 +816,12 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
                 { label: 'Or (Global)', key: 'risk_gold', color: '#ffd700' },
                 { label: 'Indices (Global)', key: 'risk_indices', color: '#4da8da' },
                 { label: 'Devises (Global)', key: 'risk_other', color: '#ff8a65' },
-                { label: 'MDT VIP', key: 'risk_mdt_vip', color: '#a5d6a7' },
-                { label: 'MDT Free', key: 'risk_mdt_free', color: '#81c784' },
-                { label: 'Space', key: 'risk_space', color: '#ce93d8' },
-                { label: 'Ligue', key: 'risk_ligue', color: '#ffb74d' },
-                { label: 'Perso', key: 'risk_perso', color: '#90caf9' }
-              ].map((item) => (
+                { label: 'MDT VIP', key: 'risk_mdt_vip', color: '#a5d6a7', channel: 'CANAL MDT_VIP' },
+                { label: 'MDT Free', key: 'risk_mdt_free', color: '#81c784', channel: 'CANAL MDT_FREE' },
+                { label: 'Space', key: 'risk_space', color: '#ce93d8', channel: 'CANAL SPACE' },
+                { label: 'Ligue', key: 'risk_ligue', color: '#ffb74d', channel: 'CANAL LIGUE' },
+                { label: 'Perso', key: 'risk_perso', color: '#90caf9', channel: 'CANAL PERSO' }
+              ].filter((item) => !item.channel || isChannelVisible(item.channel)).map((item) => (
                 <div key={item.key}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.9rem', marginBottom: '5px' }}>
                     <span>{item.label}</span>
@@ -817,9 +835,9 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
             {/* LOTS SABR (OR) */}
             <div style={{ display: 'flex', gap: '20px', marginTop: '20px', borderTop: '1px solid #333', paddingTop: '15px', flexWrap: 'wrap' }}>
                {[
-                { label: 'Lots SABR VIP', key: 'sabr_lot_vip' },
-                { label: 'Lots SABR Free', key: 'sabr_lot_free' }
-               ].map((item) => (
+                { label: 'Lots SABR VIP', key: 'sabr_lot_vip', channel: 'CANAL SABR_VIP' },
+                { label: 'Lots SABR Free', key: 'sabr_lot_free', channel: 'CANAL SABR_FREE' }
+               ].filter((item) => isChannelVisible(item.channel)).map((item) => (
                  <div key={item.key} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                     <span style={{ fontSize: '0.9rem' }}>{item.label}</span>
                     <input type="number" step="0.01" value={settings[item.key]} onChange={(e) => updateSetting(item.key, parseFloat(e.target.value))} style={{ background: '#2a2a2a', border: '1px solid #444', color: '#fff', padding: '5px', width: '70px', borderRadius: '4px', textAlign: 'center' }} />
@@ -998,7 +1016,7 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
             <div style={{ background: '#1e1e1e', border: '1px solid #333', borderRadius: '12px', padding: '20px' }}>
               <h3 style={{ margin: '0 0 15px 0', fontSize: '1rem', color: '#aaa', display: 'flex', alignItems: 'center', gap: '5px' }}><BellOff size={16}/> Mute Canaux</h3>
              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px' }}>
-                {["CANAL MDT_VIP", "CANAL MDT_FREE", "CANAL SABR_VIP", "CANAL SABR_FREE", "CANAL SABR_COPIE", "CANAL SPACE", "CANAL LIGUE", "CANAL PERSO"].map(chan => {
+                {["CANAL MDT_VIP", "CANAL MDT_FREE", "CANAL SABR_VIP", "CANAL SABR_FREE", "CANAL SABR_COPIE", "CANAL SPACE", "CANAL LIGUE", "CANAL PERSO"].filter(isChannelVisible).map(chan => {
                   const isMuted = settings.muted_channels?.includes(chan);
                   return (
                     <button 
@@ -1132,6 +1150,7 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
             <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
               {historicalStats?.channels_lifetime && Object.keys(historicalStats.channels_lifetime).length > 0 ? (
                 Object.entries(historicalStats.channels_lifetime)
+                .filter(([name]) => isChannelVisible(name)) // (#7) pack du client
                 .sort((a, b) => b[1].profit - a[1].profit) // Tri par profit décroissant
                 .map(([name, data]) => {
                   const avgPips = data.count > 0 ? (data.pips / data.count).toFixed(1) : "0.0";

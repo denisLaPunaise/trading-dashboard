@@ -106,6 +106,24 @@ def _license_telegram_id(key):
     return None
 
 
+def fb_push_set_channels(telegram_id, channels):
+    """(#7) Dépose une commande set_allowed_channels dans /users/{tg}/commands.
+    Le bot du client la récupère (polling 3s) et met à jour son pack à chaud."""
+    if not (FIREBASE_ENABLED and _fb_db):
+        return False
+    try:
+        _fb_db.collection("users").document(str(telegram_id)).collection("commands").add({
+            "type": "set_allowed_channels",
+            "payload": {"channels": list(channels)},
+            "status": "pending",
+            "created_at": fb_firestore.SERVER_TIMESTAMP,
+        })
+        return True
+    except Exception as e:
+        print(f"⚠️ fb_push_set_channels error: {e}")
+        return False
+
+
 def fb_disable_dashboard(key):
     """Désactive + révoque le compte dashboard (uid=telegram_id) — ferme le ban-gap."""
     if not FIREBASE_ENABLED:
@@ -186,6 +204,60 @@ ROW_CONFIG_VER = 2 # Ligne Config Version min
 # Chemin vers le .exe compilé (à mettre à jour à chaque nouvelle version)
 BOT_EXE_PATH = os.path.join(os.path.dirname(__file__), "Bot_FTMO_V14.0.0.exe")
 
+# ── (#7) Packs par client : canaux visibles (logs + dashboard) ─────────────────
+# Jeton tapé au /gen   ->   nom interne du canal
+VALID_CHANNEL_TOKENS = {
+    "SABR_VIP":   "CANAL SABR_VIP",
+    "SABR_FREE":  "CANAL SABR_FREE",
+    "SABR_COPIE": "CANAL SABR_COPIE",   # ⚠️ canal perso : assignable À LA MAIN uniquement, JAMAIS dans un pack
+    "MDT_VIP":    "CANAL MDT_VIP",
+    "MDT_FREE":   "CANAL MDT_FREE",
+    "SPACE":      "CANAL SPACE",
+    "LIGUE":      "CANAL LIGUE",
+    "PERSO":      "CANAL PERSO",
+}
+
+# Profils prédéfinis (packs). SABR_COPIE volontairement exclu de TOUS les profils.
+CHANNEL_PROFILES = {
+    "sabr":  ["CANAL SABR_VIP", "CANAL SABR_FREE"],
+    "mdt":   ["CANAL MDT_VIP", "CANAL MDT_FREE"],
+    "space": ["CANAL SPACE"],
+    "ligue": ["CANAL LIGUE"],
+    "perso": ["CANAL PERSO"],
+    # 'full' = tout SAUF SABR_COPIE (qui reste réservé à une assignation manuelle)
+    "full":  ["CANAL SABR_VIP", "CANAL SABR_FREE", "CANAL MDT_VIP", "CANAL MDT_FREE",
+              "CANAL SPACE", "CANAL LIGUE", "CANAL PERSO"],
+}
+
+
+def resolve_channels(arg):
+    """(#7) Convertit l'argument /gen|/channels en liste de canaux internes.
+    arg = nom de profil (ex 'sabr') OU jetons séparés par des virgules (ex 'SABR_VIP,PERSO').
+    Retourne (channels: list, error: str|None). channels=[] => pas de filtre (tout visible)."""
+    if not arg:
+        return [], None
+    key = arg.strip().lower()
+    if key in CHANNEL_PROFILES:
+        return list(CHANNEL_PROFILES[key]), None
+    out, unknown = [], []
+    for raw in arg.split(","):
+        tok = raw.strip().upper()
+        if not tok:
+            continue
+        if tok in VALID_CHANNEL_TOKENS:
+            ch = VALID_CHANNEL_TOKENS[tok]
+            if ch not in out:
+                out.append(ch)
+        else:
+            unknown.append(raw.strip())
+    if unknown:
+        valid = ", ".join(sorted(VALID_CHANNEL_TOKENS.keys()))
+        profs = ", ".join(sorted(CHANNEL_PROFILES.keys()))
+        return None, (f"Jeton(s) inconnu(s) : {', '.join(unknown)}.\n"
+                      f"Profils dispo : {profs}\nCanaux dispo : {valid}")
+    return out, None
+
+
 SETTINGS_TEMPLATE = {
     "USER_LICENSE_KEY": "",
     "FIREBASE_EMAIL": "",
@@ -214,17 +286,20 @@ SETTINGS_TEMPLATE = {
     "SABR_ANTI_DOUBLON_ACTIVE": True,
     "SABR_FORWARD_ACTIVE": True,
     "MUTED_CHANNELS": [],
+    "ALLOWED_CHANNELS": [],
     "CHANNEL_TP1_PCT": {},
     "TIME_PRIME_RANGES": [[8, 17]],
     "TIME_OFF_PEAK_FACTOR": 0.5,
     "DAY_RISK_FACTORS": {"0": 1.0, "1": 1.0, "2": 1.0, "3": 1.0, "4": 1.0, "5": 1.0, "6": 1.0}
 }
 
-def generate_client_package(client_name: str, key: str, fb_email: str, fb_password: str) -> tuple:
+def generate_client_package(client_name: str, key: str, fb_email: str, fb_password: str, allowed_channels=None) -> tuple:
     """
     Génère un ZIP en mémoire contenant :
     - settings.json pré-rempli (clé + Firebase + valeurs par défaut)
     - Bot_FTMO_V14.0.0.exe (si disponible sur le VPS)
+
+    allowed_channels : (#7) liste blanche des canaux visibles du client (vide = tous).
 
     Retourne (zip_bytes: io.BytesIO, filename: str, exe_included: bool)
     """
@@ -232,6 +307,7 @@ def generate_client_package(client_name: str, key: str, fb_email: str, fb_passwo
     settings["USER_LICENSE_KEY"] = key
     settings["FIREBASE_EMAIL"]   = fb_email or ""
     settings["FIREBASE_PASSWORD"] = fb_password or ""
+    settings["ALLOWED_CHANNELS"] = list(allowed_channels or [])
 
     settings_bytes = json.dumps(settings, indent=4, ensure_ascii=False).encode("utf-8")
 
@@ -533,31 +609,44 @@ async def main_handler(event):
 
     # --- 2. GESTION DES COMMANDES ADMIN ---
     
-    # A. Générateur de Clé (/gen User [Jours])
+    # A. Générateur de Clé (/gen User [Jours] [profil|canaux])
     elif msg.lower().startswith("/gen"):
         try:
             parts = msg.split()
             if len(parts) < 2:
-                await event.reply("❌ Usage: `/gen Prenom [30]`")
+                await event.reply("❌ Usage: `/gen Prenom [jours] [profil|canaux]`\nEx: `/gen Pierre 30 sabr` ou `/gen Pierre 30 SABR_VIP,PERSO`")
                 return
-            
+
             user = parts[1]
-            days = parts[2] if len(parts) > 2 else None
-            
+            # (#7) parsing : 2e mot = jours si nombre, sinon c'est le pack (validité illimitée)
+            rest = parts[2:]
+            days = None
+            chan_parts = rest
+            if rest and rest[0].isdigit():
+                days = rest[0]
+                chan_parts = rest[1:]
+            chan_arg = "".join(chan_parts).strip()  # tolère "SABR_VIP, PERSO"
+            allowed, ch_err = resolve_channels(chan_arg)
+            if ch_err:
+                await event.reply(f"❌ {ch_err}")
+                return
+            pack_txt = ", ".join(c.replace("CANAL ", "") for c in allowed) if allowed else "TOUS les canaux"
+
             # Génération d'une clé propre (FTMO-XXXX-XXXX)
             unique_id = str(uuid.uuid4()).split('-')[1].upper() + str(uuid.uuid4()).split('-')[2].upper()
             new_key = f"FTMO-{unique_id}"
-            
+
             await event.reply("⏳ Création de la licence et du package client...")
             success, info, fb_email, fb_password = await asyncio.to_thread(add_license_row, user, new_key, days)
 
             if success:
                 # Génération du ZIP
-                zip_buf, zip_name, exe_included = generate_client_package(user, new_key, fb_email, fb_password)
+                zip_buf, zip_name, exe_included = generate_client_package(user, new_key, fb_email, fb_password, allowed_channels=allowed)
 
                 recap = (f"✅ **PACKAGE CLIENT GÉNÉRÉ**\n"
                          f"👤 Client : {user}\n"
                          f"🔑 Clé : `{new_key}`\n"
+                         f"📦 Pack (canaux visibles) : {pack_txt}\n"
                          f"📝 {info}\n\n"
                          f"📦 Le ZIP contient :\n"
                          f"  • `settings.json` pré-rempli\n"
@@ -578,6 +667,47 @@ async def main_handler(event):
                 await event.reply(f"❌ Erreur: {info}")
             
         except Exception as e: await event.reply(f"❌ Crash: {e}")
+
+    # A-bis. (#7) Changer le pack d'un client EXISTANT à distance (/channels CLE profil|canaux)
+    elif msg.lower().startswith("/channels"):
+        try:
+            parts = msg.split()
+            if len(parts) < 3:
+                profs = ", ".join(sorted(CHANNEL_PROFILES.keys()))
+                toks = ", ".join(sorted(VALID_CHANNEL_TOKENS.keys()))
+                await event.reply(f"❌ Usage: `/channels CLE profil|canaux`\n"
+                                  f"Ex: `/channels FTMO-AB12 sabr,mdt` ou `/channels FTMO-AB12 SABR_VIP,PERSO`\n"
+                                  f"Profils: {profs}\nCanaux: {toks}\n"
+                                  f"💡 `/channels CLE full` = tout afficher.")
+                return
+            key = parts[1]
+            chan_arg = "".join(parts[2:]).strip()
+            allowed, ch_err = resolve_channels(chan_arg)
+            if ch_err:
+                await event.reply(f"❌ {ch_err}")
+                return
+            # La clé doit exister
+            found, _info = await asyncio.to_thread(get_license_info, key)
+            if not found:
+                await event.reply(f"❌ Clé `{key}` introuvable dans la Sheet.")
+                return
+            # Le client doit avoir lié son dashboard au moins une fois (telegram_id présent)
+            tg = await asyncio.to_thread(_license_telegram_id, key)
+            if not tg:
+                await event.reply("⚠️ Ce client n'a pas encore lié son dashboard (telegram_id absent).\n"
+                                  "Il doit lancer son bot au moins une fois, puis réessaie.")
+                return
+            ok = await asyncio.to_thread(fb_push_set_channels, tg, allowed)
+            pack_txt = ", ".join(c.replace("CANAL ", "") for c in allowed) if allowed else "TOUS les canaux"
+            if ok:
+                await event.reply(f"✅ **PACK MIS À JOUR** pour `{key}`\n"
+                                  f"📦 Canaux visibles : {pack_txt}\n\n"
+                                  f"⏳ Appliqué quand le bot du client tourne (sous quelques secondes), "
+                                  f"sinon à son prochain démarrage. La validité n'est PAS modifiée.")
+            else:
+                await event.reply("❌ Échec de l'envoi de la commande (Firebase indisponible ?).")
+        except Exception as e:
+            await event.reply(f"❌ Crash: {e}")
 
     # B. Ajout Manuel (/add User Key [Jours])
     elif msg.lower().startswith("/add"):
@@ -808,9 +938,16 @@ async def main_handler(event):
     elif msg.lower() == "/help":
         await event.reply("**🛠️ ADMIN BOT 2.0**\n\n\n"
                           "🔑 **GÉNÉRATION**\n\n"
-                          "`/gen Pierre` : Clé illimitée\n"
-                          "`/gen Pierre 30` : Clé 30 jours\n"
+                          "`/gen Pierre` : Clé illimitée (tous canaux)\n"
+                          "`/gen Pierre 30` : Clé 30 jours (tous canaux)\n"
+                          "`/gen Pierre 30 sabr` : 30 jours, pack sabr\n"
+                          "`/gen Pierre 30 SABR_VIP,PERSO` : canaux sur-mesure\n"
                           "`/add Pierre Clé` : Ajout manuel\n\n\n"
+                          "📦 **PACK CANAUX (visibles : logs + dashboard)**\n\n"
+                          "`/channels Clé profil|canaux` : change le pack à distance\n"
+                          "Profils : sabr, mdt, space, ligue, perso, full\n"
+                          "Canaux : SABR_VIP, SABR_FREE, SABR_COPIE, MDT_VIP, MDT_FREE, SPACE, LIGUE, PERSO\n"
+                          "⚠️ SABR_COPIE jamais dans un pack (à mettre à la main)\n\n\n"
                           "🔧 **GESTION**\n\n"
                           "`/info Clé` : Voir détails (PC, Date...)\n"
                           "`/fbcreate Clé` : Créer compte Firebase (clé existante)\n"

@@ -98,3 +98,36 @@ Recompiler l'exe **ET** redéployer le frontend avant test.
 - [ ] **Soft SL Vente ON** : clôture partielle sur repli comme avant.
 - [ ] Les deux états **survivent à un redémarrage** (persistés dans settings.json).
 - [ ] ⚠️ Ces toggles concernent le trailing **général** (hors SABR, qui garde son propre `SABR_TRAILING_ACTIVE`).
+
+---
+
+## #7 — Packs par client : canaux visibles (logs + dashboard) (`backend` + `frontend` + bot licence)
+Filtre **purement cosmétique** (n'affecte PAS le trading). Recompiler l'exe **ET** redéployer le frontend **ET** copier-coller le bot licence sur le VPS.
+
+### Bot de licence (`/gen` + `/channels`)
+- [ ] `/gen Pierre 30 sabr` → ZIP généré, settings.json contient `"ALLOWED_CHANNELS": ["CANAL SABR_VIP","CANAL SABR_FREE"]` ; le récap affiche le pack.
+- [ ] `/gen Pierre 30` (sans pack) → `ALLOWED_CHANNELS: []` ; récap « TOUS les canaux ».
+- [ ] `/gen Pierre 30 SABR_VIP,PERSO` → liste sur-mesure correcte.
+- [ ] `/gen Pierre sabr` (pas de jours) → validité illimitée + pack sabr.
+- [ ] `/gen Pierre 30 xyz` (jeton inconnu) → message d'erreur listant profils/canaux, **pas** de génération.
+- [ ] `/channels FTMO-XXXX mdt` sur une clé existante → réponse « PACK MIS À JOUR » ; le bot du client reçoit la commande et envoie `📦 Pack mis à jour` ; le dashboard se met à jour.
+- [ ] `/channels` sur une clé dont le client n'a jamais lancé le bot → message « telegram_id absent ».
+- [ ] `/channels FTMO-XXXX full` → tout réaffiché (sauf SABR_COPIE).
+- [ ] La **validité** d'une clé reste modifiable comme avant (`/time`) sans impact sur le pack, et inversement.
+
+### Dashboard (filtrage affichage)
+- [ ] Client avec pack `sabr` : dans « Panneau de Contrôle », seuls les réglages SABR sont visibles ; **pas** de MDT/Space/Ligue/Perso (risque, lots, mute).
+- [ ] Pack vide : **tout** s'affiche comme avant (rétro-compatible — tes clients actuels).
+- [ ] La section « Par Canal » (stats) ne montre que les canaux du pack.
+- [ ] Les réglages **globaux** (Or / Indices / Devises) restent toujours visibles.
+
+### Logs Telegram (canal du client)
+- [ ] Client avec pack `sabr` : aucun message « Signal traité / Accepté / TP / SL » d'un canal **non** SABR n'arrive dans son canal.
+- [ ] Les SABR (de son pack) arrivent normalement.
+- [ ] Pack vide : tous les logs arrivent comme avant.
+- [ ] Les alertes **non liées à un canal** (session, nouveau jour, drawdown, licence, erreurs MT5) arrivent **toujours**, quel que soit le pack.
+
+### ⚠️ Points de vigilance
+- [ ] **SABR_COPIE** n'apparaît dans **aucun** profil (`sabr`, `full`…). Il ne s'assigne qu'à la main (`SABR_COPIE` dans la liste). À confirmer que c'est bien le comportement voulu.
+- [ ] Le filtrage des logs est **cosmétique** : un trade d'un canal caché s'ouvre quand même et **reste visible dans « Trades Actifs »** (positions live, non filtrées). Normal (trading non touché).
+- [ ] `/channels` n'agit que si le bot client tourne (commande Firebase appliquée sous ~3s, sinon au prochain démarrage).
