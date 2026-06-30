@@ -3963,7 +3963,9 @@ async def main_handler(event):
     PROCESSED_MSG_IDS.add(event.id)
 
     # === 📤 TRANSFERT DES MESSAGES SABR (FORWARDER) ===
-    if SABR_FORWARD_ACTIVE and event.chat_id in [ID_SABR_VIP, -5093508256]:
+    # (#5) Si le canal copie est mute, on coupe aussi la recopie des messages.
+    copie_muted = any("SABR_COPIE" in m for m in MUTED_CHANNELS)
+    if SABR_FORWARD_ACTIVE and not copie_muted and event.chat_id in [ID_SABR_VIP, -5093508256]:
         try:
             global http_session
             # On envoie le message original vers ton canal de copie

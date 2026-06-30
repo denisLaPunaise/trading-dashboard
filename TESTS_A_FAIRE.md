@@ -25,3 +25,13 @@ Recompiler l'exe avant test.
 - [ ] Vérifier dans le log `🪓 Découpage (Prix, Lot)` que la répartition ne dépend plus de l'ordre.
 - [ ] SL global par défaut cohérent (sous la zone en ACHAT, au-dessus en VENTE).
 - [ ] ⚠️ **Valider la règle SELL sur un vrai signal SELL** (déduite par symétrie).
+
+---
+
+## #5 — Canal SABR copie : respect du mute (`backend/bot_release13.py`, forwarder)
+Recompiler l'exe avant test.
+
+- [ ] Mute `CANAL SABR_COPIE` (dashboard ou `/mute SABR_CP`) → **plus aucun message recopié** dans le canal copie.
+- [ ] Unmute → la recopie reprend normalement.
+- [ ] `/forward_sabr off` coupe toujours la recopie (interrupteur dédié intact).
+- [ ] Le mute du canal copie ne casse pas le trading des autres canaux SABR (VIP/Free).
