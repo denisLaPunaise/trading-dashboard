@@ -35,3 +35,18 @@ Recompiler l'exe avant test.
 - [ ] Unmute → la recopie reprend normalement.
 - [ ] `/forward_sabr off` coupe toujours la recopie (interrupteur dédié intact).
 - [ ] Le mute du canal copie ne casse pas le trading des autres canaux SABR (VIP/Free).
+
+---
+
+## #4 — Anti-doublon SABR : pas d'incrément du n° ni de spam (`backend/bot_release13.py`)
+Recompiler l'exe avant test.
+
+- [ ] Signal SABR **bloqué par l'anti-doublon** (< 100 pips d'un trade SABR existant) :
+  - [ ] Le numéro de signal du jour **n'est PAS incrémenté**.
+  - [ ] Aucun message "Signal traité"/"Accepté".
+  - [ ] Un **seul** message court `🛡️ Signal SABR bloqué (anti-doublon)` (acceptable).
+- [ ] Signal SABR **accepté** (non bloqué) : numéro +1 + message "Signal traité" avec `🆔 Signal : N` + TP/SL corrects.
+- [ ] Deux signaux SABR valides d'affilée → numéros consécutifs (1, 2) sans trou dû à un blocage intercalé.
+- [ ] Signal **BLIND** ("Go buy") : toujours numéroté + message "EN APPROCHE" (non régressé).
+- [ ] Canaux **non-SABR** (MDT/Space/Ligue/Perso) : messages "traité" puis "Accepté" inchangés.
+- [ ] Réactivation d'une zone par numéro (`/reactivate`) cohérente avec la nouvelle numérotation.

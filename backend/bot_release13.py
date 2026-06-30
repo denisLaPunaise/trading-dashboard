@@ -183,6 +183,10 @@ SABR_ZONE_MIN_DIST = {} # Mémorise la distance la plus proche atteinte par le m
 SABR_DAILY_SIGNALS = {} # Stocke les signaux du jour {1: data, 2: data...}
 SABR_SIGNAL_DAY = -1    # Mémorise le jour pour remettre à zéro à minuit
 
+# (#4) Sentinelle renvoyée par execute_trade quand un signal SABR est bloqué par
+# l'anti-doublon : permet de distinguer ce cas des autres return None (blind, drawdown...).
+SABR_DUPLICATE = "SABR_DUPLICATE"
+
 PROCESSED_MSG_IDS = set() # Mémorise les IDs des messages déjà traités
 
 CHANNELS_STRAT_2 = ["CANAL MDT_VIP", "CANAL MDT_FREE"]
@@ -1948,7 +1952,7 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
 
         if is_duplicate:
             log(f"🛡️ Doublon SABR ignoré : {symbol} {action} (Écart < 100 pips)", important=True)
-            return None
+            return SABR_DUPLICATE  # (#4) signale au handler : pas de numéro, pas de spam
 
     try: sl_val = float(sl)
     except: sl_val = 0.0
@@ -4151,9 +4155,12 @@ async def main_handler(event):
             # --- GESTION AFFICHAGE SABR (TYPE SÉPARÉ) ---
             display_source = final_source.replace("_", " ") # Par défaut (ex: MDT VIP)
             display_type_line = "" # Par défaut vide
+            is_sabr_signal = "SABR" in final_source
+            clean_type = ""
 
-            if "SABR" in final_source:
-                # 1. On nettoie la Source
+            if is_sabr_signal:
+                # On nettoie la Source + on formate le Type (la NUMÉROTATION est faite
+                # plus bas, uniquement si le signal n'est PAS bloqué par l'anti-doublon).
                 if "VIP" in final_source:
                     display_source = "CANAL SABR VIP"
                     raw_type = final_source.replace("CANAL SABR_VIP_", "")
@@ -4163,28 +4170,7 @@ async def main_handler(event):
                 else:
                     display_source = "CANAL SABR FREE"
                     raw_type = final_source.replace("CANAL SABR_FREE_", "")
-                
-                # 2. On formate le Type (ex: "UPDATE SNIPER")
                 clean_type = raw_type.replace("_", " ")
-
-                # --- NOUVEAU : ENREGISTREMENT DE L'ID DU SIGNAL ---
-                global SABR_DAILY_SIGNALS, SABR_SIGNAL_DAY
-                c_day = datetime.now().day
-                # Si on change de jour, on vide la liste pour repartir à 1
-                if c_day != SABR_SIGNAL_DAY:
-                    SABR_DAILY_SIGNALS.clear()
-                    SABR_SIGNAL_DAY = c_day
-                
-                # On attribue le prochain numéro (ex: 1, puis 2, puis 3...)
-                sig_id = len(SABR_DAILY_SIGNALS) + 1
-                SABR_DAILY_SIGNALS[sig_id] = {
-                    "sym": sym, "act": act, "sl": sl, "tp": tp, 
-                    "p_msg": p_msg, "source": final_source
-                }
-                
-                # 2. On ajoute la ligne Type et l'ID dans le message Telegram
-                display_type_line = f"\n\nType : **{clean_type}**\n🆔 **Signal : {sig_id}**"
-                # --------------------------------------------------
 
             # --- NOUVELLE LOGIQUE (MUTE TOTAL INTELLIGENT) ---
             is_muted = any(m in final_source for m in MUTED_CHANNELS)
@@ -4192,16 +4178,40 @@ async def main_handler(event):
                 logger.warning(f"🚫 SIGNAL IGNORÉ : Le canal {final_source} est bloqué par le mode MUTE.")
                 return # On arrête tout ici : pas d'alerte, PAS DE TRADE.
 
-            # Si on arrive ici, le canal n'est pas muet -> On alerte et on trade
-            await send_alert(f"✔️ Signal traité ({display_source}) :{display_type_line}\n\n {act} {sym} à {log_p}\n\n🛑 SL: {sl} & 🎯 TP: {tp}")
-            
-            # NOUVELLE LOGIQUE D'ALERTE SANS SPAM
-            opened_tickets = await execute_trade(sym, act, sl, tp, p_msg, event.date, final_source)          
-            
-            if opened_tickets: 
-                TELEGRAM_TO_TICKET[event.id] = opened_tickets
-                # On alerte UNIQUEMENT si le trade a bien été ouvert (non bloqué par le doublon)
-                await send_alert(f"✔️ **Signal Accepté** ({display_source}){display_type_line}\n🛑 SL: {sl} | 🎯 TP: {tp}")
+            if is_sabr_signal:
+                # (#3/#4) On EXÉCUTE d'abord : un signal bloqué par l'anti-doublon ne doit
+                # ni incrémenter le numéro de signal ni envoyer de message (sauf "bloqué").
+                opened_tickets = await execute_trade(sym, act, sl, tp, p_msg, event.date, final_source)
+
+                if opened_tickets == SABR_DUPLICATE:
+                    await send_alert(f"🛡️ Signal SABR bloqué (anti-doublon) : {act} {sym}")
+                else:
+                    # Attribution du numéro du jour UNIQUEMENT si non bloqué
+                    global SABR_DAILY_SIGNALS, SABR_SIGNAL_DAY
+                    c_day = datetime.now().day
+                    if c_day != SABR_SIGNAL_DAY:
+                        SABR_DAILY_SIGNALS.clear()
+                        SABR_SIGNAL_DAY = c_day
+                    sig_id = len(SABR_DAILY_SIGNALS) + 1
+                    SABR_DAILY_SIGNALS[sig_id] = {
+                        "sym": sym, "act": act, "sl": sl, "tp": tp,
+                        "p_msg": p_msg, "source": final_source
+                    }
+                    display_type_line = f"\n\nType : **{clean_type}**\n🆔 **Signal : {sig_id}**"
+
+                    await send_alert(f"✔️ Signal traité ({display_source}) :{display_type_line}\n\n {act} {sym} à {log_p}\n\n🛑 SL: {sl} & 🎯 TP: {tp}")
+
+                    if opened_tickets:
+                        TELEGRAM_TO_TICKET[event.id] = opened_tickets
+            else:
+                # --- CANAUX NON-SABR : comportement inchangé ---
+                await send_alert(f"✔️ Signal traité ({display_source}) :{display_type_line}\n\n {act} {sym} à {log_p}\n\n🛑 SL: {sl} & 🎯 TP: {tp}")
+
+                opened_tickets = await execute_trade(sym, act, sl, tp, p_msg, event.date, final_source)
+
+                if opened_tickets:
+                    TELEGRAM_TO_TICKET[event.id] = opened_tickets
+                    await send_alert(f"✔️ **Signal Accepté** ({display_source}){display_type_line}\n🛑 SL: {sl} | 🎯 TP: {tp}")
         else:
             logger.info(f"⚠️ Ignoré (Parsing échoué) sur : {cleaned}")
 
@@ -4234,7 +4244,7 @@ async def edit_handler(event):
         # C'est un signal "Go buy" qui vient d'être mis à jour avec un prix !
         # On tente d'ouvrir le trade proprement, sans spammer.
         new_tix = await execute_trade(rsym, act, sl, tp, p_msg, event.date, str(format_detected))
-        if new_tix: 
+        if new_tix and new_tix != SABR_DUPLICATE:
             TELEGRAM_TO_TICKET[event.id] = new_tix
             await send_alert(f"✔️ **Signal Aveugle Activé** ({format_detected})\n{act} {rsym} à {p_msg}")
         return
