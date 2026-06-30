@@ -1,6 +1,7 @@
 # Clés et credentials — ne JAMAIS committer
 serviceAccountKey.json
 service_account.json
+license_secrets.json
 *.pem
 *.key
 

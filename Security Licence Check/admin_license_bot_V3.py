@@ -91,6 +91,51 @@ def fb_enable_firebase_user(key):
     except Exception as e:
         print(f"⚠️ fb_enable_firebase_user error: {e}")
 
+
+def _license_telegram_id(key):
+    """Récupère le telegram_id lié à une licence (pour agir sur le compte dashboard)."""
+    if not (FIREBASE_ENABLED and _fb_db):
+        return None
+    try:
+        d = _fb_db.collection("licenses").document(key).get()
+        if d.exists:
+            tg = d.to_dict().get("telegram_id")
+            return str(tg) if tg else None
+    except Exception as e:
+        print(f"⚠️ _license_telegram_id: {e}")
+    return None
+
+
+def fb_disable_dashboard(key):
+    """Désactive + révoque le compte dashboard (uid=telegram_id) — ferme le ban-gap."""
+    if not FIREBASE_ENABLED:
+        return
+    tg = _license_telegram_id(key)
+    if not tg:
+        return
+    try:
+        fb_auth.update_user(tg, disabled=True)
+        fb_auth.revoke_refresh_tokens(tg)
+    except fb_auth.UserNotFoundError:
+        pass  # le dashboard ne s'est jamais connecté
+    except Exception as e:
+        print(f"⚠️ fb_disable_dashboard: {e}")
+
+
+def fb_enable_dashboard(key):
+    """Réactive le compte dashboard (uid=telegram_id) lié à cette licence."""
+    if not FIREBASE_ENABLED:
+        return
+    tg = _license_telegram_id(key)
+    if not tg:
+        return
+    try:
+        fb_auth.update_user(tg, disabled=False)
+    except fb_auth.UserNotFoundError:
+        pass
+    except Exception as e:
+        print(f"⚠️ fb_enable_dashboard: {e}")
+
 # --- PATCH COMPATIBILITÉ PYTHON < 3.9 ---
 if not hasattr(asyncio, 'to_thread'):
     import contextvars, functools
@@ -106,9 +151,16 @@ if not hasattr(asyncio, 'to_thread'):
 # ⚙️ CONFIGURATION ADMIN
 # ==========================================
 
-# Tes identifiants Telegram (Les mêmes que le bot ou un autre compte)
-API_ID = 32708194            
-API_HASH = '37b283f8c146b27dcd4915102cc50da8'
+# Identifiants Telegram — chargés depuis un fichier local NON commité (license_secrets.json)
+API_ID = 0
+API_HASH = ""
+try:
+    with open("license_secrets.json", "r", encoding="utf-8") as _sf:
+        _secrets = json.load(_sf)
+    API_ID = int(_secrets.get("API_ID", 0))
+    API_HASH = _secrets.get("API_HASH", "")
+except Exception as _e:
+    print(f"ATTENTION: license_secrets.json introuvable ou invalide ({_e}). Cree-le avec API_ID + API_HASH.")
 
 # Le nom EXACT de ton Google Sheet (celui affiché en haut de la page)
 SHEET_NAME = "FTMO_BOT_LICENSES" # <--- METS LE VRAI NOM ICI
@@ -362,6 +414,7 @@ def ban_license(key):
         sheet.update_cell(cell.row, COL_STATUS, "BANNED")
         fb_sync_license(key, "", "BANNED")
         fb_disable_firebase_user(key)
+        fb_disable_dashboard(key)
         return True, "Licence BANNIE."
     except Exception as e: return False, str(e)
 
@@ -425,6 +478,7 @@ def update_license_time(key, value):
         sheet.update_cell(cell.row, COL_STATUS, "ACTIVE")
         fb_sync_license(key, "", "ACTIVE", date_fin=new_date_str)
         fb_enable_firebase_user(key)
+        fb_enable_dashboard(key)
         return True, new_date_str
 
     except Exception as e: return False, str(e)
@@ -437,6 +491,8 @@ def set_expired(key):
         if not cell: return False
         # On écrit EXPIRED dans la colonne statut (3)
         sheet.update_cell(cell.row, COL_STATUS, "EXPIRED")
+        fb_disable_firebase_user(key)
+        fb_disable_dashboard(key)
         return True
     except: return False
 
