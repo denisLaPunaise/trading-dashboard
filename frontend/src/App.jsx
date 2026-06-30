@@ -329,6 +329,10 @@ function App() {
     await sendCommand('toggle_mute', { channel: channelName }, `mute_${channelName}`);
   };
 
+  const toggleDrawdown = async () => {
+    await sendCommand('toggle_drawdown', {}, 'toggle_drawdown');
+  };
+
   // --- RENDU ---
   if (error) return <div style={{ color: '#ff4444', textAlign: 'center', padding: '50px', background: '#121212', minHeight: '100vh', boxSizing: 'border-box', overflowX: 'hidden' }}>{error}</div>
 
@@ -933,6 +937,19 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
                     <input type="number" step={item.step} value={item.val} onChange={(e) => updateSetting(item.key, parseFloat(e.target.value) / item.mult)} style={{ background: '#121212', border: '1px solid #444', color: '#fff', padding: '5px', width: '60px', borderRadius: '4px', textAlign: 'center' }} />
                  </div>
               ))}
+
+              {/* Toggle ON/OFF du disjoncteur Drawdown (#8) */}
+              {(() => {
+                const ddActive = settings.drawdown_active !== false; // défaut = actif
+                return (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '4px', background: ddActive ? '#2a2a2a' : '#3a1f1f', padding: '10px', borderRadius: '8px', border: ddActive ? '1px solid #2a2a2a' : '1px solid #ff4444' }}>
+                    <span style={{ fontSize: '0.9rem' }}>Disjoncteur Drawdown{!ddActive && <span style={{ color: '#ff6b6b', fontSize: '0.7rem', display: 'block' }}>⚠️ Protection désactivée</span>}</span>
+                    <button onClick={() => { triggerHaptic('medium'); toggleDrawdown(); }} style={{ padding: '6px 14px', borderRadius: '20px', border: 'none', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'bold', background: ddActive ? '#00c853' : '#ff4444', color: '#fff', minWidth: '70px' }}>
+                      {ddActive ? 'ON 🟢' : 'OFF 🔴'}
+                    </button>
+                  </div>
+                );
+              })()}
             </div>
 
             {/* Mute Canaux */}

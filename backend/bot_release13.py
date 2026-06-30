@@ -170,7 +170,8 @@ RISK_PERCENT_PERSO = 0.006         # 0.6% par défaut
 FIXED_LOT_SABR_FREE = 0.06         # Lot TOTAL par défaut pour SABR Free
 FIXED_LOT_SABR_VIP = 0.06          # Lot TOTAL par défaut pour SABR VIP
 
-MAX_DAILY_DRAWDOWN = 0.040         # Drawdown max journalier (4%) 
+MAX_DAILY_DRAWDOWN = 0.040         # Drawdown max journalier (4%)
+DRAWDOWN_ACTIVE = True             # (#8) Disjoncteur drawdown ON/OFF (désactivable au dashboard)
 MAX_SPREAD_PIPS = 30.0       
 MAX_SLIPPAGE = 100
 FIXED_LOT_GOLD = 0.06      
@@ -994,6 +995,7 @@ def save_settings():
                 "RISK_PERCENT_LIGUE": RISK_PERCENT_LIGUE,
                 "RISK_PERCENT_PERSO": RISK_PERCENT_PERSO,
                 "MAX_DAILY_DRAWDOWN": MAX_DAILY_DRAWDOWN,
+                "DRAWDOWN_ACTIVE": DRAWDOWN_ACTIVE,
                 "TRAILING_STOP_PIPS": TRAILING_STOP_PIPS,
                 "SOFT_SL_PERCENT": SOFT_SL_PERCENT,
                 "SABR_TRAILING_ACTIVE": SABR_TRAILING_ACTIVE,
@@ -1027,7 +1029,7 @@ FIREBASE_PASSWORD = ""
 
 def load_settings():
     """Charge les réglages au démarrage"""
-    global RISK_PERCENT_GOLD, SABR_FORWARD_ACTIVE, RISK_PERCENT_OTHER, RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE, MAX_DAILY_DRAWDOWN, TRAILING_STOP_PIPS, RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO, SOFT_SL_PERCENT, MUTED_CHANNELS, CHANNEL_TP1_PCT, TELEGRAM_DESTINATION_ID, ADMIN_ID, RISK_PERCENT_INDICES, PRIME_HOURS, TIME_OFF_PEAK_FACTOR, DAY_RISK_FACTORS, FIXED_LOT_SABR_FREE, FIXED_LOT_SABR_VIP, SABR_TRAILING_ACTIVE, DASHBOARD_MSG_ID, FIREBASE_EMAIL, FIREBASE_PASSWORD
+    global RISK_PERCENT_GOLD, SABR_FORWARD_ACTIVE, RISK_PERCENT_OTHER, RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE, MAX_DAILY_DRAWDOWN, DRAWDOWN_ACTIVE, TRAILING_STOP_PIPS, RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO, SOFT_SL_PERCENT, MUTED_CHANNELS, CHANNEL_TP1_PCT, TELEGRAM_DESTINATION_ID, ADMIN_ID, RISK_PERCENT_INDICES, PRIME_HOURS, TIME_OFF_PEAK_FACTOR, DAY_RISK_FACTORS, FIXED_LOT_SABR_FREE, FIXED_LOT_SABR_VIP, SABR_TRAILING_ACTIVE, DASHBOARD_MSG_ID, FIREBASE_EMAIL, FIREBASE_PASSWORD
 
     if os.path.exists(SETTINGS_FILENAME):
         try:
@@ -1047,6 +1049,7 @@ def load_settings():
                 if "RISK_PERCENT_LIGUE" in data: RISK_PERCENT_LIGUE = data["RISK_PERCENT_LIGUE"]
                 if "RISK_PERCENT_PERSO" in data: RISK_PERCENT_PERSO = data["RISK_PERCENT_PERSO"]
                 if "MAX_DAILY_DRAWDOWN" in data: MAX_DAILY_DRAWDOWN = data["MAX_DAILY_DRAWDOWN"]
+                if "DRAWDOWN_ACTIVE" in data: DRAWDOWN_ACTIVE = data["DRAWDOWN_ACTIVE"]
                 if "TRAILING_STOP_PIPS" in data: TRAILING_STOP_PIPS = data["TRAILING_STOP_PIPS"]
                 if "SOFT_SL_PERCENT" in data: SOFT_SL_PERCENT = data["SOFT_SL_PERCENT"]
                 if "SABR_TRAILING_ACTIVE" in data: SABR_TRAILING_ACTIVE = data["SABR_TRAILING_ACTIVE"] 
@@ -1557,6 +1560,10 @@ async def update_daily_stats():
         save_state_and_stats(current_trade_day, daily_start_balance)
 
 def check_daily_max_loss():
+    # (#8) Disjoncteur désactivé -> on ne bloque rien (ni nouveaux trades ni close d'urgence)
+    if not DRAWDOWN_ACTIVE:
+        return False
+
     # On récupère le vrai P&L calculé depuis l'historique serveur
     current_daily_pnl, _, _ = get_accurate_daily_stats()
     
@@ -4443,6 +4450,7 @@ async def get_current_state_for_firebase() -> dict:
             "sabr_lot_vip": FIXED_LOT_SABR_VIP, "sabr_lot_free": FIXED_LOT_SABR_FREE,
             "sabr_anti_doublon": SABR_ANTI_DOUBLON_ACTIVE, "sabr_trailing": SABR_TRAILING_ACTIVE,
             "sabr_forward": SABR_FORWARD_ACTIVE, "max_dd": MAX_DAILY_DRAWDOWN,
+            "drawdown_active": DRAWDOWN_ACTIVE,
             "sl_suiveur": TRAILING_STOP_PIPS, "sl_sell": SOFT_SL_PERCENT,
             "muted_channels": MUTED_CHANNELS, "security_triggered": security_triggered,
             "time_off_peak": TIME_OFF_PEAK_FACTOR, "prime_hours": PRIME_HOURS,
@@ -4537,6 +4545,14 @@ async def handle_firebase_command(cmd_id: str, cmd_data: dict) -> None:
             else:
                 MUTED_CHANNELS.append(channel)
             await run_bg(save_settings)
+            set_status("done", {"success": True})
+
+        elif cmd_type == "toggle_drawdown":
+            # (#8) Active/désactive le disjoncteur drawdown
+            global DRAWDOWN_ACTIVE
+            DRAWDOWN_ACTIVE = not DRAWDOWN_ACTIVE
+            await run_bg(save_settings)
+            await send_alert(f"📉 Disjoncteur Drawdown : {'🟢 ACTIVÉ' if DRAWDOWN_ACTIVE else '🔴 DÉSACTIVÉ'}")
             set_status("done", {"success": True})
 
         elif cmd_type == "update_setting":

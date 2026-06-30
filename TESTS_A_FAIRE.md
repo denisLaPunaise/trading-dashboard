@@ -50,3 +50,15 @@ Recompiler l'exe avant test.
 - [ ] Signal **BLIND** ("Go buy") : toujours numéroté + message "EN APPROCHE" (non régressé).
 - [ ] Canaux **non-SABR** (MDT/Space/Ligue/Perso) : messages "traité" puis "Accepté" inchangés.
 - [ ] Réactivation d'une zone par numéro (`/reactivate`) cohérente avec la nouvelle numérotation.
+
+---
+
+## #8 — Bouton désactiver le drawdown (`backend` + `frontend`)
+Recompiler l'exe **ET** redéployer le frontend (Vercel) avant test.
+
+- [ ] Dashboard : bouton "Disjoncteur Drawdown" ON/OFF visible dans le bloc Sécurité & MM.
+- [ ] Clic OFF → le bloc passe en rouge avec "⚠️ Protection désactivée" + message Telegram `📉 Disjoncteur Drawdown : 🔴 DÉSACTIVÉ`.
+- [ ] Drawdown OFF : un nouveau trade au-delà de la limite de perte **passe quand même** (plus de blocage).
+- [ ] Drawdown OFF : **pas** de fermeture d'urgence "URGENCE DD QUOTIDIEN" même si la perte dépasse la limite.
+- [ ] Drawdown ON (par défaut) : comportement habituel (blocage + close d'urgence) inchangé.
+- [ ] L'état ON/OFF **survit à un redémarrage** du bot (persisté dans settings.json).
