@@ -1777,14 +1777,14 @@ async def close_partial(pos, pct, tp_label, pips_gained, fixed_lot=None):
         acc = await run_bg(mt5.account_info)
         bal = acc.balance if acc else 0.0
         
-        await send_alert(f"✅️ **{tp_label} VALIDÉ (+{pips_gained:.0f} pips)**\n\n"
+        await send_channel_alert(f"✅️ **{tp_label} VALIDÉ (+{pips_gained:.0f} pips)**\n\n"
                          f"Symbole: {pos.symbol} ({open_time})\n\n"
                          f"Gain Sécurisé: **+{est_profit:.2f}€** ({lot} lots)\n\n"
                          f"Source: {src_clean}\n\n"
                          f"📊 **P&L Jour: {icon_day} {day_total:+.2f}€** ({day_pct:+.2f}%)\n"
                          f"   ├─ Encaissé: {day_realized:+.2f}€\n"
                          f"   └─ Flottant: {day_float:+.2f}€\n\n"
-                         f"🏦 **Portefeuille: {bal:.2f}€**")
+                         f"🏦 **Portefeuille: {bal:.2f}€**", src_raw)
         return True
         
     return False
@@ -2551,9 +2551,9 @@ async def check_closed_positions():
                    f"🏦 **Portefeuille: {acc.balance:.2f}€**")
             
             log(f"🏁 CLÔTURE: {sym} | Profit: {prof:+.2f}€ | {reason}", important=True)
-            
-            await send_alert(msg)
-            
+
+            await send_channel_alert(msg, source)
+
     watched_tickets = cur_tix
 
 # ==========================================
