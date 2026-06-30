@@ -167,8 +167,10 @@ RISK_PERCENT_SPACE = 0.006         # 0.6% par défaut
 RISK_PERCENT_LIGUE = 0.006         # 0.6% par défaut
 RISK_PERCENT_PERSO = 0.006         # 0.6% par défaut  
 
-FIXED_LOT_SABR_FREE = 0.06         # Lot TOTAL par défaut pour SABR Free
-FIXED_LOT_SABR_VIP = 0.06          # Lot TOTAL par défaut pour SABR VIP
+FIXED_LOT_SABR_FREE = 0.06         # Lot TOTAL par défaut pour SABR Free (OR uniquement)
+FIXED_LOT_SABR_VIP = 0.06          # Lot TOTAL par défaut pour SABR VIP (OR uniquement)
+# (#3) SABR hors-or : sizing par risque % (basé sur le SL du signal), réglable au dashboard.
+RISK_PERCENT_SABR_OTHER = 0.006    # 0.6% par défaut pour les paires SABR autres que l'or
 
 MAX_DAILY_DRAWDOWN = 0.040         # Drawdown max journalier (4%)
 DRAWDOWN_ACTIVE = True             # (#8) Disjoncteur drawdown ON/OFF (désactivable au dashboard)
@@ -991,6 +993,7 @@ def save_settings():
                 "RISK_PERCENT_MDT_FREE": RISK_PERCENT_MDT_FREE,
                 "FIXED_LOT_SABR_FREE": FIXED_LOT_SABR_FREE,
                 "FIXED_LOT_SABR_VIP": FIXED_LOT_SABR_VIP,
+                "RISK_PERCENT_SABR_OTHER": RISK_PERCENT_SABR_OTHER,
                 "RISK_PERCENT_SPACE": RISK_PERCENT_SPACE,
                 "RISK_PERCENT_LIGUE": RISK_PERCENT_LIGUE,
                 "RISK_PERCENT_PERSO": RISK_PERCENT_PERSO,
@@ -1029,7 +1032,7 @@ FIREBASE_PASSWORD = ""
 
 def load_settings():
     """Charge les réglages au démarrage"""
-    global RISK_PERCENT_GOLD, SABR_FORWARD_ACTIVE, RISK_PERCENT_OTHER, RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE, MAX_DAILY_DRAWDOWN, DRAWDOWN_ACTIVE, TRAILING_STOP_PIPS, RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO, SOFT_SL_PERCENT, MUTED_CHANNELS, CHANNEL_TP1_PCT, TELEGRAM_DESTINATION_ID, ADMIN_ID, RISK_PERCENT_INDICES, PRIME_HOURS, TIME_OFF_PEAK_FACTOR, DAY_RISK_FACTORS, FIXED_LOT_SABR_FREE, FIXED_LOT_SABR_VIP, SABR_TRAILING_ACTIVE, DASHBOARD_MSG_ID, FIREBASE_EMAIL, FIREBASE_PASSWORD
+    global RISK_PERCENT_GOLD, SABR_FORWARD_ACTIVE, RISK_PERCENT_OTHER, RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE, MAX_DAILY_DRAWDOWN, DRAWDOWN_ACTIVE, TRAILING_STOP_PIPS, RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO, SOFT_SL_PERCENT, MUTED_CHANNELS, CHANNEL_TP1_PCT, TELEGRAM_DESTINATION_ID, ADMIN_ID, RISK_PERCENT_INDICES, PRIME_HOURS, TIME_OFF_PEAK_FACTOR, DAY_RISK_FACTORS, FIXED_LOT_SABR_FREE, FIXED_LOT_SABR_VIP, RISK_PERCENT_SABR_OTHER, SABR_TRAILING_ACTIVE, DASHBOARD_MSG_ID, FIREBASE_EMAIL, FIREBASE_PASSWORD
 
     if os.path.exists(SETTINGS_FILENAME):
         try:
@@ -1045,6 +1048,7 @@ def load_settings():
                 elif "RISK_PERCENT_FREE" in data: RISK_PERCENT_MDT_FREE = data["RISK_PERCENT_FREE"]
                 if "FIXED_LOT_SABR_FREE" in data: FIXED_LOT_SABR_FREE = data["FIXED_LOT_SABR_FREE"]
                 if "FIXED_LOT_SABR_VIP" in data: FIXED_LOT_SABR_VIP = data["FIXED_LOT_SABR_VIP"]
+                if "RISK_PERCENT_SABR_OTHER" in data: RISK_PERCENT_SABR_OTHER = data["RISK_PERCENT_SABR_OTHER"]
                 if "RISK_PERCENT_SPACE" in data: RISK_PERCENT_SPACE = data["RISK_PERCENT_SPACE"]
                 if "RISK_PERCENT_LIGUE" in data: RISK_PERCENT_LIGUE = data["RISK_PERCENT_LIGUE"]
                 if "RISK_PERCENT_PERSO" in data: RISK_PERCENT_PERSO = data["RISK_PERCENT_PERSO"]
@@ -1601,7 +1605,7 @@ async def get_last_used_lot(symbol):
                 
     return None
 
-async def get_safe_lot_size(symbol, signal_type, sl_price, entry_price_ref, channel_source=None):
+async def get_safe_lot_size(symbol, signal_type, sl_price, entry_price_ref, channel_source=None, risk_override=None):
     # 1. Sélection Symbole (SYNCHRONE)
     await run_bg(mt5.symbol_select, "EURUSD", True)
     acc = await run_bg(mt5.account_info)
@@ -1631,6 +1635,10 @@ async def get_safe_lot_size(symbol, signal_type, sl_price, entry_price_ref, chan
         if is_gold: base_risk_pct = RISK_PERCENT_GOLD
         elif is_index: base_risk_pct = RISK_PERCENT_INDICES
         else: base_risk_pct = RISK_PERCENT_OTHER
+
+    # (#3) Risque imposé (ex: SABR hors-or) -> prime sur la logique par classe/canal
+    if risk_override is not None:
+        base_risk_pct = risk_override
 
     used_risk_pct = base_risk_pct
     if used_risk_pct < 0.0001: used_risk_pct = 0.0001
@@ -2023,8 +2031,28 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
     
     if "SABR" in channel_source:
         # --- A. Détermination du volume TOTAL ---
-        total_vol = FIXED_LOT_SABR_FREE
-        if "VIP" in channel_source or "COPIE" in channel_source: total_vol = FIXED_LOT_SABR_VIP
+        sym_up_sabr = symbol.upper()
+        is_gold_sabr = "XAU" in sym_up_sabr or "GOLD" in sym_up_sabr
+
+        if is_gold_sabr:
+            # OR : lots fixes historiques (SABR Free / VIP / Copie)
+            total_vol = FIXED_LOT_SABR_FREE
+            if "VIP" in channel_source or "COPIE" in channel_source: total_vol = FIXED_LOT_SABR_VIP
+        else:
+            # (#3) HORS-OR : sizing par risque % basé sur le SL du signal.
+            # Référence d'entrée = borne "gros lot" (p1), la plus éloignée du SL -> risque conservateur.
+            ref_entry = curr_price
+            if price_signal:
+                try:
+                    ref_entry = float(price_signal.split('|')[0].replace(',', '.'))
+                except: pass
+            risk_lot, _ = await get_safe_lot_size(
+                symbol, action, sl_val, ref_entry,
+                channel_source=None, risk_override=RISK_PERCENT_SABR_OTHER
+            )
+            # Fallback si MT5 ne peut pas calculer (paire inconnue / SL manquant non géré par la table)
+            total_vol = risk_lot if (risk_lot and risk_lot > 0) else FIXED_LOT_OTHER
+            log(f"📐 SABR hors-or {symbol} : lot risque {RISK_PERCENT_SABR_OTHER*100:.2f}% -> {total_vol}", important=True)
 
         # --- APPLICATION DU MULTIPLICATEUR DE RÉACTIVATION ---
         total_vol = round(total_vol * custom_lot_modifier, 2)
@@ -2689,7 +2717,7 @@ async def api_update_planning(data: PlanningUpdate):
 async def api_update_setting(data: SettingUpdate):
     global RISK_PERCENT_GOLD, RISK_PERCENT_INDICES, RISK_PERCENT_OTHER
     global RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE, RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO
-    global FIXED_LOT_SABR_VIP, FIXED_LOT_SABR_FREE
+    global FIXED_LOT_SABR_VIP, FIXED_LOT_SABR_FREE, RISK_PERCENT_SABR_OTHER
     global MAX_DAILY_DRAWDOWN, TRAILING_STOP_PIPS, SOFT_SL_PERCENT
     global PRIME_HOURS, TIME_OFF_PEAK_FACTOR, DAY_RISK_FACTORS # <-- NOUVEAU
 
@@ -2706,6 +2734,7 @@ async def api_update_setting(data: SettingUpdate):
     elif k == "risk_perso": RISK_PERCENT_PERSO = float(v) if float(v) > 0 else None
     elif k == "sabr_lot_vip": FIXED_LOT_SABR_VIP = float(v)
     elif k == "sabr_lot_free": FIXED_LOT_SABR_FREE = float(v)
+    elif k == "risk_sabr_other": RISK_PERCENT_SABR_OTHER = float(v)
     elif k == "max_dd": MAX_DAILY_DRAWDOWN = float(v)
     elif k == "sl_suiveur": TRAILING_STOP_PIPS = int(float(v))
     elif k == "sl_sell": SOFT_SL_PERCENT = float(v)
@@ -4448,6 +4477,7 @@ async def get_current_state_for_firebase() -> dict:
             "risk_space": RISK_PERCENT_SPACE or 0, "risk_ligue": RISK_PERCENT_LIGUE or 0,
             "risk_perso": RISK_PERCENT_PERSO or 0,
             "sabr_lot_vip": FIXED_LOT_SABR_VIP, "sabr_lot_free": FIXED_LOT_SABR_FREE,
+            "risk_sabr_other": RISK_PERCENT_SABR_OTHER,
             "sabr_anti_doublon": SABR_ANTI_DOUBLON_ACTIVE, "sabr_trailing": SABR_TRAILING_ACTIVE,
             "sabr_forward": SABR_FORWARD_ACTIVE, "max_dd": MAX_DAILY_DRAWDOWN,
             "drawdown_active": DRAWDOWN_ACTIVE,

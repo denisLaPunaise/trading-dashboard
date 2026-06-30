@@ -806,8 +806,8 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
               ))}
             </div>
             
-            {/* LOTS SABR */}
-            <div style={{ display: 'flex', gap: '20px', marginTop: '20px', borderTop: '1px solid #333', paddingTop: '15px' }}>
+            {/* LOTS SABR (OR) */}
+            <div style={{ display: 'flex', gap: '20px', marginTop: '20px', borderTop: '1px solid #333', paddingTop: '15px', flexWrap: 'wrap' }}>
                {[
                 { label: 'Lots SABR VIP', key: 'sabr_lot_vip' },
                 { label: 'Lots SABR Free', key: 'sabr_lot_free' }
@@ -818,6 +818,14 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
                  </div>
                ))}
             </div>
+            <div style={{ fontSize: '0.7rem', color: '#777', marginTop: '6px' }}>Lots fixes ci-dessus = OR uniquement.</div>
+
+            {/* RISQUE SABR HORS-OR (#3) */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginTop: '12px' }}>
+               <span style={{ fontSize: '0.9rem' }}>Risque SABR autres paires (%)</span>
+               <input type="number" step="0.1" value={((settings.risk_sabr_other ?? 0.006) * 100).toFixed(1)} onChange={(e) => updateSetting('risk_sabr_other', parseFloat(e.target.value) / 100)} style={{ background: '#2a2a2a', border: '1px solid #444', color: '#fff', padding: '5px', width: '70px', borderRadius: '4px', textAlign: 'center' }} />
+            </div>
+            <div style={{ fontSize: '0.7rem', color: '#777', marginTop: '6px' }}>Indices / forex / crypto SABR : taille calculée sur le SL du signal (% du capital).</div>
           </div>
 
           {/* BLOC B : GESTION DU RISQUE (H) & JOURS */}

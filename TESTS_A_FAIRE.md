@@ -62,3 +62,17 @@ Recompiler l'exe **ET** redéployer le frontend (Vercel) avant test.
 - [ ] Drawdown OFF : **pas** de fermeture d'urgence "URGENCE DD QUOTIDIEN" même si la perte dépasse la limite.
 - [ ] Drawdown ON (par défaut) : comportement habituel (blocage + close d'urgence) inchangé.
 - [ ] L'état ON/OFF **survit à un redémarrage** du bot (persisté dans settings.json).
+
+---
+
+## #3 — SABR autres paires + risque % par paire (`backend` + `frontend`)
+Décision retenue : **OR = lots fixes (inchangé)** ; **hors-or = sizing par risque %** (basé sur le SL du signal), réglage `risk_sabr_other` au dashboard. Recompiler l'exe + redéployer le frontend.
+
+- [ ] Signal SABR **OR** : toujours les lots fixes (FIXED_LOT_SABR_VIP/FREE) — comportement inchangé.
+- [ ] Signal SABR **indice** (ex: US30/NAS100) avec SL : lot calculé sur le risque % (vérifier la perte estimée ≈ `risk_sabr_other` × capital dans le log `🧮 DÉTAIL DU CALCUL`).
+- [ ] Signal SABR **forex** (ex: EURUSD) avec SL : idem, lot cohérent (pas un lot "or").
+- [ ] Signal SABR **crypto** (BTCUSD) avec SL : idem.
+- [ ] Dashboard : champ "Risque SABR autres paires (%)" modifie bien le lot des paires non-or (et persiste après redémarrage).
+- [ ] Zone hors-or : la répartition 45/35/20 reste correcte sur le volume total calculé par le risque.
+- [ ] ⚠️ **Détection du symbole** : vérifier que la paire envoyée par SABR est bien reconnue (sinon retombe sur GOLD). Si une paire n'est pas reconnue, l'ajouter à `SYMBOL_MAPPING` / `BASE_LOTS_FOR_01_PCT`.
+- [ ] Paire **inconnue / sans SL** : fallback sûr (FIXED_LOT_OTHER), pas d'ordre aberrant.
