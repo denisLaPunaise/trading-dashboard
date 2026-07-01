@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Activity, Wallet, TrendingUp, TrendingDown, Settings, XCircle, Shield, ChevronDown, ChevronUp, Briefcase, AlertTriangle, Unlock, Power, BellOff, Target, Award, Crosshair, Calendar } from 'lucide-react'
+import { Activity, Wallet, TrendingUp, TrendingDown, Settings, XCircle, Shield, ChevronDown, ChevronUp, Briefcase, AlertTriangle, Lock, Unlock, Power, BellOff, Target, Award, Crosshair, Calendar } from 'lucide-react'
 import './App.css'
 import { db, auth } from './firebase'
 import { doc, collection, onSnapshot, addDoc, serverTimestamp, Timestamp } from 'firebase/firestore'
@@ -66,6 +66,11 @@ function App() {
   const [isDangerOpen, setIsDangerOpen] = useState(false)
 
   const [isClosedTradesOpen, setIsClosedTradesOpen] = useState(false) // Fermé par défaut pour ne pas polluer l'écran
+
+  // (#15) Verrou des sliders de risque (canaux) : évite les modifs accidentelles en scrollant sur mobile
+  const [risksLocked, setRisksLocked] = useState(true)
+  // (#15) Jour actif (0-6) dont le slider de réglage est affiché ; null = aucun jour ouvert
+  const [activeDayIndex, setActiveDayIndex] = useState(null)
 
   // --- ÉTAT DE LA FENÊTRE DE CONFIRMATION ---
   const [confirmModal, setConfirmModal] = useState({ isOpen: false, message: '', onConfirm: null, type: 'warning' })
@@ -319,20 +324,27 @@ function App() {
   // créait une commande Firestore par cran (flood -> cascade de pop-ups « Timeout »).
   // On n'envoie donc qu'UNE commande par clé, ~500ms après le dernier changement,
   // en fire-and-forget (pas d'alert bloquant : l'état réel revient via le snapshot du bot).
-  const updateSetting = (key, value) => {
+  // (#15) Le debounce ne concerne QUE les vraies sliders (drag continu, { debounce: true } par défaut) :
+  // les champs numériques / clics ponctuels passent { debounce: false } pour un envoi immédiat.
+  const updateSetting = (key, value, { debounce = true } = {}) => {
     isUpdating.current = true;
     if (updateTimeout.current) clearTimeout(updateTimeout.current);
     // 1. Affichage optimiste immédiat (curseur fluide)
     setDashboardData(prev => prev ? { ...prev, settings: { ...prev.settings, [key]: value } } : prev);
 
-    // 2. Envoi débouncé (une seule commande par salve, par clé)
+    // 2. Envoi (débouncé pour les sliders, immédiat sinon)
     if (settingDebounce.current[key]) clearTimeout(settingDebounce.current[key]);
-    settingDebounce.current[key] = setTimeout(() => {
+    const sendUpdate = () => {
       if (!userId) return;
       addDoc(collection(db, 'users', userId, 'commands'), {
         type: 'update_setting', payload: { key, value }, status: 'pending', created_at: serverTimestamp(), expire_at: commandExpiry(),
       }).catch((err) => console.error('update_setting échoué', err));
-    }, 500);
+    };
+    if (debounce) {
+      settingDebounce.current[key] = setTimeout(sendUpdate, 500);
+    } else {
+      sendUpdate();
+    }
 
     // 3. On rouvre l'écoute des snapshots après stabilisation (bot a le temps de renvoyer l'état)
     updateTimeout.current = setTimeout(() => { isUpdating.current = false; }, 2500);
@@ -822,8 +834,23 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
           
           {/* BLOC A : RISQUES & SABR */}
           <div style={{ background: '#1e1e1e', border: '1px solid #333', borderRadius: '12px', padding: '20px' }}>
-            <h3 style={{ margin: '0 0 15px 0', fontSize: '1rem', color: '#aaa' }}>Gestion du Risque (%)</h3>
-            
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '0 0 15px 0' }}>
+              <h3 style={{ margin: 0, fontSize: '1rem', color: '#aaa' }}>Gestion du Risque (%)</h3>
+              {/* (#15) Verrou anti-modif accidentelle des sliders en scrollant sur mobile */}
+              <button
+                onClick={() => { triggerHaptic('light'); setRisksLocked(!risksLocked); }}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: '5px', padding: '5px 12px', borderRadius: '20px',
+                  border: `1px solid ${risksLocked ? '#555' : '#00e676'}`,
+                  background: risksLocked ? '#2a2a2a' : 'rgba(0, 230, 118, 0.1)',
+                  color: risksLocked ? '#888' : '#00e676', cursor: 'pointer', fontSize: '0.7rem', fontWeight: 'bold'
+                }}
+              >
+                {risksLocked ? <Lock size={13} /> : <Unlock size={13} />}
+                {risksLocked ? 'Verrouillé' : 'Déverrouillé'}
+              </button>
+            </div>
+
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '20px' }}>
               {[
                 { label: 'Or (Global)', key: 'risk_gold', color: '#ffd700' },
@@ -840,31 +867,36 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
                     <span>{item.label}</span>
                     <strong style={{ color: item.color }}>{(settings[item.key] * 100).toFixed(2)} %</strong>
                   </div>
-                  <input type="range" min="0" max="2.0" step="0.01" value={settings[item.key] * 100} onChange={(e) => updateSetting(item.key, parseFloat(e.target.value) / 100)} style={{ width: '100%', accentColor: item.color }} />
+                  <input
+                    type="range" min="0" max="2.0" step="0.01" value={settings[item.key] * 100} disabled={risksLocked}
+                    onChange={(e) => updateSetting(item.key, parseFloat(e.target.value) / 100)}
+                    style={{ width: '100%', accentColor: item.color, opacity: risksLocked ? 0.4 : 1, cursor: risksLocked ? 'not-allowed' : 'pointer' }}
+                  />
                 </div>
               ))}
             </div>
-            
-            {/* LOTS SABR (OR) */}
-            <div style={{ display: 'flex', gap: '20px', marginTop: '20px', borderTop: '1px solid #333', paddingTop: '15px', flexWrap: 'wrap' }}>
-               {[
-                { label: 'Lots SABR VIP', key: 'sabr_lot_vip', channel: 'CANAL SABR_VIP' },
-                { label: 'Lots SABR Free', key: 'sabr_lot_free', channel: 'CANAL SABR_FREE' }
-               ].filter((item) => isChannelVisible(item.channel)).map((item) => (
-                 <div key={item.key} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                    <span style={{ fontSize: '0.9rem' }}>{item.label}</span>
-                    <input type="number" step="0.01" value={settings[item.key]} onChange={(e) => updateSetting(item.key, parseFloat(e.target.value))} style={{ background: '#2a2a2a', border: '1px solid #444', color: '#fff', padding: '5px', width: '70px', borderRadius: '4px', textAlign: 'center' }} />
-                 </div>
-               ))}
-            </div>
-            <div style={{ fontSize: '0.7rem', color: '#777', marginTop: '6px' }}>Lots fixes ci-dessus = OR uniquement.</div>
 
-            {/* RISQUE SABR HORS-OR (#3) */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginTop: '12px' }}>
-               <span style={{ fontSize: '0.9rem' }}>Risque SABR autres paires (%)</span>
-               <input type="number" step="0.1" value={((settings.risk_sabr_other ?? 0.006) * 100).toFixed(1)} onChange={(e) => updateSetting('risk_sabr_other', parseFloat(e.target.value) / 100)} style={{ background: '#2a2a2a', border: '1px solid #444', color: '#fff', padding: '5px', width: '70px', borderRadius: '4px', textAlign: 'center' }} />
+            {/* LOTS & RISQUE SABR (#15 : réaligné en grille, mini-descriptions retirées) */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '15px', marginTop: '20px', borderTop: '1px solid #333', paddingTop: '15px' }}>
+              {[
+                { label: 'Lots SABR VIP', key: 'sabr_lot_vip', channel: 'CANAL SABR_VIP', step: '0.01' },
+                { label: 'Lots SABR Free', key: 'sabr_lot_free', channel: 'CANAL SABR_FREE', step: '0.01' },
+                { label: 'Risque SABR autres (%)', key: 'risk_sabr_other', step: '0.1', mult: 100, fallback: 0.006 }
+              ].filter((item) => !item.channel || isChannelVisible(item.channel)).map((item) => {
+                const raw = settings[item.key] ?? item.fallback ?? 0;
+                const displayVal = item.mult ? (raw * 100).toFixed(1) : raw;
+                return (
+                  <div key={item.key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#2a2a2a', padding: '10px', borderRadius: '8px' }}>
+                    <span style={{ fontSize: '0.85rem' }}>{item.label}</span>
+                    <input
+                      type="number" step={item.step} value={displayVal}
+                      onChange={(e) => updateSetting(item.key, item.mult ? parseFloat(e.target.value) / item.mult : parseFloat(e.target.value), { debounce: false })}
+                      style={{ background: '#121212', border: '1px solid #444', color: '#fff', padding: '5px', width: '70px', borderRadius: '4px', textAlign: 'center' }}
+                    />
+                  </div>
+                );
+              })}
             </div>
-            <div style={{ fontSize: '0.7rem', color: '#777', marginTop: '6px' }}>Indices / forex / crypto SABR : taille calculée sur le SL du signal (% du capital).</div>
           </div>
 
           {/* BLOC B : GESTION DU RISQUE (H) & JOURS */}
@@ -878,23 +910,50 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
               </div>
             </h3>
 
-            {/* 1. LES BULLES JOURNALIÈRES */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '8px', marginBottom: '25px' }}>
-              {['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'].map((day, index) => (
-                <div key={day} style={{ background: '#2a2a2a', padding: '10px 5px', borderRadius: '8px', textAlign: 'center', border: '1px solid #333' }}>
-                  <div style={{ fontSize: '0.7rem', fontWeight: 'bold', marginBottom: '5px', color: '#888' }}>{day}</div>
-                  <div style={{ color: '#00e676', fontSize: '0.85rem', fontWeight: 'bold', marginBottom: '5px' }}>
-                    {((settings[`day_factor_${index}`] ?? 1) * 100).toFixed(0)}%
+            {/* 1. LES BULLES JOURNALIÈRES (#15 : cliquable -> slider affiché en dessous pour le jour actif) */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '8px', marginBottom: activeDayIndex !== null ? '15px' : '25px' }}>
+              {['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'].map((day, index) => {
+                const isActive = activeDayIndex === index;
+                const isDimmed = activeDayIndex !== null && !isActive;
+                return (
+                  <div
+                    key={day}
+                    onClick={() => { triggerHaptic('light'); setActiveDayIndex(isActive ? null : index); }}
+                    style={{
+                      background: isActive ? '#333' : '#2a2a2a', padding: '10px 5px', borderRadius: '8px', textAlign: 'center',
+                      border: `1px solid ${isActive ? '#00e676' : '#333'}`, cursor: 'pointer',
+                      transform: isActive ? 'scale(1.08)' : 'scale(1)',
+                      filter: isDimmed ? 'blur(1.5px)' : 'none',
+                      opacity: isDimmed ? 0.5 : 1,
+                      transition: 'all 0.2s ease'
+                    }}
+                  >
+                    <div style={{ fontSize: '0.7rem', fontWeight: 'bold', marginBottom: '5px', color: '#888' }}>{day}</div>
+                    <div style={{ color: '#00e676', fontSize: '0.85rem', fontWeight: 'bold' }}>
+                      {((settings[`day_factor_${index}`] ?? 1) * 100).toFixed(0)}%
+                    </div>
                   </div>
-                  <input 
-                    type="range" min="0" max="1" step="0.1" 
-                    value={settings[`day_factor_${index}`] ?? 1} 
-                    onChange={(e) => updateSetting(`day_factor_${index}`, parseFloat(e.target.value))}
-                    style={{ width: '100%', accentColor: '#00e676', height: '4px' }} 
-                  />
-                </div>
-              ))}
+                );
+              })}
             </div>
+
+            {/* Slider du jour sélectionné (#15) */}
+            {activeDayIndex !== null && (
+              <div style={{ background: '#121212', border: '1px solid #00e676', borderRadius: '8px', padding: '12px 15px', marginBottom: '25px', animation: 'fadeIn 0.2s ease-in-out' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+                  <span style={{ fontSize: '0.85rem', color: '#eee' }}>
+                    {['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche'][activeDayIndex]}
+                  </span>
+                  <strong style={{ color: '#00e676' }}>{((settings[`day_factor_${activeDayIndex}`] ?? 1) * 100).toFixed(0)}%</strong>
+                </div>
+                <input
+                  type="range" min="0" max="1" step="0.1"
+                  value={settings[`day_factor_${activeDayIndex}`] ?? 1}
+                  onChange={(e) => updateSetting(`day_factor_${activeDayIndex}`, parseFloat(e.target.value))}
+                  style={{ width: '100%', accentColor: '#00e676' }}
+                />
+              </div>
+            )}
 
             {/* 2. L'HORLOGE INTERACTIVE */}
             <div style={{ background: '#121212', padding: '15px', borderRadius: '10px', marginBottom: '20px', border: '1px solid #222' }}>
@@ -914,7 +973,7 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
                         const newHours = isPrime 
                           ? currentHours.filter(h => h !== hour)
                           : [...currentHours, hour];
-                        updateSetting('prime_hours', newHours); // On envoie le tableau au serveur
+                        updateSetting('prime_hours', newHours, { debounce: false }); // On envoie le tableau au serveur
                       }}
                       style={{
                         height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -937,7 +996,7 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
                 
                 {/* INTERRUPTEUR (TOGGLE) */}
                 <button 
-                  onClick={() => updateSetting('time_off_peak', settings.time_off_peak > 0 ? 0 : 0.5)}
+                  onClick={() => updateSetting('time_off_peak', settings.time_off_peak > 0 ? 0 : 0.5, { debounce: false })}
                   style={{
                     background: settings.time_off_peak > 0 ? 'rgba(0, 230, 118, 0.2)' : 'rgba(255, 68, 68, 0.2)',
                     border: `1px solid ${settings.time_off_peak > 0 ? '#00e676' : '#ff4444'}`,
@@ -990,7 +1049,7 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
                       {item.label}
                       {item.warn && !active && <span style={{ color: '#ff6b6b', fontSize: '0.7rem', display: 'block' }}>⚠️ Protection désactivée</span>}
                     </span>
-                    <input type="number" step={item.step} value={item.val} onChange={(e) => updateSetting(item.key, parseFloat(e.target.value) / item.mult)} style={{ background: '#121212', border: '1px solid #444', color: '#fff', padding: '5px', width: '60px', borderRadius: '4px', textAlign: 'center', marginRight: '8px' }} />
+                    <input type="number" step={item.step} value={item.val} onChange={(e) => updateSetting(item.key, parseFloat(e.target.value) / item.mult, { debounce: false })} style={{ background: '#121212', border: '1px solid #444', color: '#fff', padding: '5px', width: '60px', borderRadius: '4px', textAlign: 'center', marginRight: '8px' }} />
                     <button onClick={() => { triggerHaptic('medium'); item.toggleFn(); }} style={{ padding: '6px 14px', borderRadius: '20px', border: 'none', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'bold', background: active ? '#00c853' : '#ff4444', color: '#fff', minWidth: '70px' }}>
                       {active ? 'ON 🟢' : 'OFF 🔴'}
                     </button>
