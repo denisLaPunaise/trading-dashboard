@@ -2,8 +2,11 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { Activity, Wallet, TrendingUp, TrendingDown, Settings, XCircle, Shield, ChevronDown, ChevronUp, Briefcase, AlertTriangle, Unlock, Power, BellOff, Target, Award, Crosshair, Calendar } from 'lucide-react'
 import './App.css'
 import { db, auth } from './firebase'
-import { doc, collection, onSnapshot, addDoc, serverTimestamp } from 'firebase/firestore'
+import { doc, collection, onSnapshot, addDoc, serverTimestamp, Timestamp } from 'firebase/firestore'
 import { signInAnonymously, signInWithCustomToken } from 'firebase/auth'
+
+// (#12) TTL Firestore sur users/{uid}/commands : la politique pointe sur ce champ pour purger après 3 jours
+const commandExpiry = () => Timestamp.fromMillis(Date.now() + 3 * 24 * 60 * 60 * 1000)
 
 // Extrait l'ID Telegram de l'utilisateur depuis initData (signé par Telegram)
 const getTelegramUserId = () => {
@@ -156,7 +159,7 @@ function App() {
     (async () => {
       try {
         const cmdRef = await addDoc(collection(db, 'users', userId, 'commands'), {
-          type: 'request_stats', payload: { days: globalPeriod }, status: 'pending', created_at: serverTimestamp(),
+          type: 'request_stats', payload: { days: globalPeriod }, status: 'pending', created_at: serverTimestamp(), expire_at: commandExpiry(),
         });
         await new Promise((resolve) => {
           const unsub = onSnapshot(doc(db, 'users', userId, 'commands', cmdRef.id), (snap) => {
@@ -253,7 +256,7 @@ function App() {
     setLoadingAction(actionKey);
     try {
       const cmdRef = await addDoc(collection(db, 'users', userId, 'commands'), {
-        type, payload, status: 'pending', created_at: serverTimestamp(),
+        type, payload, status: 'pending', created_at: serverTimestamp(), expire_at: commandExpiry(),
       });
       await new Promise((resolve, reject) => {
         const unsub = onSnapshot(doc(db, 'users', userId, 'commands', cmdRef.id), (snap) => {
@@ -327,7 +330,7 @@ function App() {
     settingDebounce.current[key] = setTimeout(() => {
       if (!userId) return;
       addDoc(collection(db, 'users', userId, 'commands'), {
-        type: 'update_setting', payload: { key, value }, status: 'pending', created_at: serverTimestamp(),
+        type: 'update_setting', payload: { key, value }, status: 'pending', created_at: serverTimestamp(), expire_at: commandExpiry(),
       }).catch((err) => console.error('update_setting échoué', err));
     }, 500);
 

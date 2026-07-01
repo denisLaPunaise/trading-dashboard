@@ -117,6 +117,7 @@ def fb_push_set_channels(telegram_id, channels):
             "payload": {"channels": list(channels)},
             "status": "pending",
             "created_at": fb_firestore.SERVER_TIMESTAMP,
+            "expire_at": datetime.utcnow() + timedelta(days=3),  # (#12) purge TTL Firestore
         })
         return True
     except Exception as e:
