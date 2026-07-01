@@ -10,9 +10,14 @@
 |---|---|---|
 | **Frontend → Vercel** | `git push` ou `npx vercel --prod` (depuis `frontend/`) | Fix curseurs (#11), filtrage dashboard (#7), toggles inline (#14), nettoyage eslint (#12) |
 | **Bot licence → VPS** | Copier-coller `admin_license_bot_V3.py` manuellement sur le VPS | `/gen dev` (#13), `/gen [pack]`, `/channels` (#7) |
-| **TTL Firestore (manuel)** | **console.cloud.google.com** (pas console.firebase.google.com !) → projet `ftmo-trading-bot-59dae` → Firestore → Databases → `(default)` → **Time-to-live** → Create Policy → collection group `commands`, field `expire_at`. Ou : `gcloud firestore fields ttls update expire_at --collection-group=commands --enable-ttl --project=ftmo-trading-bot-59dae` | Purge auto de `users/{uid}/commands`, 3 jours après création (#12) |
 
 > L'exe (`Bot_FTMO_V14.0.0.exe`) recompilé le 2026-07-01 23:15 (inclut #12) — à recopier sur le VPS avec le reste du lot.
+
+## TTL Firestore — abandonné (non prioritaire)
+
+Tentative d'activer une purge auto de `users/{uid}/commands` (2026-07-01) : l'appel direct via `serviceAccountKey.json` a échoué (clé invalide, cf. mémoire `firebase-service-account-key-invalid`) ; la console web a renvoyé un 403 même en Propriétaire ; testé enfin via Cloud Shell (`gcloud firestore fields ttls update ...`), qui a donné la vraie cause : **`PERMISSION_DENIED: Project ftmo-trading-bot-59dae has billing disabled`**. Cette opération TTL exige le plan Blaze (facturation activée), même si l'usage réel reste dans le quota gratuit.
+
+**Décision : abandonné, impact réel négligeable** (documents minuscules, la requête de polling filtre déjà sur `status == pending` donc pas de coût/lenteur liés à la croissance de la collection). Le code écrit déjà un champ `expire_at` sur chaque commande (commit `3c6af78`) — si un jour l'envie revient : activer le plan Blaze (Firebase Console → Paramètres → Usage and billing), puis `gcloud firestore fields ttls update expire_at --collection-group=commands --enable-ttl` (fonctionne directement dans Cloud Shell, pas besoin d'installer gcloud).
 
 ---
 
