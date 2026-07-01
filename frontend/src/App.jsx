@@ -353,20 +353,36 @@ function App() {
     updateTimeout.current = setTimeout(() => { isUpdating.current = false; }, 2500);
   };
 
-  const toggleMute = async (channelName) => {
-    await sendCommand('toggle_mute', { channel: channelName }, `mute_${channelName}`);
+  // (#17) Toggles instantanés (drawdown, SL suiveur, soft SL, mute) : optimiste + fire-and-forget,
+  // comme les réglages (updateSetting). sendCommand attend jusqu'à 15s la confirmation du bot
+  // (poll 3s) avant de changer visuellement -- correct pour les actions à risque (fermer un trade,
+  // panic, kill) mais ressenti comme un gros lag sur de simples interrupteurs. On flip donc l'état
+  // local tout de suite ; l'état réel revient de toute façon via le snapshot du bot.
+  const sendInstantToggle = (type, payload, settingKey, settingValue) => {
+    triggerHaptic('medium');
+    setDashboardData(prev => prev ? { ...prev, settings: { ...prev.settings, [settingKey]: settingValue } } : prev);
+    if (!userId) return;
+    addDoc(collection(db, 'users', userId, 'commands'), {
+      type, payload, status: 'pending', created_at: serverTimestamp(), expire_at: commandExpiry(),
+    }).catch((err) => console.error(`${type} échoué`, err));
   };
 
-  const toggleDrawdown = async () => {
-    await sendCommand('toggle_drawdown', {}, 'toggle_drawdown');
+  const toggleMute = (channelName) => {
+    const current = dashboardData?.settings?.muted_channels || [];
+    const next = current.includes(channelName) ? current.filter(c => c !== channelName) : [...current, channelName];
+    sendInstantToggle('toggle_mute', { channel: channelName }, 'muted_channels', next);
   };
 
-  const toggleSlSuiveur = async () => {
-    await sendCommand('toggle_sl_suiveur', {}, 'toggle_sl_suiveur');
+  const toggleDrawdown = () => {
+    sendInstantToggle('toggle_drawdown', {}, 'drawdown_active', !(dashboardData?.settings?.drawdown_active !== false));
   };
 
-  const toggleSoftSl = async () => {
-    await sendCommand('toggle_soft_sl', {}, 'toggle_soft_sl');
+  const toggleSlSuiveur = () => {
+    sendInstantToggle('toggle_sl_suiveur', {}, 'sl_suiveur_active', !(dashboardData?.settings?.sl_suiveur_active !== false));
+  };
+
+  const toggleSoftSl = () => {
+    sendInstantToggle('toggle_soft_sl', {}, 'soft_sl_active', !(dashboardData?.settings?.soft_sl_active !== false));
   };
 
   // --- RENDU ---
@@ -1044,7 +1060,7 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
                       {item.warn && !active && <span style={{ color: '#ff6b6b', fontSize: '0.7rem', display: 'block' }}>⚠️ Protection désactivée</span>}
                     </span>
                     <input type="number" step={item.step} value={item.val} onChange={(e) => updateSetting(item.key, parseFloat(e.target.value) / item.mult, { debounce: false })} style={{ background: '#121212', border: '1px solid #444', color: '#fff', padding: '5px', width: '60px', borderRadius: '4px', textAlign: 'center', marginRight: '8px' }} />
-                    <button onClick={() => { triggerHaptic('medium'); item.toggleFn(); }} style={{ padding: '6px 14px', borderRadius: '20px', border: 'none', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'bold', background: active ? '#00c853' : '#ff4444', color: '#fff', minWidth: '70px' }}>
+                    <button onClick={item.toggleFn} style={{ padding: '6px 14px', borderRadius: '20px', border: 'none', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'bold', background: active ? '#00c853' : '#ff4444', color: '#fff', minWidth: '70px' }}>
                       {active ? 'ON 🟢' : 'OFF 🔴'}
                     </button>
                   </div>
