@@ -66,3 +66,4 @@ Checklist complète dans `TESTS_A_FAIRE.md`. Issues à valider :
 | #14 | Toggles à droite de leur réglage | `7a778ef` |
 | #12 | Nettoyage tech-debt (imports, globals, code mort, eslint) | `5fd34ef`, `677ba30`, `3c6af78` |
 | #15 | Ergonomie panneau : debounce sliders only, lots SABR réalignés, lock risques, jours cliquables | `8c34481` |
+| #16 | Risque journalier : jour actuel compact + liste verticale au clic (fix débordement mobile) | `d7b6cd1` |
