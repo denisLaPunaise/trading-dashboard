@@ -227,6 +227,10 @@ CHANNEL_PROFILES = {
     # 'full' = tout SAUF SABR_COPIE (qui reste réservé à une assignation manuelle)
     "full":  ["CANAL SABR_VIP", "CANAL SABR_FREE", "CANAL MDT_VIP", "CANAL MDT_FREE",
               "CANAL SPACE", "CANAL LIGUE", "CANAL PERSO"],
+    # 'dev' = version complète : tous les canaux (SABR_COPIE inclus) + validité illimitée d'office
+    "dev":   ["CANAL SABR_VIP", "CANAL SABR_FREE", "CANAL SABR_COPIE",
+              "CANAL MDT_VIP", "CANAL MDT_FREE",
+              "CANAL SPACE", "CANAL LIGUE", "CANAL PERSO"],
 }
 
 
@@ -626,11 +630,16 @@ async def main_handler(event):
                 days = rest[0]
                 chan_parts = rest[1:]
             chan_arg = "".join(chan_parts).strip()  # tolère "SABR_VIP, PERSO"
+            # (#13) profil 'dev' → validité illimitée forcée
+            is_dev = chan_arg.strip().lower() == "dev"
+            if is_dev:
+                days = None
             allowed, ch_err = resolve_channels(chan_arg)
             if ch_err:
                 await event.reply(f"❌ {ch_err}")
                 return
-            pack_txt = ", ".join(c.replace("CANAL ", "") for c in allowed) if allowed else "TOUS les canaux"
+            pack_txt = ("🛠️ DEV (tous canaux + illimitée)" if is_dev
+                        else (", ".join(c.replace("CANAL ", "") for c in allowed) if allowed else "TOUS les canaux"))
 
             # Génération d'une clé propre (FTMO-XXXX-XXXX)
             unique_id = str(uuid.uuid4()).split('-')[1].upper() + str(uuid.uuid4()).split('-')[2].upper()
