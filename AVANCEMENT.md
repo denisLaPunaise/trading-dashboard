@@ -8,10 +8,11 @@
 
 | Quoi | Commande | Active quoi |
 |---|---|---|
-| **Frontend → Vercel** | `git push` ou `npx vercel --prod` (depuis `frontend/`) | Fix curseurs (#11), filtrage dashboard (#7), toggles inline (#14) |
+| **Frontend → Vercel** | `git push` ou `npx vercel --prod` (depuis `frontend/`) | Fix curseurs (#11), filtrage dashboard (#7), toggles inline (#14), nettoyage eslint (#12) |
 | **Bot licence → VPS** | Copier-coller `admin_license_bot_V3.py` manuellement sur le VPS | `/gen dev` (#13), `/gen [pack]`, `/channels` (#7) |
+| **TTL Firestore (manuel)** | Console Firebase → Firestore → onglet TTL → collection group `commands`, champ `created_at`, expiration 3 jours (ou `gcloud firestore fields ttls update created_at --collection-group=commands --enable-ttl`) | Purge auto de `users/{uid}/commands` (#12) |
 
-> L'exe (`Bot_FTMO_V14.0.0.exe`) est déjà recompilé (2026-07-01) — pas besoin de recompiler pour les issues ci-dessus.
+> L'exe (`Bot_FTMO_V14.0.0.exe`) recompilé le 2026-07-01 23:15 (inclut #12) — à recopier sur le VPS avec le reste du lot.
 
 ---
 
@@ -38,7 +39,6 @@ Checklist complète dans `TESTS_A_FAIRE.md`. Issues à valider :
 
 | # | Titre | Notes |
 |---|---|---|
-| **#12** | Nettoyage tech-debt | Imports/globals inutiles, code mort (`is_strat_2`, `CFG_TP3_PCT`, `MAX_SPREAD_PIPS`…), purge collection Firestore `commands`, 2 warnings eslint exhaustive-deps |
 | **#1** | Refactor monolithe `bot_release13.py` | ~4900 lignes → chantier séparé, pas commencé |
 
 ---
@@ -59,3 +59,4 @@ Checklist complète dans `TESTS_A_FAIRE.md`. Issues à valider :
 | #11 | Bugs mineurs (curseurs, /forward_sabr, DD) | `9b4377d` |
 | #13 | `/gen dev` tous canaux + illimité | `50d3c22` |
 | #14 | Toggles à droite de leur réglage | `7a778ef` |
+| #12 | Nettoyage tech-debt (imports, globals, code mort, eslint) | `5fd34ef`, `677ba30` |
