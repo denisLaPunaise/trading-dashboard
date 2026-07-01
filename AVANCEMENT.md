@@ -11,7 +11,7 @@
 | **Frontend → Vercel** | `git push` ou `npx vercel --prod` (depuis `frontend/`) | Fix curseurs (#11), filtrage dashboard (#7), toggles inline (#14), nettoyage eslint (#12), ergonomie panneau (#15) |
 | **Bot licence → VPS** | Copier-coller `admin_license_bot_V3.py` manuellement sur le VPS | `/gen dev` (#13), `/gen [pack]`, `/channels` (#7) |
 
-> L'exe (`Bot_FTMO_V14.0.0.exe`) recompilé le 2026-07-01 23:15 (inclut #12) — à recopier sur le VPS avec le reste du lot.
+> L'exe (`Bot_FTMO_V14.0.0.exe`) recompilé le 2026-07-02 00:36 (backend inchangé depuis #12 — #15/#16 sont purement frontend) — à recopier sur le VPS avec le reste du lot.
 
 ## TTL Firestore — abandonné (non prioritaire)
 
