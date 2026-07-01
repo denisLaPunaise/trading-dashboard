@@ -8,7 +8,7 @@
 
 | Quoi | Commande | Active quoi |
 |---|---|---|
-| **Frontend → Vercel** | `git push` ou `npx vercel --prod` (depuis `frontend/`) | Fix curseurs (#11), filtrage dashboard (#7), toggles inline (#14), nettoyage eslint (#12), ergonomie panneau (#15) |
+| **Frontend → Vercel** | `git push` ou `npx vercel --prod` (depuis `frontend/`) | Fix curseurs (#11), filtrage dashboard (#7), toggles inline (#14), nettoyage eslint (#12), ergonomie panneau (#15), risque journalier (#16), toggles instantanés (#17) |
 | **Bot licence → VPS** | Copier-coller `admin_license_bot_V3.py` manuellement sur le VPS | `/gen dev` (#13), `/gen [pack]`, `/channels` (#7) |
 
 > L'exe (`Bot_FTMO_V14.0.0.exe`) recompilé le 2026-07-02 00:36 (backend inchangé depuis #12 — #15/#16 sont purement frontend) — à recopier sur le VPS avec le reste du lot.
@@ -67,3 +67,4 @@ Checklist complète dans `TESTS_A_FAIRE.md`. Issues à valider :
 | #12 | Nettoyage tech-debt (imports, globals, code mort, eslint) | `5fd34ef`, `677ba30`, `3c6af78` |
 | #15 | Ergonomie panneau : debounce sliders only, lots SABR réalignés, lock risques, jours cliquables | `8c34481` |
 | #16 | Risque journalier : jour actuel compact + liste verticale au clic (fix débordement mobile) | `d7b6cd1` |
+| #17 | Toggles (drawdown, SL suiveur, soft SL, mute) instantanés | `e4cdeba` |
