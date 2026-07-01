@@ -10,7 +10,7 @@
 |---|---|---|
 | **Frontend → Vercel** | `git push` ou `npx vercel --prod` (depuis `frontend/`) | Fix curseurs (#11), filtrage dashboard (#7), toggles inline (#14), nettoyage eslint (#12) |
 | **Bot licence → VPS** | Copier-coller `admin_license_bot_V3.py` manuellement sur le VPS | `/gen dev` (#13), `/gen [pack]`, `/channels` (#7) |
-| **TTL Firestore (manuel)** | Console Firebase → Firestore → onglet TTL → collection group `commands`, champ **`expire_at`** (pas `created_at` !) (ou `gcloud firestore fields ttls update expire_at --collection-group=commands --enable-ttl --project=ftmo-trading-bot-59dae`) | Purge auto de `users/{uid}/commands`, 3 jours après création (#12) |
+| **TTL Firestore (manuel)** | **console.cloud.google.com** (pas console.firebase.google.com !) → projet `ftmo-trading-bot-59dae` → Firestore → Databases → `(default)` → **Time-to-live** → Create Policy → collection group `commands`, field `expire_at`. Ou : `gcloud firestore fields ttls update expire_at --collection-group=commands --enable-ttl --project=ftmo-trading-bot-59dae` | Purge auto de `users/{uid}/commands`, 3 jours après création (#12) |
 
 > L'exe (`Bot_FTMO_V14.0.0.exe`) recompilé le 2026-07-01 23:15 (inclut #12) — à recopier sur le VPS avec le reste du lot.
 
