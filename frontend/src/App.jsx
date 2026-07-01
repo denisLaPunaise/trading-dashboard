@@ -8,6 +8,9 @@ import { signInAnonymously, signInWithCustomToken } from 'firebase/auth'
 // (#12) TTL Firestore sur users/{uid}/commands : la politique pointe sur ce champ pour purger après 3 jours
 const commandExpiry = () => Timestamp.fromMillis(Date.now() + 3 * 24 * 60 * 60 * 1000)
 
+// (#16) day_factor_0..6 = Lundi..Dimanche
+const FULL_DAY_NAMES = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche']
+
 // Extrait l'ID Telegram de l'utilisateur depuis initData (signé par Telegram)
 const getTelegramUserId = () => {
   try {
@@ -69,8 +72,8 @@ function App() {
 
   // (#15) Verrou des sliders de risque (canaux) : évite les modifs accidentelles en scrollant sur mobile
   const [risksLocked, setRisksLocked] = useState(true)
-  // (#15) Jour actif (0-6) dont le slider de réglage est affiché ; null = aucun jour ouvert
-  const [activeDayIndex, setActiveDayIndex] = useState(null)
+  // (#16) Liste des 7 jours repliée par défaut (juste le jour actuel affiché)
+  const [daysExpanded, setDaysExpanded] = useState(false)
 
   // --- ÉTAT DE LA FENÊTRE DE CONFIRMATION ---
   const [confirmModal, setConfirmModal] = useState({ isOpen: false, message: '', onConfirm: null, type: 'warning' })
@@ -910,48 +913,39 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
               </div>
             </h3>
 
-            {/* 1. LES BULLES JOURNALIÈRES (#15 : cliquable -> slider affiché en dessous pour le jour actif) */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '8px', marginBottom: activeDayIndex !== null ? '15px' : '25px' }}>
-              {['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'].map((day, index) => {
-                const isActive = activeDayIndex === index;
-                const isDimmed = activeDayIndex !== null && !isActive;
-                return (
-                  <div
-                    key={day}
-                    onClick={() => { triggerHaptic('light'); setActiveDayIndex(isActive ? null : index); }}
-                    style={{
-                      background: isActive ? '#333' : '#2a2a2a', padding: '10px 5px', borderRadius: '8px', textAlign: 'center',
-                      border: `1px solid ${isActive ? '#00e676' : '#333'}`, cursor: 'pointer',
-                      transform: isActive ? 'scale(1.08)' : 'scale(1)',
-                      filter: isDimmed ? 'blur(1.5px)' : 'none',
-                      opacity: isDimmed ? 0.5 : 1,
-                      transition: 'all 0.2s ease'
-                    }}
-                  >
-                    <div style={{ fontSize: '0.7rem', fontWeight: 'bold', marginBottom: '5px', color: '#888' }}>{day}</div>
-                    <div style={{ color: '#00e676', fontSize: '0.85rem', fontWeight: 'bold' }}>
-                      {((settings[`day_factor_${index}`] ?? 1) * 100).toFixed(0)}%
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-
-            {/* Slider du jour sélectionné (#15) */}
-            {activeDayIndex !== null && (
-              <div style={{ background: '#121212', border: '1px solid #00e676', borderRadius: '8px', padding: '12px 15px', marginBottom: '25px', animation: 'fadeIn 0.2s ease-in-out' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
-                  <span style={{ fontSize: '0.85rem', color: '#eee' }}>
-                    {['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche'][activeDayIndex]}
-                  </span>
-                  <strong style={{ color: '#00e676' }}>{((settings[`day_factor_${activeDayIndex}`] ?? 1) * 100).toFixed(0)}%</strong>
+            {/* 1. RISQUE JOURNALIER (#16) : jour actuel en compact (jamais de débordement mobile),
+                clic -> liste verticale des 7 jours (1 par ligne, plus de grille 7 colonnes qui débordait à 100%) */}
+            {!daysExpanded ? (
+              <div
+                onClick={() => { triggerHaptic('light'); setDaysExpanded(true); }}
+                style={{ background: '#2a2a2a', border: '1px solid #333', borderRadius: '8px', padding: '12px 15px', marginBottom: '25px', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+              >
+                <span style={{ fontSize: '0.85rem', color: '#888' }}>Aujourd'hui : <strong style={{ color: '#eee' }}>{FULL_DAY_NAMES[pyDay]}</strong></span>
+                <strong style={{ color: '#00e676', fontSize: '1rem' }}>{((settings[`day_factor_${pyDay}`] ?? 1) * 100).toFixed(0)}%</strong>
+              </div>
+            ) : (
+              <div style={{ background: '#121212', border: '1px solid #333', borderRadius: '8px', padding: '15px', marginBottom: '25px' }}>
+                <div
+                  onClick={() => { triggerHaptic('light'); setDaysExpanded(false); }}
+                  style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer', marginBottom: '15px' }}
+                >
+                  <span style={{ fontSize: '0.8rem', color: '#888' }}>Réglage des 7 jours</span>
+                  <ChevronUp size={16} color="#888" />
                 </div>
-                <input
-                  type="range" min="0" max="1" step="0.1"
-                  value={settings[`day_factor_${activeDayIndex}`] ?? 1}
-                  onChange={(e) => updateSetting(`day_factor_${activeDayIndex}`, parseFloat(e.target.value))}
-                  style={{ width: '100%', accentColor: '#00e676' }}
-                />
+                {FULL_DAY_NAMES.map((dayName, index) => (
+                  <div key={dayName} style={{ marginBottom: index < 6 ? '15px' : 0 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', marginBottom: '5px' }}>
+                      <span style={{ color: index === pyDay ? '#00e676' : '#ccc' }}>{dayName}{index === pyDay ? ' (auj.)' : ''}</span>
+                      <strong style={{ color: '#00e676' }}>{((settings[`day_factor_${index}`] ?? 1) * 100).toFixed(0)}%</strong>
+                    </div>
+                    <input
+                      type="range" min="0" max="1" step="0.1"
+                      value={settings[`day_factor_${index}`] ?? 1}
+                      onChange={(e) => updateSetting(`day_factor_${index}`, parseFloat(e.target.value))}
+                      style={{ width: '100%', accentColor: '#00e676' }}
+                    />
+                  </div>
+                ))}
               </div>
             )}
 
