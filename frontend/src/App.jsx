@@ -965,55 +965,29 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
             {/* Securité */}
             <div style={{ background: '#1e1e1e', border: '1px solid #333', borderRadius: '12px', padding: '20px' }}>
               <h3 style={{ margin: '0 0 15px 0', fontSize: '1rem', color: '#aaa' }}>Sécurité & MM</h3>
+              {/* (#14) Chaque ligne : label | champ valeur | toggle ON/OFF */}
               {[
-                { label: 'Max Drawdown (%)', key: 'max_dd', val: settings.max_dd * 100, step: '1', mult: 100 },
-                { label: 'SL Suiveur (pips)', key: 'sl_suiveur', val: settings.sl_suiveur, step: '1', mult: 1 },
-                { label: 'Soft SL Vente (%)', key: 'sl_sell', val: settings.sl_sell * 100, step: '1', mult: 100 }
-              ].map((item) => (
-                 <div key={item.key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', background: '#2a2a2a', padding: '10px', borderRadius: '8px' }}>
-                    <span style={{ fontSize: '0.9rem' }}>{item.label}</span>
-                    <input type="number" step={item.step} value={item.val} onChange={(e) => updateSetting(item.key, parseFloat(e.target.value) / item.mult)} style={{ background: '#121212', border: '1px solid #444', color: '#fff', padding: '5px', width: '60px', borderRadius: '4px', textAlign: 'center' }} />
-                 </div>
-              ))}
-
-              {/* Toggle ON/OFF du disjoncteur Drawdown (#8) */}
-              {(() => {
-                const ddActive = settings.drawdown_active !== false; // défaut = actif
+                { label: 'Max Drawdown (%)', key: 'max_dd', val: settings.max_dd * 100, step: '1', mult: 100,
+                  toggleKey: 'drawdown_active', toggleFn: toggleDrawdown, warn: true },
+                { label: 'SL Suiveur (pips)', key: 'sl_suiveur', val: settings.sl_suiveur, step: '1', mult: 1,
+                  toggleKey: 'sl_suiveur_active', toggleFn: toggleSlSuiveur },
+                { label: 'Soft SL Vente (%)', key: 'sl_sell', val: settings.sl_sell * 100, step: '1', mult: 100,
+                  toggleKey: 'soft_sl_active', toggleFn: toggleSoftSl }
+              ].map((item) => {
+                const active = settings[item.toggleKey] !== false;
                 return (
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '4px', background: ddActive ? '#2a2a2a' : '#3a1f1f', padding: '10px', borderRadius: '8px', border: ddActive ? '1px solid #2a2a2a' : '1px solid #ff4444' }}>
-                    <span style={{ fontSize: '0.9rem' }}>Disjoncteur Drawdown{!ddActive && <span style={{ color: '#ff6b6b', fontSize: '0.7rem', display: 'block' }}>⚠️ Protection désactivée</span>}</span>
-                    <button onClick={() => { triggerHaptic('medium'); toggleDrawdown(); }} style={{ padding: '6px 14px', borderRadius: '20px', border: 'none', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'bold', background: ddActive ? '#00c853' : '#ff4444', color: '#fff', minWidth: '70px' }}>
-                      {ddActive ? 'ON 🟢' : 'OFF 🔴'}
+                  <div key={item.key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', background: item.warn && !active ? '#3a1f1f' : '#2a2a2a', padding: '10px', borderRadius: '8px', border: item.warn && !active ? '1px solid #ff4444' : '1px solid transparent' }}>
+                    <span style={{ fontSize: '0.9rem', flex: 1 }}>
+                      {item.label}
+                      {item.warn && !active && <span style={{ color: '#ff6b6b', fontSize: '0.7rem', display: 'block' }}>⚠️ Protection désactivée</span>}
+                    </span>
+                    <input type="number" step={item.step} value={item.val} onChange={(e) => updateSetting(item.key, parseFloat(e.target.value) / item.mult)} style={{ background: '#121212', border: '1px solid #444', color: '#fff', padding: '5px', width: '60px', borderRadius: '4px', textAlign: 'center', marginRight: '8px' }} />
+                    <button onClick={() => { triggerHaptic('medium'); item.toggleFn(); }} style={{ padding: '6px 14px', borderRadius: '20px', border: 'none', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'bold', background: active ? '#00c853' : '#ff4444', color: '#fff', minWidth: '70px' }}>
+                      {active ? 'ON 🟢' : 'OFF 🔴'}
                     </button>
                   </div>
                 );
-              })()}
-
-              {/* Toggle ON/OFF SL Suiveur (#10) */}
-              {(() => {
-                const slActive = settings.sl_suiveur_active !== false; // défaut = actif
-                return (
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '10px', background: '#2a2a2a', padding: '10px', borderRadius: '8px' }}>
-                    <span style={{ fontSize: '0.9rem' }}>SL Suiveur</span>
-                    <button onClick={() => { triggerHaptic('medium'); toggleSlSuiveur(); }} style={{ padding: '6px 14px', borderRadius: '20px', border: 'none', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'bold', background: slActive ? '#00c853' : '#ff4444', color: '#fff', minWidth: '70px' }}>
-                      {slActive ? 'ON 🟢' : 'OFF 🔴'}
-                    </button>
-                  </div>
-                );
-              })()}
-
-              {/* Toggle ON/OFF Soft SL Vente (#10) */}
-              {(() => {
-                const softActive = settings.soft_sl_active !== false; // défaut = actif
-                return (
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '10px', background: '#2a2a2a', padding: '10px', borderRadius: '8px' }}>
-                    <span style={{ fontSize: '0.9rem' }}>Soft SL Vente</span>
-                    <button onClick={() => { triggerHaptic('medium'); toggleSoftSl(); }} style={{ padding: '6px 14px', borderRadius: '20px', border: 'none', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'bold', background: softActive ? '#00c853' : '#ff4444', color: '#fff', minWidth: '70px' }}>
-                      {softActive ? 'ON 🟢' : 'OFF 🔴'}
-                    </button>
-                  </div>
-                );
-              })()}
+              })}
             </div>
 
             {/* Mute Canaux */}
