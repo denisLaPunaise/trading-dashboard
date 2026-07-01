@@ -57,8 +57,7 @@ import aiohttp
 import requests # <--- Pour la licence
 from datetime import datetime, timedelta, timezone
 import MetaTrader5 as mt5
-from telethon import TelegramClient, events, Button
-from telethon.errors import MessageNotModifiedError, MessageIdInvalidError
+from telethon import TelegramClient, events
 import subprocess # <--- Pour la commande heure
 
 # --- SÉCURITÉ ---
@@ -115,7 +114,6 @@ if API_ID == 0 or API_HASH == "" or BOT_TOKEN == "" or API_HASH == "A_REMPLIR_PA
     print("█"*75 + "\n")
     # Le input() est VITAL pour empêcher la fenêtre de se fermer instantanément !
     input(" Appuyez sur ENTRÉE pour fermer cette fenêtre...")
-    import sys
     sys.exit()
 
 # Canal SABR VIP
@@ -666,7 +664,6 @@ def smart_adjust_price(ref_price_str, partial_price_str):
         return partial_price_str
 
 def parse_signal(raw_text, channel_id=None):
-    global LIGUE_CONTEXT, SABR_CONTEXT, ID_SABR_VIP, ID_CANAL_SABR_COPIE
     text = clean_text(raw_text)
 
     # ==========================================
@@ -896,7 +893,6 @@ def get_server_time_tick():
 # ==========================================
 
 def get_cached_point(symbol):
-    global CACHE_SYMBOL_POINT
     if symbol not in CACHE_SYMBOL_POINT:
         info = mt5.symbol_info(symbol)
         if info:
@@ -980,13 +976,13 @@ def save_settings():
             existing_data = {}
             if os.path.exists(SETTINGS_FILENAME):
                 with open(SETTINGS_FILENAME, "r") as f:
-                    try: 
+                    try:
                         existing_data = json.load(f)
-                    except Exception as e: 
-                        # 🛑 SÉCURITÉ ABSOLUE : Si le fichier est illisible à ce moment précis, 
+                    except Exception:
+                        # 🛑 SÉCURITÉ ABSOLUE : Si le fichier est illisible à ce moment précis,
                         # on annule la sauvegarde pour ne surtout pas écraser la clé de licence !
-                        logger.error(f"⚠️ Fichier settings occupé, sauvegarde ignorée pour protéger la licence.")
-                        return 
+                        logger.error("⚠️ Fichier settings occupé, sauvegarde ignorée pour protéger la licence.")
+                        return
 
             # 2. On prépare les nouvelles valeurs à mettre à jour
             new_values = {
@@ -1038,7 +1034,7 @@ FIREBASE_PASSWORD = ""
 
 def load_settings():
     """Charge les réglages au démarrage"""
-    global RISK_PERCENT_GOLD, SABR_FORWARD_ACTIVE, RISK_PERCENT_OTHER, RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE, MAX_DAILY_DRAWDOWN, DRAWDOWN_ACTIVE, TRAILING_STOP_PIPS, RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO, SOFT_SL_PERCENT, MUTED_CHANNELS, ALLOWED_CHANNELS, CHANNEL_TP1_PCT, TELEGRAM_DESTINATION_ID, ADMIN_ID, RISK_PERCENT_INDICES, PRIME_HOURS, TIME_OFF_PEAK_FACTOR, DAY_RISK_FACTORS, FIXED_LOT_SABR_FREE, FIXED_LOT_SABR_VIP, RISK_PERCENT_SABR_OTHER, SABR_TRAILING_ACTIVE, SL_SUIVEUR_ACTIVE, SOFT_SL_ACTIVE, DASHBOARD_MSG_ID, FIREBASE_EMAIL, FIREBASE_PASSWORD
+    global RISK_PERCENT_GOLD, SABR_FORWARD_ACTIVE, RISK_PERCENT_OTHER, RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE, MAX_DAILY_DRAWDOWN, DRAWDOWN_ACTIVE, TRAILING_STOP_PIPS, RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO, SOFT_SL_PERCENT, MUTED_CHANNELS, ALLOWED_CHANNELS, CHANNEL_TP1_PCT, TELEGRAM_DESTINATION_ID, ADMIN_ID, RISK_PERCENT_INDICES, PRIME_HOURS, TIME_OFF_PEAK_FACTOR, DAY_RISK_FACTORS, FIXED_LOT_SABR_FREE, FIXED_LOT_SABR_VIP, RISK_PERCENT_SABR_OTHER, SABR_TRAILING_ACTIVE, SL_SUIVEUR_ACTIVE, SOFT_SL_ACTIVE, FIREBASE_EMAIL, FIREBASE_PASSWORD
 
     if os.path.exists(SETTINGS_FILENAME):
         try:
@@ -1082,7 +1078,7 @@ def load_settings():
                 if "FIREBASE_EMAIL" in data:    FIREBASE_EMAIL    = data["FIREBASE_EMAIL"]
                 if "FIREBASE_PASSWORD" in data: FIREBASE_PASSWORD = data["FIREBASE_PASSWORD"]
 
-            logger.info(f"⚙️ Ensemble des réglages chargés avec succès.")
+            logger.info("⚙️ Ensemble des réglages chargés avec succès.")
             logger.info(f"🔕 Canaux Ignorés : {MUTED_CHANNELS}")
             logger.info(f"📦 Pack client (canaux visibles) : {ALLOWED_CHANNELS if ALLOWED_CHANNELS else 'TOUS'}")
         except Exception as e: logger.error(f"⚠️ Erreur Load Settings: {e}")
@@ -1453,8 +1449,6 @@ async def init_daily_stats():
     return True
 
 async def send_daily_report(acc, pnl_eur, pnl_pct):
-    global daily_stats, daily_start_balance
-    
     # --- 1. CALCUL DU PNL JOURNALIER (ENCAISSÉ SEULEMENT) ---
     # On ignore les arguments pnl_eur/pct passés et on recalcule proprement
     # Basé strictement sur la différence de Balance
@@ -1709,8 +1703,6 @@ async def get_safe_lot_size(symbol, signal_type, sl_price, entry_price_ref, chan
 # ==========================================
 
 async def close_partial(pos, pct, tp_label, pips_gained, fixed_lot=None):
-    global daily_stats, PARTIAL_PROFITS
-    
     # 1. SÉCURITÉ PETITS COMPTES
     if round(pos.volume, 2) <= 0.01:
         return True
@@ -1862,8 +1854,6 @@ def distribute_lots(total_vol, n_orders):
     return lots
 
 async def execute_trade(symbol, action, sl, tp, price_signal, message_date, channel_source, custom_lot_modifier=1.0):
-    global daily_stats
-    
     # -----------------------------------------------------------
     # 🛠️ GESTION SPECIALE: MISE A JOUR SL SABR
     # -----------------------------------------------------------
@@ -1925,7 +1915,6 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
     if not tick: return None
     
     curr_price = tick.ask if action == "ACHAT" else tick.bid
-    current_spread_pips = s_info.spread / 10 if "JPY" in symbol else s_info.spread
 
     # On récupère les positions et ordres en cours UNE SEULE FOIS pour tous les anti-doublons
     existing_pos = await run_bg(mt5.positions_get, symbol=symbol)
@@ -2219,7 +2208,7 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
             
         risk_str = f"{applied_risk_pct*100:.2f}%" if applied_risk_pct > 0 else "Fixe"
         
-        logger.info(f"\n" + "="*50 +
+        logger.info("\n" + "="*50 +
                     f"\n🧮 DÉTAIL DU CALCUL DE RISQUE [{symbol}]\n"
                     f"Action      : {action} à {final_px}\n"
                     f"Stop Loss   : {final_sl}\n"
@@ -2324,7 +2313,6 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
 
 async def send_alert(msg, buttons=None):
     """Envoie une alerte avec ou sans boutons interactifs"""
-    global bot_user
     if ADMIN_ID == 0: return
     try:
         # On utilise le bot_user de Telethon au lieu de aiohttp pour supporter les boutons
@@ -2369,8 +2357,8 @@ async def send_channel_alert(msg, source, buttons=None):
         await send_alert(msg, buttons=buttons)
 
 async def check_closed_positions():
-    global watched_tickets, daily_stats, active_trades_max_pips, TELEGRAM_TO_TICKET, TRADES_PROCESSED_LEVELS, ACTIVE_TRADE_SOURCES, CHANNEL_STATS
-    
+    global watched_tickets
+
     curr = await run_bg(mt5.positions_get, group="*")
 
     if curr is None: curr = ()
@@ -2588,9 +2576,9 @@ async def safety_net_scanner():
                             # dans le main_handler comme si de rien n'était !
                             await main_handler(msg)
                             
-        except Exception as e:
+        except Exception:
             # Si le réseau est vraiment coupé au moment du scan, on ignore silencieusement
-            pass 
+            pass
         
         # On attend 15 secondes avant le prochain scan pour ne pas spammer les serveurs Telegram
         await asyncio.sleep(15)
@@ -2767,7 +2755,7 @@ async def api_update_setting(data: SettingUpdate):
     global RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE, RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO
     global FIXED_LOT_SABR_VIP, FIXED_LOT_SABR_FREE, RISK_PERCENT_SABR_OTHER
     global MAX_DAILY_DRAWDOWN, TRAILING_STOP_PIPS, SOFT_SL_PERCENT
-    global PRIME_HOURS, TIME_OFF_PEAK_FACTOR, DAY_RISK_FACTORS # <-- NOUVEAU
+    global PRIME_HOURS, TIME_OFF_PEAK_FACTOR
 
     k = data.key
     v = data.value
@@ -2851,7 +2839,7 @@ async def license_watchdog():
             sys.exit() # Arrêt du script
 
 async def monitor_positions():
-    global watched_tickets, daily_stats, active_trades_max_pips, active_trades_min_pips, NOTIFIED_MANUAL_TICKETS, TRADES_PROCESSED_LEVELS, PENDING_ORDER_TICKETS, ACTIVE_TRADE_SOURCES, CHANNELS_STRAT_2, SOFT_SL_PERCENT, CHANNEL_TP1_PCT, DEFAULT_TP1_PCT, TRAILING_STOP_PIPS
+    global watched_tickets, PENDING_ORDER_TICKETS
 
     logger.info("⏳ Warm-up: Attente stabilisation Telegram (10s)...")
     await asyncio.sleep(10) 
@@ -3021,7 +3009,7 @@ async def monitor_positions():
             if check_daily_max_loss():
                 pos_panic = await run_bg(mt5.positions_get)
                 if pos_panic:
-                    await send_alert(f"🚨 **URGENCE : DD QUOTIDIEN DÉPASSÉ !**\nFermeture d'urgence.")
+                    await send_alert("🚨 **URGENCE : DD QUOTIDIEN DÉPASSÉ !**\nFermeture d'urgence.")
                     for p in pos_panic:
                         if p.magic == MAGIC_NUMBER or p.ticket in MANAGED_MANUAL_TICKETS:
                             otype = mt5.ORDER_TYPE_SELL if p.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
@@ -3098,10 +3086,8 @@ async def monitor_positions():
                     cur_min = active_trades_min_pips.get(pos.ticket, 999.0)
                     if pips < cur_min: active_trades_min_pips[pos.ticket] = pips
 
-                    is_strat_2 = (src_trade in CHANNELS_STRAT_2)
-                    if is_strat_2: CFG_TP1_PCT, CFG_TP3_PCT = 0.50, 0.00
-                    else: CFG_TP1_PCT, CFG_TP3_PCT = 0.50, 0.00
-                    
+                    CFG_TP1_PCT = 0.50
+
                     processed = TRADES_PROCESSED_LEVELS[pos.ticket]
 
                     # === ☠️ SÉCURITÉ "ZONE DE LA MORT" ===
@@ -3505,7 +3491,7 @@ async def pairing_handler(event):
             else:
                 await event.reply("❌ Code PIN incorrect.")
         elif raw.lower() == "/start":
-            await event.reply(f"🔒 **Sécurité :** Veuillez d'abord lier votre compte en tapant : `/start CODE_PIN`")
+            await event.reply("🔒 **Sécurité :** Veuillez d'abord lier votre compte en tapant : `/start CODE_PIN`")
             
     # CAS 2 : Si tu es déjà appairé et que tu tapes /start
     elif event.sender_id == ADMIN_ID and raw.lower() == "/start": # 👈 CORRECTION 3
@@ -3529,9 +3515,9 @@ async def admin_commands(event):
     global RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE
     global FIXED_LOT_SABR_VIP, FIXED_LOT_SABR_FREE
     global RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO
-    global TRAILING_STOP_PIPS, MANAGED_MANUAL_TICKETS, MAX_DAILY_DRAWDOWN, TELEGRAM_TO_TICKET
-    global TRADES_PROCESSED_LEVELS, SOFT_SL_PERCENT, RISK_PERCENT_INDICES, MUTED_CHANNELS, CHANNEL_TP1_PCT
-    global TIME_OFF_PEAK_FACTOR, DAY_RISK_FACTORS, PRIME_HOURS
+    global TRAILING_STOP_PIPS, MAX_DAILY_DRAWDOWN
+    global SOFT_SL_PERCENT, RISK_PERCENT_INDICES
+    global TIME_OFF_PEAK_FACTOR, PRIME_HOURS
     global SABR_TRAILING_ACTIVE, SABR_ANTI_DOUBLON_ACTIVE, SABR_FORWARD_ACTIVE  # (#11) SABR_FORWARD_ACTIVE manquait -> /forward_sabr ne faisait rien
 
     # 👉 LE BOUCLIER EST ICI : On bloque tout ce qui n'est pas le maître
@@ -3730,7 +3716,7 @@ async def admin_commands(event):
 # --- 6. DÉVERROUILLAGE SÉCURITÉ ---
     elif text == "/unlock":
         security_triggered = False
-        await event.reply(f"🔓 **SÉCURITÉ DÉVERROUILLÉE**")
+        await event.reply("🔓 **SÉCURITÉ DÉVERROUILLÉE**")
 
 # --- 7. SUIVI MANUEL ---
     elif text.startswith("/suivi"):
@@ -4047,7 +4033,6 @@ async def main_handler(event):
     log(f"👀 J'ai vu un message ! ID: {event.id}")
     log(f"Texte brut: {event.raw_text}")
 
-    global PROCESSED_MSG_IDS
     PROCESSED_MSG_IDS.add(event.id)
 
     # === 📤 TRANSFERT DES MESSAGES SABR (FORWARDER) ===
@@ -4154,7 +4139,7 @@ async def main_handler(event):
                 if closed_count > 0:
                     del TELEGRAM_TO_TICKET[original_msg_id]
                 else:
-                    await send_alert(f"⚠️ Commande reçue mais tickets introuvables (Déjà fermés ?).")
+                    await send_alert("⚠️ Commande reçue mais tickets introuvables (Déjà fermés ?).")
                 
                 return # Fin de la gestion commande
     # ==================================================================
@@ -4271,7 +4256,7 @@ async def main_handler(event):
                     await send_channel_alert(f"🛡️ Signal SABR bloqué (anti-doublon) : {act} {sym}", final_source)
                 else:
                     # Attribution du numéro du jour UNIQUEMENT si non bloqué
-                    global SABR_DAILY_SIGNALS, SABR_SIGNAL_DAY
+                    global SABR_SIGNAL_DAY
                     c_day = datetime.now().day
                     if c_day != SABR_SIGNAL_DAY:
                         SABR_DAILY_SIGNALS.clear()
@@ -4432,7 +4417,6 @@ async def deletion_handler(event):
             del TELEGRAM_TO_TICKET[msg_id]
 
 async def risk_schedule_monitor():
-    global PRIME_HOURS, TIME_OFF_PEAK_FACTOR
     last_state = None # Pour se souvenir de l'état précédent
 
     while True:
@@ -4747,12 +4731,11 @@ async def main():
     logger.info("\n" + "—"*50)
     logger.info("🔄 INITIALISATION DES COMPOSANTS...")
     
-    if not mt5.initialize(): 
-        logger.critical(f"❌ Erreur Critique : MetaTrader 5 fermé ou inaccessible.")
+    if not mt5.initialize():
+        logger.critical("❌ Erreur Critique : MetaTrader 5 fermé ou inaccessible.")
         return
     logger.info(f"✔️ Terminal MT5 Connecté (Compte: {mt5.account_info().login})")
 
-    global bot_user
     await bot_user.start(bot_token=BOT_TOKEN)
     logger.info("✔️ Interface interactive Telegram chargée.")
 
