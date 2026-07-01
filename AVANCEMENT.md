@@ -45,6 +45,7 @@ Checklist complète dans `TESTS_A_FAIRE.md`. Issues à valider :
 | # | Titre | Notes |
 |---|---|---|
 | **#1** | Refactor monolithe `bot_release13.py` | ~4900 lignes → chantier séparé, pas commencé |
+| **#18** | Analyse data trading MDT VIP/Free → stratégie optimale | En attente du jeu de données (fourni par l'utilisateur au démarrage) |
 
 ---
 
