@@ -916,8 +916,7 @@ async def main_handler(event):
             
             sheet = await asyncio.to_thread(get_sheet)
             all_rows = await asyncio.to_thread(sheet.get_all_values)
-            
-            updates = []
+
             count = 0
             
             # On parcourt (sauf entete)

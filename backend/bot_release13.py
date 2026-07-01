@@ -1584,10 +1584,11 @@ def check_daily_max_loss():
     acc = mt5.account_info()
     if not acc: return False
     
-    # Calcul de la limite en argent (ex: 4% de la balance actuelle)
-    # Note : Pour être ultra précis FTMO, on devrait prendre la balance à minuit, 
-    # mais acc.balance est suffisant car elle ne change que quand un trade est fermé.
-    limit_amount = acc.balance * MAX_DAILY_DRAWDOWN 
+    # (#11) Limite basée sur la balance de MINUIT (base FTMO correcte), pas la balance
+    # courante : sinon un gain en journée relève la limite au-delà de 4% du départ.
+    # Fallback sur acc.balance si la référence de minuit n'est pas encore initialisée.
+    base_bal = daily_start_balance if (daily_start_balance and daily_start_balance > 0) else acc.balance
+    limit_amount = base_bal * MAX_DAILY_DRAWDOWN
     
     # Si on est en perte de plus de X (ex: -400€)
     if current_daily_pnl <= -limit_amount:
@@ -3531,7 +3532,7 @@ async def admin_commands(event):
     global TRAILING_STOP_PIPS, MANAGED_MANUAL_TICKETS, MAX_DAILY_DRAWDOWN, TELEGRAM_TO_TICKET
     global TRADES_PROCESSED_LEVELS, SOFT_SL_PERCENT, RISK_PERCENT_INDICES, MUTED_CHANNELS, CHANNEL_TP1_PCT
     global TIME_OFF_PEAK_FACTOR, DAY_RISK_FACTORS, PRIME_HOURS
-    global SABR_TRAILING_ACTIVE, SABR_ANTI_DOUBLON_ACTIVE
+    global SABR_TRAILING_ACTIVE, SABR_ANTI_DOUBLON_ACTIVE, SABR_FORWARD_ACTIVE  # (#11) SABR_FORWARD_ACTIVE manquait -> /forward_sabr ne faisait rien
 
     # 👉 LE BOUCLIER EST ICI : On bloque tout ce qui n'est pas le maître
     if ADMIN_ID == 0 or event.sender_id != ADMIN_ID: # 👈 CORRECTION 5 (sender_id)

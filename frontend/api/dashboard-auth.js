@@ -1,3 +1,4 @@
+/* global process */
 // Fonction serverless Vercel — génère un token Firebase pour le dashboard.
 //
 // Flux :

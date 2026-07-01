@@ -9,7 +9,7 @@ try {
   WebApp.ready();
   WebApp.expand();
   WebApp.setHeaderColor('#0a0a0a');
-} catch (e) {
+} catch {
   console.log("Exécution hors Telegram détectée.");
 }
 

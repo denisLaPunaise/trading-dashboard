@@ -51,6 +51,7 @@ function App() {
   const [error, setError] = useState(null)
   const isUpdating = useRef(false)
   const updateTimeout = useRef(null)
+  const settingDebounce = useRef({}) // (#11) timers de debounce par clé de réglage
   
   const [isTradesOpen, setIsTradesOpen] = useState(false) // (#9) fermé par défaut
   const [isSettingsOpen, setIsSettingsOpen] = useState(false) // (#9) fermé par défaut
@@ -66,9 +67,6 @@ function App() {
   const [pnlPulse, setPnlPulse] = useState(null); // 'gain' ou 'loss'
   const prevPnl = useRef(0);
   const initialLoad = useRef(true);
-
-  // --- OPTIMISATIONS TELEGRAM (POINTS 2B & 3B) ---
-  const [isFetching, setIsFetching] = useState(false);
 
   // --- FIREBASE SAAS ---
   const [userId, setUserId] = useState(null);
@@ -86,7 +84,7 @@ function App() {
           window.Telegram.WebApp.HapticFeedback.notificationOccurred(type);
         }
       }
-    } catch (e) {
+    } catch {
       // Si ça échoue (ex: navigateur PC), on ignore silencieusement pour ne pas crasher l'app
       console.log("Haptic feedback non disponible.");
     }
@@ -208,15 +206,13 @@ function App() {
 
         const uid = tgId;
         setUserId(uid);
-        setIsFetching(true);
         const userRef = doc(db, 'users', uid);
         unsubscribeState = onSnapshot(userRef, (snap) => {
-          if (!snap.exists()) { setIsFetching(false); return; }
+          if (!snap.exists()) { return; }
           const data = snap.data();
           setBotOnline(data.bot_online === true);
           if (!isUpdating.current) setDashboardData(data);
           setError(null);
-          setIsFetching(false);
         }, (err) => {
           console.error('Firestore error:', err);
           setError('Connexion Firebase perdue. Vérifie ta connexion internet.');
@@ -309,20 +305,28 @@ function App() {
     }, 'warning');
   };
 
-  // Fonction pour les curseurs et réglages avec mise à jour optimiste + rollback
-  const updateSetting = async (key, value) => {
+  // Curseurs & réglages : mise à jour optimiste immédiate + envoi DÉBOUNCÉ (#11).
+  // Un glissement de curseur déclenche des dizaines de onChange : sans debounce, ça
+  // créait une commande Firestore par cran (flood -> cascade de pop-ups « Timeout »).
+  // On n'envoie donc qu'UNE commande par clé, ~500ms après le dernier changement,
+  // en fire-and-forget (pas d'alert bloquant : l'état réel revient via le snapshot du bot).
+  const updateSetting = (key, value) => {
     isUpdating.current = true;
     if (updateTimeout.current) clearTimeout(updateTimeout.current);
-    const previousSettings = { ...dashboardData.settings };
+    // 1. Affichage optimiste immédiat (curseur fluide)
     setDashboardData(prev => prev ? { ...prev, settings: { ...prev.settings, [key]: value } } : prev);
-    try {
-      await sendCommand('update_setting', { key, value }, `setting_${key}`);
-    } catch (err) {
-      console.error("Erreur de sauvegarde", err);
-      triggerHaptic('error');
-      setDashboardData(prev => prev ? { ...prev, settings: previousSettings } : prev);
-    }
-    updateTimeout.current = setTimeout(() => { isUpdating.current = false; }, 1500);
+
+    // 2. Envoi débouncé (une seule commande par salve, par clé)
+    if (settingDebounce.current[key]) clearTimeout(settingDebounce.current[key]);
+    settingDebounce.current[key] = setTimeout(() => {
+      if (!userId) return;
+      addDoc(collection(db, 'users', userId, 'commands'), {
+        type: 'update_setting', payload: { key, value }, status: 'pending', created_at: serverTimestamp(),
+      }).catch((err) => console.error('update_setting échoué', err));
+    }, 500);
+
+    // 3. On rouvre l'écoute des snapshots après stabilisation (bot a le temps de renvoyer l'état)
+    updateTimeout.current = setTimeout(() => { isUpdating.current = false; }, 2500);
   };
 
   const toggleMute = async (channelName) => {
