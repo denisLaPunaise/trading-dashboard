@@ -25,10 +25,15 @@ const getTelegramUserId = () => {
 // --- COMPOSANT ODOMÈTRE (ÉTAPE 5) ---
 const AnimatedNumber = ({ value, duration = 800, prefix = '' }) => {
   const [displayValue, setDisplayValue] = useState(value);
+  const displayValueRef = useRef(value);
+
+  useEffect(() => {
+    displayValueRef.current = displayValue;
+  }, [displayValue]);
 
   useEffect(() => {
     let startTimestamp = null;
-    const startValue = displayValue;
+    const startValue = displayValueRef.current;
     if (startValue === value) return;
 
     const step = (timestamp) => {
@@ -163,7 +168,8 @@ function App() {
       } catch { /* silencieux */ }
       setIsLoadingStats(false);
     })();
-  }, [isStatsOpen, statsTab, globalPeriod, userId]); // ← PAS dashboardData ici
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- dashboardData lu volontairement sans redéclencher la requête (cf. commentaire ci-dessus)
+  }, [isStatsOpen, statsTab, globalPeriod, userId]);
 
   // Authentification Firebase + abonnement temps réel Firestore
   useEffect(() => {
