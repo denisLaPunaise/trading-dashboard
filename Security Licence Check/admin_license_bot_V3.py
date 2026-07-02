@@ -1020,7 +1020,11 @@ async def security_events_relay():
                 )
         except Exception as e:
             print(f"⚠️ security_events_relay : {e}")
-        await asyncio.sleep(5)
+        # Le blocage reel (licence sur mauvaise machine) est deja instantane cote bot client
+        # (return False synchrone) -- ce relais ne sert qu'a notifier l'admin, pas a proteger.
+        # 1h de delai ne laisse donc aucune fenetre de risque, et evite d'epuiser le quota
+        # Firestore gratuit (5s -> ~17000 lectures/jour rien que pour cette boucle).
+        await asyncio.sleep(3600)
 
 
 async def main():
