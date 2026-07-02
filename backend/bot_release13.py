@@ -1917,6 +1917,14 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
         
     pt = s_info.point
     div = get_pip_divisor(symbol)
+
+    # (#11) Filtre spread : ignore le signal si le spread actuel est trop large
+    # (evite les entrees en conditions degradees -- ex: news, faible liquidite)
+    current_spread_pips = s_info.spread / div
+    if current_spread_pips > MAX_SPREAD_PIPS:
+        logger.warning(f"⏸️ Signal ignoré ({symbol}) : spread trop large ({current_spread_pips:.1f} > {MAX_SPREAD_PIPS} pips)")
+        return None
+
     tick = mt5.symbol_info_tick(symbol)
     if not tick: return None
     
