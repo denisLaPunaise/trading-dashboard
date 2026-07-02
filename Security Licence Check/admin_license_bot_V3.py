@@ -492,8 +492,9 @@ def ban_license(key):
         sheet = get_sheet()
         cell = sheet.find(key)
         if not cell: return False, "Clé introuvable."
+        current_user = sheet.cell(cell.row, COL_USER).value or ""
         sheet.update_cell(cell.row, COL_STATUS, "BANNED")
-        fb_sync_license(key, "", "BANNED")
+        fb_sync_license(key, current_user, "BANNED")
         fb_disable_firebase_user(key)
         fb_disable_dashboard(key)
         return True, "Licence BANNIE."
@@ -555,9 +556,10 @@ def update_license_time(key, value):
                 return False, "Format invalide. Utilise '30' (jours) ou '25/12/2025'."
 
         # Mise à jour DATE (Col 6)
+        current_user = sheet.cell(cell.row, COL_USER).value or ""
         sheet.update_cell(cell.row, COL_EXP, new_date_str)
         sheet.update_cell(cell.row, COL_STATUS, "ACTIVE")
-        fb_sync_license(key, "", "ACTIVE", date_fin=new_date_str)
+        fb_sync_license(key, current_user, "ACTIVE", date_fin=new_date_str)
         fb_enable_firebase_user(key)
         fb_enable_dashboard(key)
         return True, new_date_str
