@@ -9,19 +9,11 @@
 | Quoi | Commande | Active quoi |
 |---|---|---|
 | **Frontend → Vercel** | `git push` ou `npx vercel --prod` (depuis `frontend/`) | Fix curseurs (#11), filtrage dashboard (#7), toggles inline (#14), nettoyage eslint (#12), ergonomie panneau (#15), risque journalier (#16), toggles instantanés (#17) |
-| **Bot licence → VPS** | Copier-coller `admin_license_bot_V3.py` manuellement sur le VPS | `/gen dev` (#13), `/gen [pack]`, `/channels` (#7) |
+| **Bot licence → VPS** | Copier-coller `admin_license_bot_V3.py` manuellement sur le VPS | `/gen dev` (#13), `/gen [pack]`, `/channels` (#7), relais sécu 5s→1h, fix nom client écrasé |
 
-> L'exe (`Bot_FTMO_V14.0.0.exe`) recompilé le 2026-07-02 12:32 (inclut la zone de la mort par canal, #18) — à recopier sur le VPS avec le reste du lot.
+> L'exe (`Bot_FTMO_V14.0.0.exe`) recompilé le 2026-07-02 23:01 (inclut la zone de la mort par canal #18 + filtre spread #11) — à recopier sur le VPS avec le reste du lot.
 
-## #18 -- Analyse MDT VIP/Free : reste à faire manuellement (pas de code)
-
-- [ ] `/tp1 MDT_VIP 40` (réduire le TP1 de 50% à 40%)
-- [ ] Dashboard MDT VIP jours : Lundi 75%, Mardi 50%, Mercredi 100%, Jeudi 30%, Vendredi 30%
-- [ ] Dashboard MDT VIP heures pleines (100%) : 0h,3h,4h,5h,6h,7h,12h,14h,16h,17h,18h,20h,21h,22h,23h ; hors-session 40%
-- [ ] MDT Free : risque de base 0,8% → 0,45%
-- [ ] Revalider MDT Free après 150-200 trades de plus (échantillon actuel trop petit pour du jour/heure fiable)
-
-Détail complet et simulation dans le commentaire de l'issue #18.
+**Rappel commande** : pour régler le % de clôture au TP1 d'un canal, la commande est **`/sell_lot CANAL %`** (pas `/tp1`) — ex: `/sell_lot MDT_VIP 40`.
 
 ## TTL Firestore — abandonné (non prioritaire)
 
@@ -55,7 +47,6 @@ Checklist complète dans `TESTS_A_FAIRE.md`. Issues à valider :
 | # | Titre | Notes |
 |---|---|---|
 | **#1** | Refactor monolithe `bot_release13.py` | ~4900 lignes → chantier séparé, pas commencé |
-| **#18** | Analyse data trading MDT VIP/Free → stratégie optimale | Code fait (`3b34905`), reste réglages dashboard + `/tp1` à appliquer manuellement (voir section dédiée ci-dessus) |
 
 ---
 
@@ -79,3 +70,5 @@ Checklist complète dans `TESTS_A_FAIRE.md`. Issues à valider :
 | #15 | Ergonomie panneau : debounce sliders only, lots SABR réalignés, lock risques, jours cliquables | `8c34481` |
 | #16 | Risque journalier : jour actuel compact + liste verticale au clic (fix débordement mobile) | `d7b6cd1` |
 | #17 | Toggles (drawdown, SL suiveur, soft SL, mute) instantanés | `e4cdeba` |
+| #11 | Filtre spread MAX_SPREAD_PIPS activé (dernier point) | `656a0ce` |
+| #18 | Analyse MDT VIP/Free : zone de la mort par canal + réglages appliqués | `3b34905` |
