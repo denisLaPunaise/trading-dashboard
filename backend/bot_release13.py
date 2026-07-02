@@ -211,7 +211,13 @@ SOFT_SL_ACTIVE = True      # False -> pas de clôture partielle sur repli (Soft 
 BTC_ENTRY_OFFSET = 70
 DEFAULT_TP1_PCT = 0.50
 
-MAX_DEATH_ZONE_PIPS = 85
+MAX_DEATH_ZONE_PIPS = 85  # Seuil par défaut (autres canaux)
+# (issue #18) Seuils "zone de la mort" spécifiques par canal, dérivés de l'analyse des trades MDT
+# VIP/Free (falaise de winrate constatée vers -60 pips MAE pour VIP, -35 pips pour Free).
+DEATH_ZONE_PIPS_BY_CHANNEL = {
+    "CANAL MDT_VIP": 60,
+    "CANAL MDT_FREE": 35,
+}
 SABR_TRAILING_ACTIVE = True
 SABR_ANTI_DOUBLON_ACTIVE = True
 
@@ -3091,10 +3097,12 @@ async def monitor_positions():
                     processed = TRADES_PROCESSED_LEVELS[pos.ticket]
 
                     # === ☠️ SÉCURITÉ "ZONE DE LA MORT" ===
-                    # Désactivée pour SABR et MDT_FREE
-                    disable_death_zone = ("SABR" in src_trade.upper()) or ("MDT_FREE" in src_trade.upper())
-                    
-                    if not disable_death_zone and pips <= -MAX_DEATH_ZONE_PIPS:
+                    # Désactivée pour SABR (volatilité gérée différemment). MDT_VIP/MDT_FREE ont
+                    # chacun leur propre seuil (issue #18) ; les autres canaux gardent le défaut.
+                    disable_death_zone = "SABR" in src_trade.upper()
+                    death_zone_threshold = DEATH_ZONE_PIPS_BY_CHANNEL.get(src_trade, MAX_DEATH_ZONE_PIPS)
+
+                    if not disable_death_zone and pips <= -death_zone_threshold:
                          tag_death = "DEATH_ZONE_KILL"
                          if tag_death not in TRADES_PROCESSED_LEVELS[pos.ticket]:
                              # 1. On verrouille
@@ -3118,7 +3126,7 @@ async def monitor_positions():
                              await send_channel_alert(f"☠️ **ZONE DE LA MORT** ({sym})\n\n"
                                               f"Symbole: {sym} ({open_time})\n\n"
                                               f"Source: {src_clean}\n\n"
-                                              f"Drawdown > {MAX_DEATH_ZONE_PIPS} pips.\n"
+                                              f"Drawdown > {death_zone_threshold} pips.\n"
                                               f"Fermeture de sécurité immédiate.", src_trade)
                                               
                              await run_bg(_send_order_blocking, req_k)
