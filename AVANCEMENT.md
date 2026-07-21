@@ -11,7 +11,7 @@
 | **Frontend → Vercel** | `git push` ou `npx vercel --prod` (depuis `frontend/`) | Fix curseurs (#11), filtrage dashboard (#7), toggles inline (#14), nettoyage eslint (#12), ergonomie panneau (#15), risque journalier (#16), toggles instantanés (#17) |
 | **Bot licence → VPS** | Copier-coller `admin_license_bot_V3.py` manuellement sur le VPS | `/gen dev` (#13), `/gen [pack]`, `/channels` (#7), relais sécu 5s→1h, fix nom client écrasé |
 
-> L'exe (`Bot_FTMO_V14.0.0.exe`) recompilé (inclut la zone de la mort par canal #18, le filtre spread #11, le nouveau parsing MDT_FREE #22, et le suivi des instructions du canal MDT_VIP #20) — à recopier sur le VPS avec le reste du lot.
+> L'exe (`Bot_FTMO_V14.0.0.exe`) recompilé (inclut la zone de la mort par canal #18, le filtre spread #11, le nouveau parsing MDT_FREE #22, le suivi des instructions du canal MDT_VIP #20, et la clôture 40% au vrai TP1 pour MDT_FREE #22) — à recopier sur le VPS avec le reste du lot.
 
 **Rappel commande** : pour régler le % de clôture au TP1 d'un canal, la commande est **`/sell_lot CANAL %`** (pas `/tp1`) — ex: `/sell_lot MDT_VIP 40`.
 
@@ -75,4 +75,5 @@ Checklist complète dans `TESTS_A_FAIRE.md`. Issues à valider :
 | #18 | Analyse MDT VIP/Free : zone de la mort par canal + réglages appliqués | `3b34905` |
 | #23 | Audit stats "Par canal" -- fusion SABR_COPIE confirmée normale, reste différencié | -- |
 | #22 | Parsing MDT_FREE mis à jour (nouveau format "SYMBOLE ACTION À PRIX") | `d59dbf5` |
+| #22 | MDT_FREE ferme 40% au vrai TP1 du signal (au lieu de 60 pips fixes) | `3965971` |
 | #20 | MDT_VIP suit les instructions du canal (clôture partielle/totale, BE) + filet de sécurité 60p | `600191c` |
