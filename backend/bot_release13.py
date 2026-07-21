@@ -1815,8 +1815,19 @@ async def close_partial(pos, pct, tp_label, pips_gained, fixed_lot=None):
                          f"   └─ Flottant: {day_float:+.2f}€\n\n"
                          f"🏦 **Portefeuille: {bal:.2f}€**", src_raw)
         return True
-        
+
     return False
+
+def log_unclear_signal(raw_text, tickets):
+    """(#20) Trace les messages de suivi (reply à un signal) qu'on n'a pas su interpréter,
+    pour revue manuelle -- ex: 'JE GARDE QUE CELLE DE X', messages purement informatifs/
+    optionnels ('les traders satisfaits peuvent fermer'), nouveaux tours de phrase du canal."""
+    try:
+        with open("signaux_non_compris.log", "a", encoding="utf-8") as f:
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            f.write(f"[{ts}] Ticket(s) {tickets} -- aucune action prise :\n{raw_text}\n{'-'*60}\n")
+    except Exception as e:
+        logger.error(f"⚠️ Erreur log signaux non compris : {e}")
 
 def _send_order_blocking(request):
     """Fonction synchrone exécutée dans un thread séparé"""
@@ -3202,34 +3213,31 @@ async def monitor_positions():
                         continue
 
                     # ==========================================
-                    # 🚀 STRATÉGIE SPÉCIFIQUE : CANAL MDT_VIP
+                    # 🚀 STRATÉGIE SPÉCIFIQUE : CANAL MDT_VIP (issue #20)
                     # ==========================================
+                    # Le bot suit désormais les instructions du canal lui-même (clôture
+                    # partielle/totale, mise à BE) via les réponses Telegram au signal
+                    # d'origine -- cf. section "GESTION DES COMMANDES ADMIN" plus bas.
+                    # Le seul automatisme qui reste ici est un filet de sécurité : si le
+                    # trade atteint +60 pips SANS qu'aucune instruction de BE n'ait été
+                    # reçue (message manqué/supprimé), on sécurise quand même le SL au
+                    # point d'entrée, en partant du principe qu'on l'a loupé.
                     if src_trade == "CANAL MDT_VIP":
-                        if pips >= 30:
-                            # 1. On sécurise le BE en priorité absolue
-                            if "MDT_VIP_30_BE" not in processed:
-                                be_price = entry
-                                update_hard_sl = False
-                                if pos.type == mt5.ORDER_TYPE_BUY and pos.sl < be_price: update_hard_sl = True
-                                if pos.type == mt5.ORDER_TYPE_SELL and (pos.sl > be_price or pos.sl == 0): update_hard_sl = True
-                                
-                                if update_hard_sl:
-                                    new_sl_price = round(be_price / pt) * pt
-                                    req = {"action": mt5.TRADE_ACTION_SLTP, "symbol": sym, "position": pos.ticket, "sl": new_sl_price, "tp": pos.tp}
-                                    res = await run_bg(_send_order_blocking, req)
-                                    if res and res.retcode == mt5.TRADE_RETCODE_DONE:
-                                        await send_channel_alert(f"🛡️ **SL SÉCURISÉ BE (MDT VIP)**\n\nSymbole: {sym}\nTicket: {pos.ticket}", src_trade)
-                                        processed.add("MDT_VIP_30_BE")
-                                        await run_bg(save_memory)
+                        if pips >= 60 and "VIP_BE_DONE" not in processed:
+                            be_price = entry
+                            update_hard_sl = False
+                            if pos.type == mt5.ORDER_TYPE_BUY and pos.sl < be_price: update_hard_sl = True
+                            if pos.type == mt5.ORDER_TYPE_SELL and (pos.sl > be_price or pos.sl == 0): update_hard_sl = True
 
-                            # 2. On tente de vendre 80% (Réessaie en boucle si le réseau Timeout)
-                            if "MDT_VIP_30_PARTIAL" not in processed:
-                                lbl_part = "TP 30p (MDT VIP - 80%)"
-                                success = await close_partial(pos, 0.80, lbl_part, pips)
-                                if success:
-                                    processed.add("MDT_VIP_30_PARTIAL")
-                                    await run_bg(save_memory)
-                        
+                            if update_hard_sl:
+                                new_sl_price = round(be_price / pt) * pt
+                                req = {"action": mt5.TRADE_ACTION_SLTP, "symbol": sym, "position": pos.ticket, "sl": new_sl_price, "tp": pos.tp}
+                                res = await run_bg(_send_order_blocking, req)
+                                if res and res.retcode == mt5.TRADE_RETCODE_DONE:
+                                    await send_channel_alert(f"🛡️ **SL SÉCURISÉ BE (MDT VIP - filet de sécurité 60p, aucune instruction reçue)**\n\nSymbole: {sym}\nTicket: {pos.ticket}", src_trade)
+                            processed.add("VIP_BE_DONE")
+                            await run_bg(save_memory)
+
                         continue
                     
                     # --- GESTION TP (CORRIGÉE) ---
@@ -4107,7 +4115,7 @@ async def main_handler(event):
     # ==================================================================
     if event.is_reply:
         txt_upper = event.raw_text.upper()
-        
+
         # Mots-clés déclencheurs (Positions ET Ordres en attente)
         keywords_stop = [
             "FERMETURE", "CLOSE", "FERMER", "SORTIE", "CLÔTURE", "CLOTURE", # Classique
@@ -4115,20 +4123,27 @@ async def main_handler(event):
             "ENLÈVE", "ENLEVE", "ON ENLÈVE", "ANNULE", "ANNULER"            # Ta demande
         ]
 
-        keywords_ignore = ["PARTIEL", "PARTIELLE", "MOITIÉ", "MOITIE", "HALF", "PROFIT"]
-        
-        if any(bad_word in txt_upper for bad_word in keywords_ignore):
-            return
-        
-        if any(k in txt_upper for k in keywords_stop):
-            # 1. On récupère l'ID du message d'origine
-            original_msg_id = event.reply_to_msg_id
-            
-            # 2. On vérifie si on a un trade lié
-            if original_msg_id in TELEGRAM_TO_TICKET:
-                tickets_to_manage = TELEGRAM_TO_TICKET[original_msg_id] # C'est une liste !
+        # (#20) Suivi des instructions du canal (clôture partielle/totale, mise à BE).
+        # Détectés indépendamment (pas de if/elif exclusif) : un message cumule souvent
+        # "moitié" + "SL au point d'entrée" (ex: "FERMEZ LA MOITIÉ ... DÉPLACEZ LE SL
+        # AU POINT D'ENTRÉE"). Avant, tout message contenant "PROFIT"/"MOITIÉ"/"PARTIEL"
+        # était ignoré (y compris des clôtures totales du type "Fermeture totale avec
+        # +10 pips de profit") -- corrigé ici.
+        is_full_close = any(k in txt_upper for k in keywords_stop)
+        is_half = ("MOITI" in txt_upper) or ("50%" in txt_upper) or ("HALF" in txt_upper)
+        is_generic_partial = ("PARTIEL" in txt_upper) and not is_half
+        is_be = ("BREAKEVEN" in txt_upper) or ("BE" == txt_upper.strip()) or \
+                ("POINT" in txt_upper and "ENTR" in txt_upper and "SL" in txt_upper)
+
+        original_msg_id = event.reply_to_msg_id
+
+        if original_msg_id in TELEGRAM_TO_TICKET:
+            tickets_to_manage = TELEGRAM_TO_TICKET[original_msg_id] # C'est une liste !
+            action_taken = False
+
+            if is_full_close:
                 logger.warning(f"🚨 COMMANDE STOP DÉTECTÉE SUR TICKET(S) {tickets_to_manage}")
-                
+
                 closed_count = 0
                 for tk in tickets_to_manage:
                     # --- CAS A : C'EST UN ORDRE EN ATTENTE (PENDING) ? ---
@@ -4145,7 +4160,7 @@ async def main_handler(event):
                         if res is None:
                             await send_alert(f"⚠️ Timeout MT5: Impossible de supprimer l'ordre #{tk}")
                             continue
-                        
+
                         if res.retcode == mt5.TRADE_RETCODE_DONE:
                             await send_alert(f"🗑️ **ORDRE SUPPRIMÉ**\n\nTicket #{tk} annulé.")
                             if tk in PENDING_ORDER_TICKETS: PENDING_ORDER_TICKETS.remove(tk)
@@ -4161,7 +4176,7 @@ async def main_handler(event):
                         pos = pos_data[0]
                         otype = mt5.ORDER_TYPE_SELL if pos.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
                         price = mt5.symbol_info_tick(pos.symbol).bid if otype == mt5.ORDER_TYPE_SELL else mt5.symbol_info_tick(pos.symbol).ask
-                        
+
                         req = {
                             "action": mt5.TRADE_ACTION_DEAL, "symbol": pos.symbol, "volume": pos.volume,
                             "type": otype, "position": tk, "price": price,
@@ -4172,22 +4187,62 @@ async def main_handler(event):
                         if res is None:
                             await send_alert(f"⚠️ Timeout MT5: Impossible de fermer la position #{tk}")
                             continue
-                        
+
                         if res.retcode == mt5.TRADE_RETCODE_DONE:
                             await send_alert(f"✅ **POSITION FERMÉE**\n\nTicket #{tk} clôturé.")
                             if tk in MANAGED_MANUAL_TICKETS: MANAGED_MANUAL_TICKETS.remove(tk)
                             closed_count += 1
                         else:
                             await send_alert(f"⚠️ Échec fermeture position #{tk}: {res.comment}")
-                        continue
 
-                # Bilan de la commande
                 if closed_count > 0:
                     del TELEGRAM_TO_TICKET[original_msg_id]
+                    action_taken = True
                 else:
                     await send_alert("⚠️ Commande reçue mais tickets introuvables (Déjà fermés ?).")
-                
-                return # Fin de la gestion commande
+
+            else:
+                # --- (#20) Clôture partielle (moitié explicite, ou "partiellement" sans %
+                # précisé -> 50% du restant par défaut) ---
+                if is_half or is_generic_partial:
+                    label = "Clôture 50% (signal canal)" if is_half else "Clôture partielle 50% (signal canal, % non précisé)"
+                    for tk in tickets_to_manage:
+                        pos_data = await run_bg(mt5.positions_get, ticket=tk)
+                        if not pos_data: continue
+                        pos = pos_data[0]
+                        pt = get_cached_point(pos.symbol); div = get_pip_divisor(pos.symbol)
+                        if pos.type == mt5.ORDER_TYPE_BUY:
+                            pips_now = ((pos.price_current - pos.price_open) / pt) / div
+                        else:
+                            pips_now = ((pos.price_open - pos.price_current) / pt) / div
+                        if await close_partial(pos, 0.5, label, pips_now):
+                            action_taken = True
+
+                # --- (#20) Mise à BE (SL au point d'entrée) ---
+                if is_be:
+                    for tk in tickets_to_manage:
+                        pos_data = await run_bg(mt5.positions_get, ticket=tk)
+                        if not pos_data: continue
+                        pos = pos_data[0]
+                        pt = get_cached_point(pos.symbol)
+                        be_price = pos.price_open
+                        move_sl = (pos.type == mt5.ORDER_TYPE_BUY and pos.sl < be_price) or \
+                                  (pos.type == mt5.ORDER_TYPE_SELL and (pos.sl > be_price or pos.sl == 0))
+                        if move_sl:
+                            new_sl_price = round(be_price / pt) * pt
+                            req = {"action": mt5.TRADE_ACTION_SLTP, "symbol": pos.symbol, "position": tk, "sl": new_sl_price, "tp": pos.tp}
+                            res = await run_bg(_send_order_blocking, req)
+                            if res and res.retcode == mt5.TRADE_RETCODE_DONE:
+                                await send_alert(f"🛡️ **SL SÉCURISÉ AU BE** (signal canal)\n\nTicket #{tk}")
+                                action_taken = True
+                        # On marque BE comme géré même si le SL n'a pas dû bouger (déjà mieux
+                        # que le BE) -- évite que le filet de sécurité 60 pips (#20) ne repasse dessus.
+                        TRADES_PROCESSED_LEVELS.setdefault(tk, set()).add("VIP_BE_DONE")
+
+            if not action_taken:
+                log_unclear_signal(event.raw_text, tickets_to_manage)
+
+            return # Fin de la gestion commande
     # ==================================================================
 
     if event.id in TELEGRAM_TO_TICKET: return
