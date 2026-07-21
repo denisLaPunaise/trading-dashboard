@@ -379,6 +379,9 @@ CHANNEL_STATS = {}
 ACTIVE_TRADE_SOURCES = {}
 # Format : { ticket_id: montant_deja_compte }
 PARTIAL_PROFITS = {}
+# (#22) Prix TP1 réel lu dans le signal MDT_FREE (ticket_id: prix) -- permet de fermer
+# la partielle exactement au TP1 annoncé par l'admin plutôt qu'à un seuil de pips fixe.
+TP1_PRICE_BY_TICKET = {}
 
 CACHE_SYMBOL_POINT = {}
 
@@ -1900,7 +1903,7 @@ def distribute_lots(total_vol, n_orders):
         
     return lots
 
-async def execute_trade(symbol, action, sl, tp, price_signal, message_date, channel_source, custom_lot_modifier=1.0):
+async def execute_trade(symbol, action, sl, tp, price_signal, message_date, channel_source, custom_lot_modifier=1.0, tp1_price=None):
     # -----------------------------------------------------------
     # 🛠️ GESTION SPECIALE: MISE A JOUR SL SABR
     # -----------------------------------------------------------
@@ -2364,6 +2367,10 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
             logger.error(f"❌ REJET MT5 ({res.retcode}) sur {symbol} : {res.comment}")
             await send_alert(f"❌ **ERREUR D'EXÉCUTION MT5**\nImpossible d'ouvrir {action} {symbol}\nRaison : {res.comment}\n*(Code {res.retcode} : Ton MT5 est allumé ? Algo Trading activé ?)*")
 
+    if tp1_price:
+        for tk in tickets_opened:
+            TP1_PRICE_BY_TICKET[tk] = tp1_price
+
     return tickets_opened
 
 async def send_alert(msg, buttons=None):
@@ -2541,6 +2548,7 @@ async def check_closed_positions():
                 
                 # Nettoyage et Sauvegarde
                 del ACTIVE_TRADE_SOURCES[t]
+                TP1_PRICE_BY_TICKET.pop(t, None)
                 await run_bg(save_channel_data)
 
             # --- 👇 GENERATION DU FICHIER CSV DETAILLE 👇 ---
@@ -3182,34 +3190,49 @@ async def monitor_positions():
                              continue
 
                     # ==========================================
-                    # 🚀 STRATÉGIE SPÉCIFIQUE : CANAL MDT_FREE
+                    # 🚀 STRATÉGIE SPÉCIFIQUE : CANAL MDT_FREE (issue #22)
                     # ==========================================
+                    # Le bot suit maintenant le TP1 réellement annoncé dans le signal
+                    # (lu à l'ouverture, cf. TP1_PRICE_BY_TICKET) plutôt qu'un seuil de
+                    # pips fixe : au TP1, on ferme 40% et on sécurise le SL au point
+                    # d'entrée (BE). Le reste (60%) continue vers le TP2 (déjà le TP
+                    # broker de la position) ou ressort au BE. Si le TP1 n'a pas pu être
+                    # lu dans le signal (ancien format, parsing raté...), on retombe sur
+                    # l'ancien filet de sécurité à +60 pips pour ne pas laisser le trade
+                    # totalement sans gestion.
                     if src_trade == "CANAL MDT_FREE":
-                        if pips >= 60:
+                        tp1_target = TP1_PRICE_BY_TICKET.get(pos.ticket)
+                        if tp1_target:
+                            hit_tp1 = (pos.type == mt5.ORDER_TYPE_BUY and curr >= tp1_target) or \
+                                      (pos.type == mt5.ORDER_TYPE_SELL and curr <= tp1_target)
+                        else:
+                            hit_tp1 = pips >= 60
+
+                        if hit_tp1:
                             # 1. On sécurise le BE en priorité absolue
-                            if "MDT_FREE_60_BE" not in processed:
+                            if "MDT_FREE_TP1_BE" not in processed:
                                 be_price = entry
                                 update_hard_sl = False
                                 if pos.type == mt5.ORDER_TYPE_BUY and pos.sl < be_price: update_hard_sl = True
                                 if pos.type == mt5.ORDER_TYPE_SELL and (pos.sl > be_price or pos.sl == 0): update_hard_sl = True
-                                
+
                                 if update_hard_sl:
                                     new_sl_price = round(be_price / pt) * pt
                                     req = {"action": mt5.TRADE_ACTION_SLTP, "symbol": sym, "position": pos.ticket, "sl": new_sl_price, "tp": pos.tp}
                                     res = await run_bg(_send_order_blocking, req)
                                     if res and res.retcode == mt5.TRADE_RETCODE_DONE:
-                                        await send_channel_alert(f"🛡️ **SL SÉCURISÉ BE (MDT FREE)**\n\nSymbole: {sym}\nTicket: {pos.ticket}", src_trade)
-                                        processed.add("MDT_FREE_60_BE")
+                                        await send_channel_alert(f"🛡️ **SL SÉCURISÉ BE (MDT FREE - TP1)**\n\nSymbole: {sym}\nTicket: {pos.ticket}", src_trade)
+                                        processed.add("MDT_FREE_TP1_BE")
                                         await run_bg(save_memory)
 
-                            # 2. On tente de vendre 50% (Réessaie en boucle si le réseau Timeout)
-                            if "MDT_FREE_60_PARTIAL" not in processed:
-                                lbl_part = "TP 60p (MDT FREE)"
-                                success = await close_partial(pos, 0.50, lbl_part, pips)
+                            # 2. On ferme 40% (Réessaie en boucle si le réseau Timeout)
+                            if "MDT_FREE_TP1_PARTIAL" not in processed:
+                                lbl_part = "TP1 (signal, 40%)"
+                                success = await close_partial(pos, 0.40, lbl_part, pips)
                                 if success:
-                                    processed.add("MDT_FREE_60_PARTIAL")
+                                    processed.add("MDT_FREE_TP1_PARTIAL")
                                     await run_bg(save_memory)
-                        
+
                         continue
 
                     # ==========================================
@@ -4383,7 +4406,16 @@ async def main_handler(event):
                 # --- CANAUX NON-SABR : comportement inchangé ---
                 await send_channel_alert(f"✔️ Signal traité ({display_source}) :{display_type_line}\n\n {act} {sym} à {log_p}\n\n🛑 SL: {sl} & 🎯 TP: {tp}", final_source)
 
-                opened_tickets = await execute_trade(sym, act, sl, tp, p_msg, event.date, final_source)
+                # (#22) MDT_FREE : on lit le vrai prix TP1 du signal pour fermer la partielle
+                # exactement à ce niveau-là (au lieu d'un seuil de pips fixe -- cf. issue).
+                tp1_price = None
+                if final_source == "CANAL MDT_FREE":
+                    m_tp1 = re.search(r"TP1\s*[:=]\s*([\d.,]+)", final_text, re.IGNORECASE)
+                    if m_tp1:
+                        try: tp1_price = float(m_tp1.group(1).replace(',', '.'))
+                        except: pass
+
+                opened_tickets = await execute_trade(sym, act, sl, tp, p_msg, event.date, final_source, tp1_price=tp1_price)
 
                 if opened_tickets:
                     TELEGRAM_TO_TICKET[event.id] = opened_tickets
