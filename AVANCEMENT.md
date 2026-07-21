@@ -11,7 +11,7 @@
 | **Frontend → Vercel** | `git push` ou `npx vercel --prod` (depuis `frontend/`) | Fix curseurs (#11), filtrage dashboard (#7), toggles inline (#14), nettoyage eslint (#12), ergonomie panneau (#15), risque journalier (#16), toggles instantanés (#17) |
 | **Bot licence → VPS** | Copier-coller `admin_license_bot_V3.py` manuellement sur le VPS | `/gen dev` (#13), `/gen [pack]`, `/channels` (#7), relais sécu 5s→1h, fix nom client écrasé |
 
-> L'exe (`Bot_FTMO_V14.0.0.exe`) recompilé le 2026-07-02 23:01 (inclut la zone de la mort par canal #18 + filtre spread #11) — à recopier sur le VPS avec le reste du lot.
+> L'exe (`Bot_FTMO_V14.0.0.exe`) recompilé (inclut la zone de la mort par canal #18, le filtre spread #11, et le nouveau parsing MDT_FREE #22) — à recopier sur le VPS avec le reste du lot.
 
 **Rappel commande** : pour régler le % de clôture au TP1 d'un canal, la commande est **`/sell_lot CANAL %`** (pas `/tp1`) — ex: `/sell_lot MDT_VIP 40`.
 
@@ -49,7 +49,6 @@ Checklist complète dans `TESTS_A_FAIRE.md`. Issues à valider :
 | **#1** | Refactor monolithe `bot_release13.py` | ~4900 lignes → chantier séparé, pas commencé |
 | **#20** | Stratégie MDT VIP : analyser clôtures/BE du provider | Bloqué, attente captures d'écran utilisateur |
 | **#21** | Parsing par IA (LLM) pour canaux au format libre (ex: canal indonésien) | Exploration faisable, attente exemples de messages |
-| **#22** | Mise à jour parsing MDT_FREE (format changé) | Bloqué, attente nouveaux exemples de messages |
 
 ---
 
@@ -76,3 +75,4 @@ Checklist complète dans `TESTS_A_FAIRE.md`. Issues à valider :
 | #11 | Filtre spread MAX_SPREAD_PIPS activé (dernier point) | `656a0ce` |
 | #18 | Analyse MDT VIP/Free : zone de la mort par canal + réglages appliqués | `3b34905` |
 | #23 | Audit stats "Par canal" -- fusion SABR_COPIE confirmée normale, reste différencié | -- |
+| #22 | Parsing MDT_FREE mis à jour (nouveau format "SYMBOLE ACTION À PRIX") | `d59dbf5` |
