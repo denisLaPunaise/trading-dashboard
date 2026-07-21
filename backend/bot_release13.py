@@ -321,6 +321,10 @@ REGEX_F1_ENTRY = re.compile(r"([A-Z0-9#]{3,10})\s+(ACHAT|VENTE|BUY|SELL)(?:\s+([
 #REGEX_F2_ENTRY = re.compile(r"(ACHAT|VENTE|BUY|SELL)[^#\n]*?#?([A-Z0-9]{3,10})\s+(?:.*?(?:À|@|AT)\s*)?([\d\.,]+)", re.IGNORECASE | re.MULTILINE)
 REGEX_F2_ENTRY = re.compile(r"(ACHAT|VENTE|BUY|SELL|ACH[EÈ]TEZ?|VENDS?|VENDEZ)[^#\n]*?#?([A-Z0-9]{3,10})(?:\s+(?:.*?(?:À|@|AT)\s*)?([\d\.,]+))?", re.IGNORECASE | re.MULTILINE)
 
+# Format 3 (nouveau format MDT_FREE, 2026-07) : "XAUUSD SELL-LIMIT À 4055" / "XAUUSD BUY À 3997"
+# -- symbole d'abord comme le Format 1, mais prix introduit par À/@/AT comme le Format 2.
+REGEX_F3_ENTRY = re.compile(r"#?([A-Z0-9]{3,10})\s+(ACHAT|VENTE|BUY|SELL|ACH[EÈ]TEZ?|VENDS?|VENDEZ)[^\n]*?(?:À|@|AT)\s*([\d\.,]+)", re.IGNORECASE | re.MULTILINE)
+
 # SL et TP (Universel)
 REGEX_SL = re.compile(r"(?:SL|STOP)\s*[:=]?\s*([\d\.,]+)", re.IGNORECASE)
 REGEX_TP = re.compile(r"(?:TP|TARGET)\s*[:=]?\s*([\d\.,]+)", re.IGNORECASE)
@@ -844,20 +848,40 @@ def parse_signal(raw_text, channel_id=None):
     # ==========================================
     # 🧠 PARTIE 4 : MODULES CLASSIQUES (MDT VIP, MDT FREE)
     # ==========================================
-    sl = m_sl.group(1).replace(',', '.') if m_sl else "0.0"
-    
+    # SL lu sur le texte BRUT (pas le texte nettoyé) : un message édité peut afficher
+    # "SL : 3992 3987" (ancienne valeur barrée + nouvelle soulignée) -- clean_text() fusionnerait
+    # les deux nombres espacés en un seul bloc illisible (ex: "39923987"). On relit donc ici sur
+    # raw_text et on garde le DERNIER nombre trouvé après SL/STOP (= la valeur à jour).
+    m_sl_raw = re.search(r"(?:SL|STOP)\s*[:=]?[ \t]*([\d.,]+)(?:[ \t]+([\d.,]+))?", raw_text, re.IGNORECASE)
+    sl = (m_sl_raw.group(2) or m_sl_raw.group(1)).replace(',', '.') if m_sl_raw else "0.0"
+
     # On cherche TOUS les TP dans le texte, et on prend le TOUT DERNIER (On force le : ou =)
     all_tps = re.findall(r"(?:TP|TARGET)\s*(?:\d+)?\s*[:=]\s*([\d\.,]+)", text, re.IGNORECASE)
     tp = all_tps[-1].replace(',', '.') if all_tps else "0.0"
 
-    # Format 1
+    # Format 1 : "SYMBOLE ACTION PRIX" direct, sans mot de liaison (ex: "XAUUSD ACHAT 1950") -> MDT_VIP
     m1 = REGEX_F1_ENTRY.search(text)
     if m1:
-        rsym = m1.group(1).replace("#", "").upper()
-        act_raw = m1.group(2).upper()
-        price = m1.group(3)
+        # Si aucun prix n'est capturé directement ICI mais qu'un prix existe plus loin après
+        # À/@/AT (nouveau format MDT_FREE, ex: "XAUUSD SELL-LIMIT À 4055"), ce n'est pas VIP :
+        # on laisse la main au Format 3 plutôt que de renvoyer un signal sans prix par erreur.
+        has_price_via_a = re.search(r"(?:À|@|AT)\s*[\d.,]+", text, re.IGNORECASE)
+        if m1.group(3) or not has_price_via_a:
+            rsym = m1.group(1).replace("#", "").upper()
+            act_raw = m1.group(2).upper()
+            price = m1.group(3)
+            action = "ACHAT" if "ACHAT" in act_raw or "BUY" in act_raw else "VENTE"
+            return rsym, action, price, sl, tp, "CANAL MDT_VIP" # <-- NOUVEAU NOM
+
+    # Format 3 (nouveau format MDT_FREE, 2026-07) : "SYMBOLE ACTION[-LIMIT/-STOP] À PRIX"
+    # ex: "XAUUSD SELL-LIMIT À 4055", "XAUUSD BUY À 3997"
+    m3 = REGEX_F3_ENTRY.search(text)
+    if m3:
+        rsym = m3.group(1).replace("#", "").upper()
+        act_raw = m3.group(2).upper()
+        price = m3.group(3)
         action = "ACHAT" if "ACHAT" in act_raw or "BUY" in act_raw else "VENTE"
-        return rsym, action, price, sl, tp, "CANAL MDT_VIP" # <-- NOUVEAU NOM
+        return rsym, action, price, sl, tp, "CANAL MDT_FREE"
 
     # Format 2
     m2 = REGEX_F2_ENTRY.search(text)
@@ -865,6 +889,12 @@ def parse_signal(raw_text, channel_id=None):
         act_raw = m2.group(1).upper()
         rsym = m2.group(2).replace("#", "").upper()
         price = m2.group(3)
+        # Si un symbole préfixé par '#' existe dans le texte, il est plus fiable que celui
+        # capturé par la regex générique (qui peut confondre un mot comme "MAINTENANT" avec
+        # un symbole quand il n'y a pas de '#' juste avant, ex: "VENDS MAINTENANT #XAUUSD").
+        m_hash_sym = re.search(r"#([A-Z0-9]{3,10})", text, re.IGNORECASE)
+        if m_hash_sym:
+            rsym = m_hash_sym.group(1).upper()
         action = "ACHAT" if "ACHAT" in act_raw or "BUY" in act_raw else "VENTE"
         return rsym, action, price, sl, tp, "CANAL MDT_FREE" # <-- NOUVEAU NOM
 
@@ -4161,6 +4191,12 @@ async def main_handler(event):
     # ==================================================================
 
     if event.id in TELEGRAM_TO_TICKET: return
+
+    # (#22) Un message TRANSFÉRÉ (repost d'un autre canal, ex: "Forwarded from ... Canal VIP")
+    # n'est pas un signal généré par ce canal -- on l'ignore pour ne pas trader une vitrine/repost.
+    if event.fwd_from:
+        logger.info(f"↪️ Message transféré ignoré (id={event.id}) -- pas traité comme signal.")
+        return
 
     raw_text = event.raw_text
     if any(w in raw_text.upper() for w in BLACKLIST_WORDS): return
