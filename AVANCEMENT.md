@@ -50,7 +50,6 @@ Checklist complète dans `TESTS_A_FAIRE.md`. Issues à valider :
 | **#20** | Stratégie MDT VIP : analyser clôtures/BE du provider | Bloqué, attente captures d'écran utilisateur |
 | **#21** | Parsing par IA (LLM) pour canaux au format libre (ex: canal indonésien) | Exploration faisable, attente exemples de messages |
 | **#22** | Mise à jour parsing MDT_FREE (format changé) | Bloqué, attente nouveaux exemples de messages |
-| **#23** | Audit stats "Par canal" | SABR_COPIE fusionné dans SABR VIP (décision produit à prendre) ; risque de mauvaise catégo VIP/FREE lié à #22 |
 
 ---
 
@@ -76,3 +75,4 @@ Checklist complète dans `TESTS_A_FAIRE.md`. Issues à valider :
 | #17 | Toggles (drawdown, SL suiveur, soft SL, mute) instantanés | `e4cdeba` |
 | #11 | Filtre spread MAX_SPREAD_PIPS activé (dernier point) | `656a0ce` |
 | #18 | Analyse MDT VIP/Free : zone de la mort par canal + réglages appliqués | `3b34905` |
+| #23 | Audit stats "Par canal" -- fusion SABR_COPIE confirmée normale, reste différencié | -- |
