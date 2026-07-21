@@ -47,6 +47,10 @@ Checklist complète dans `TESTS_A_FAIRE.md`. Issues à valider :
 | # | Titre | Notes |
 |---|---|---|
 | **#1** | Refactor monolithe `bot_release13.py` | ~4900 lignes → chantier séparé, pas commencé |
+| **#20** | Stratégie MDT VIP : analyser clôtures/BE du provider | Bloqué, attente captures d'écran utilisateur |
+| **#21** | Parsing par IA (LLM) pour canaux au format libre (ex: canal indonésien) | Exploration faisable, attente exemples de messages |
+| **#22** | Mise à jour parsing MDT_FREE (format changé) | Bloqué, attente nouveaux exemples de messages |
+| **#23** | Audit stats "Par canal" | SABR_COPIE fusionné dans SABR VIP (décision produit à prendre) ; risque de mauvaise catégo VIP/FREE lié à #22 |
 
 ---
 
