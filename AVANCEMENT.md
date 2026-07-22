@@ -11,7 +11,7 @@
 | **Frontend → Vercel** | `git push` ou `npx vercel --prod` (depuis `frontend/`) | Fix curseurs (#11), filtrage dashboard (#7), toggles inline (#14), nettoyage eslint (#12), ergonomie panneau (#15), risque journalier (#16), toggles instantanés (#17) |
 | **Bot licence → VPS** | Copier-coller `admin_license_bot_V3.py` manuellement sur le VPS | `/gen dev` (#13), `/gen [pack]`, `/channels` (#7), relais sécu 5s→1h, fix nom client écrasé |
 
-> L'exe (`Bot_FTMO_V14.0.0.exe`) recompilé (inclut la zone de la mort par canal #18, le filtre spread #11, le nouveau parsing MDT_FREE #22, le suivi des instructions du canal MDT_VIP #20, et la clôture 40% au vrai TP1 pour MDT_FREE #22) — à recopier sur le VPS avec le reste du lot.
+> L'exe (`Bot_FTMO_V14.0.0.exe`) recompilé (inclut : filtre spread #11, parsing MDT_FREE #22 + clôture 40% au vrai TP1, suivi des instructions du canal MDT_VIP #20, refonte gestion SABR #26, fix répartition lots SABR #27, délai anti-détection #28, retrait de la zone de la mort #24) — à recopier sur le VPS avec le reste du lot.
 
 **Rappel commande** : pour régler le % de clôture au TP1 d'un canal, la commande est **`/sell_lot CANAL %`** (pas `/tp1`) — ex: `/sell_lot MDT_VIP 40`.
 
@@ -48,11 +48,7 @@ Checklist complète dans `TESTS_A_FAIRE.md`. Issues à valider :
 |---|---|---|
 | **#1** | Refactor monolithe `bot_release13.py` | ~4900 lignes → chantier séparé, pas commencé |
 | **#21** | Canal INDO (parsing par IA, or uniquement) | Plan complet validé (commentaire sur l'issue), pas encore codé -- attente feu vert |
-| **#24** | Retirer la zone de la mort (tous canaux) | Décidé, petit chantier séparé, pas encore codé |
-| **#25** | Contrôle d'accès réel par pack client (mute verrouillé + commandes filtrées) | Besoin exprimé, pas encore de plan technique |
-| **#26** | Refonte gestion SABR VIP/Free (BE+60% à 100p, +10% à 150p, +10% sur message PARTIEL) | Clarifié avec l'utilisateur, pas encore codé |
-| **#27** | Bug répartition lots SABR (sur-allocation si lot réglé trop petit pour 3 ordres) | Bug confirmé par calcul, correctif défini, pas encore codé |
-| **#28** | Délai aléatoire anti-détection avant envoi MT5 | Existant confirmé (2-4s), renforcement optionnel proposé |
+| **#25** | Contrôle d'accès réel par pack client (mute verrouillé + commandes filtrées) | Besoin exprimé, pas encore de plan technique -- prochain chantier |
 | **#29** | Dashboard : mailbox retour client (bugs/suggestions) | Recommandation faite, pas de plan technique détaillé |
 
 ---
@@ -83,3 +79,7 @@ Checklist complète dans `TESTS_A_FAIRE.md`. Issues à valider :
 | #22 | Parsing MDT_FREE mis à jour (nouveau format "SYMBOLE ACTION À PRIX") | `d59dbf5` |
 | #22 | MDT_FREE ferme 40% au vrai TP1 du signal (au lieu de 60 pips fixes) | `3965971` |
 | #20 | MDT_VIP suit les instructions du canal (clôture partielle/totale, BE) + filet de sécurité 60p | `600191c` |
+| #26 | Refonte gestion SABR VIP/Free/Copie (BE+60% à 100p, +10% à 150p, +10% sur message PARTIEL) | `05c0fec` |
+| #27 | Fix répartition lots SABR (sur-allocation si lot réglé trop petit pour 3 ordres) | `05c0fec` |
+| #28 | Délai aléatoire supplémentaire (0-1.5s) avant envoi MT5, anti-détection groupe | `05c0fec` |
+| #24 | Retrait de la zone de la mort (tous canaux) | `05c0fec` |
