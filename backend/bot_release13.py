@@ -211,14 +211,6 @@ SOFT_SL_ACTIVE = True      # False -> pas de clôture partielle sur repli (Soft 
 BTC_ENTRY_OFFSET = 70
 DEFAULT_TP1_PCT = 0.50
 
-MAX_DEATH_ZONE_PIPS = 85  # Seuil par défaut (autres canaux)
-# (issue #18) Seuils "zone de la mort" spécifiques par canal, dérivés de l'analyse des trades MDT
-# VIP/Free (falaise de winrate constatée vers -60 pips MAE pour VIP, -35 pips pour Free).
-DEATH_ZONE_PIPS_BY_CHANNEL = {
-    "CANAL MDT_VIP": 60,
-    "CANAL MDT_FREE": 35,
-}
-SABR_TRAILING_ACTIVE = True
 SABR_ANTI_DOUBLON_ACTIVE = True
 
 # --- Gestion des Resets Stats ---
@@ -1041,7 +1033,6 @@ def save_settings():
                 "SOFT_SL_PERCENT": SOFT_SL_PERCENT,
                 "SL_SUIVEUR_ACTIVE": SL_SUIVEUR_ACTIVE,
                 "SOFT_SL_ACTIVE": SOFT_SL_ACTIVE,
-                "SABR_TRAILING_ACTIVE": SABR_TRAILING_ACTIVE,
                 "SABR_ANTI_DOUBLON_ACTIVE": SABR_ANTI_DOUBLON_ACTIVE,
                 "MUTED_CHANNELS": MUTED_CHANNELS,
                 "ALLOWED_CHANNELS": ALLOWED_CHANNELS,
@@ -1073,7 +1064,7 @@ FIREBASE_PASSWORD = ""
 
 def load_settings():
     """Charge les réglages au démarrage"""
-    global RISK_PERCENT_GOLD, SABR_FORWARD_ACTIVE, RISK_PERCENT_OTHER, RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE, MAX_DAILY_DRAWDOWN, DRAWDOWN_ACTIVE, TRAILING_STOP_PIPS, RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO, SOFT_SL_PERCENT, MUTED_CHANNELS, ALLOWED_CHANNELS, CHANNEL_TP1_PCT, TELEGRAM_DESTINATION_ID, ADMIN_ID, RISK_PERCENT_INDICES, PRIME_HOURS, TIME_OFF_PEAK_FACTOR, DAY_RISK_FACTORS, FIXED_LOT_SABR_FREE, FIXED_LOT_SABR_VIP, RISK_PERCENT_SABR_OTHER, SABR_TRAILING_ACTIVE, SL_SUIVEUR_ACTIVE, SOFT_SL_ACTIVE, FIREBASE_EMAIL, FIREBASE_PASSWORD
+    global RISK_PERCENT_GOLD, SABR_FORWARD_ACTIVE, RISK_PERCENT_OTHER, RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE, MAX_DAILY_DRAWDOWN, DRAWDOWN_ACTIVE, TRAILING_STOP_PIPS, RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO, SOFT_SL_PERCENT, MUTED_CHANNELS, ALLOWED_CHANNELS, CHANNEL_TP1_PCT, TELEGRAM_DESTINATION_ID, ADMIN_ID, RISK_PERCENT_INDICES, PRIME_HOURS, TIME_OFF_PEAK_FACTOR, DAY_RISK_FACTORS, FIXED_LOT_SABR_FREE, FIXED_LOT_SABR_VIP, RISK_PERCENT_SABR_OTHER, SL_SUIVEUR_ACTIVE, SOFT_SL_ACTIVE, FIREBASE_EMAIL, FIREBASE_PASSWORD
 
     if os.path.exists(SETTINGS_FILENAME):
         try:
@@ -1099,7 +1090,6 @@ def load_settings():
                 if "SOFT_SL_PERCENT" in data: SOFT_SL_PERCENT = data["SOFT_SL_PERCENT"]
                 if "SL_SUIVEUR_ACTIVE" in data: SL_SUIVEUR_ACTIVE = data["SL_SUIVEUR_ACTIVE"]
                 if "SOFT_SL_ACTIVE" in data: SOFT_SL_ACTIVE = data["SOFT_SL_ACTIVE"]
-                if "SABR_TRAILING_ACTIVE" in data: SABR_TRAILING_ACTIVE = data["SABR_TRAILING_ACTIVE"] 
                 if "MUTED_CHANNELS" in data: MUTED_CHANNELS = data["MUTED_CHANNELS"]
                 if "ALLOWED_CHANNELS" in data: ALLOWED_CHANNELS = data["ALLOWED_CHANNELS"]  # (#7) pack du client
                 if "CHANNEL_TP1_PCT" in data: CHANNEL_TP1_PCT = data["CHANNEL_TP1_PCT"]
@@ -2171,13 +2161,29 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
                 sl_val = p2 - dist_sl if action == "ACHAT" else p2 + dist_sl
 
             # --- NOUVELLE RÉPARTITION : 45% - 35% - 20% ---
-            lot1 = round(total_vol * 0.45, 2)
-            lot2 = round(total_vol * 0.35, 2)
-            lot3 = round(total_vol - lot1 - lot2, 2)
-            
-            if lot1 < 0.01: lot1 = 0.01
-            if lot2 < 0.01: lot2 = 0.01
-            if lot3 < 0.01: lot3 = 0.01
+            # (#27) Si le lot total ne permet pas de financer les 3 ordres à au moins
+            # le pas minimum du broker chacun, on ne finance QUE les premiers ordres
+            # (début > milieu > fin, par priorité) plutôt que de forcer chaque montant
+            # à la hausse -- l'ancien comportement sur-allouait (ex: lot réglé à 0.01
+            # posait 3 ordres de 0.01 = 0.03 au total au lieu d'un seul 0.01).
+            min_step_zone = s_info.volume_step if s_info.volume_step > 0 else 0.01
+            n_slots = round(total_vol / min_step_zone)
+
+            if n_slots >= 3:
+                lot1 = round(total_vol * 0.45, 2)
+                lot2 = round(total_vol * 0.35, 2)
+                lot3 = round(total_vol - lot1 - lot2, 2)
+                if lot1 < min_step_zone: lot1 = min_step_zone
+                if lot2 < min_step_zone: lot2 = min_step_zone
+                if lot3 < min_step_zone: lot3 = min_step_zone
+            elif n_slots == 2:
+                lot1 = min_step_zone
+                lot2 = round(total_vol - lot1, 2)
+                lot3 = 0.0
+            else:
+                lot1 = round(total_vol, 2)
+                lot2 = 0.0
+                lot3 = 0.0
 
             # Vérification distance pour le premier ordre (P1)
             dist_p1_pips = (abs(p1 - curr_price) / pt) / div
@@ -2301,11 +2307,17 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
         
         req = {
             "action": tact, "symbol": symbol, "volume": float(f"{lot:.2f}"), "type": otype,
-            "price": final_px, "sl": final_sl, "tp": final_tp, 
-            "deviation": MAX_SLIPPAGE, "magic": MAGIC_NUMBER, 
+            "price": final_px, "sl": final_sl, "tp": final_tp,
+            "deviation": MAX_SLIPPAGE, "magic": MAGIC_NUMBER,
             "comment": f"Bot - {source_clean}", "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": mt5.ORDER_FILLING_IOC if tact == mt5.TRADE_ACTION_DEAL else mt5.ORDER_FILLING_RETURN,
         }
+
+        # (#28) Petit délai aléatoire supplémentaire juste avant l'envoi MT5, en plus de
+        # la "pause humaine" (2-4s) déjà appliquée à la réception du message -- chaque
+        # client fait tourner sa propre instance, ça désynchronise encore un peu plus
+        # le moment exact de l'ordre entre comptes (anti-détection "groupe" FTMO).
+        await asyncio.sleep(random.uniform(0.0, 1.5))
 
         res = await run_bg(_send_order_blocking, req)
 
@@ -3153,42 +3165,6 @@ async def monitor_positions():
 
                     processed = TRADES_PROCESSED_LEVELS[pos.ticket]
 
-                    # === ☠️ SÉCURITÉ "ZONE DE LA MORT" ===
-                    # Désactivée pour SABR (volatilité gérée différemment). MDT_VIP/MDT_FREE ont
-                    # chacun leur propre seuil (issue #18) ; les autres canaux gardent le défaut.
-                    disable_death_zone = "SABR" in src_trade.upper()
-                    death_zone_threshold = DEATH_ZONE_PIPS_BY_CHANNEL.get(src_trade, MAX_DEATH_ZONE_PIPS)
-
-                    if not disable_death_zone and pips <= -death_zone_threshold:
-                         tag_death = "DEATH_ZONE_KILL"
-                         if tag_death not in TRADES_PROCESSED_LEVELS[pos.ticket]:
-                             # 1. On verrouille
-                             TRADES_PROCESSED_LEVELS[pos.ticket].add(tag_death)
-                             save_memory()
-                             
-                             # 2. On ferme TOUT immédiatement
-                             otype = mt5.ORDER_TYPE_SELL if pos.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
-                             tick_k = mt5.symbol_info_tick(sym)
-                             price_k = tick_k.bid if otype == mt5.ORDER_TYPE_SELL else tick_k.ask
-                             
-                             req_k = {
-                                "action": mt5.TRADE_ACTION_DEAL, "symbol": sym, "volume": pos.volume, 
-                                "type": otype, "position": pos.ticket, "price": price_k, 
-                                "magic": MAGIC_NUMBER, "comment": "Death Zone Kill", 
-                                "type_filling": mt5.ORDER_FILLING_IOC
-                             }
-
-                             src_clean = src_trade.replace("CANAL ", "").replace("_", " ")
-                             
-                             await send_channel_alert(f"☠️ **ZONE DE LA MORT** ({sym})\n\n"
-                                              f"Symbole: {sym} ({open_time})\n\n"
-                                              f"Source: {src_clean}\n\n"
-                                              f"Drawdown > {death_zone_threshold} pips.\n"
-                                              f"Fermeture de sécurité immédiate.", src_trade)
-                                              
-                             await run_bg(_send_order_blocking, req_k)
-                             continue
-
                     # ==========================================
                     # 🚀 STRATÉGIE SPÉCIFIQUE : CANAL MDT_FREE (issue #22)
                     # ==========================================
@@ -3377,80 +3353,22 @@ async def monitor_positions():
                                                  f"Source: {src_clean}\n"
                                                  f"Niveau : {sl_reason}", src_trade)
 
-                # --- SABR CASCADE (150 PIPS PAR PALIERS JUSQU'À 15%) ---
+                # --- (#26) GESTION SABR VIP/Free/Copie : BE + 60% à 100p, +10% à 150p ---
+                # (remplace l'ancien systeme TP1@100/25%, BE@150, trailing@200, cascade@250+)
                 for sym, positions in sabr_groups.items():
                     if not positions: continue
                     tick = mt5.symbol_info_tick(sym)
                     if not tick: continue
-                    
+
                     first_pos = positions[0]
                     is_buy = (first_pos.type == mt5.ORDER_TYPE_BUY)
-                    
+
                     curr_price = tick.bid if is_buy else tick.ask
                     pt = get_cached_point(sym)
                     div = get_pip_divisor(sym)
-                    
-                    if is_buy: max_pips_group = max(((curr_price - p.price_open) / pt) / div for p in positions)
-                    else: max_pips_group = max(((p.price_open - curr_price) / pt) / div for p in positions)
-                    
-                    # Le premier palier après 100 est 250 (+150 pips)
-                    if max_pips_group >= 250:
-                        current_level_max = int((max_pips_group - 100) // 150)
-                        
-                        if current_level_max >= 1:
-                            for level_idx in range(1, current_level_max + 1):
-                                tag = f"SABR_CASCADE_{level_idx}"
-                                
-                                level_already_paid = any(tag in TRADES_PROCESSED_LEVELS.get(p.ticket, set()) for p in positions)
-                                if level_already_paid: continue
-                                
-                                # On trie pour attaquer le trade le plus proche du prix
-                                positions.sort(key=lambda p: abs(p.price_open - curr_price))
-                                victim_found = False
 
-                                for p in positions:
-                                    # --- OPTIMISATION MAJEURE (CACHE MEMOIRE) ---
-                                    if p.ticket not in INITIAL_VOLUMES:
-                                        deals = await run_bg(mt5.history_deals_get, position=p.ticket)
-                                        INITIAL_VOLUMES[p.ticket] = deals[0].volume if (deals and len(deals) > 0) else p.volume
-                                
-                                    initial_vol = INITIAL_VOLUMES[p.ticket]
-                                    # --------------------------------------------
-                                
-                                    # Plancher de sécurité : 15% du volume initial
-                                    min_floor = max(0.01, round(initial_vol * 0.15, 2))
-                                    
-                                    if round(p.volume, 2) <= min_floor:
-                                        continue
-                                    
-                                    # Vente de 20%
-                                    vol_to_close = round(initial_vol * 0.20, 2)
-                                    if vol_to_close < 0.01: vol_to_close = 0.01
-                                    
-                                    # Si la vente brise le plancher, on vend juste la différence
-                                    if round(p.volume - vol_to_close, 2) < min_floor:
-                                        vol_to_close = round(p.volume - min_floor, 2)
-                                    
-                                    if vol_to_close >= 0.01:
-                                        success = await close_partial(p, 0.0, f"SABR Cascade (Lvl {level_idx})", max_pips_group, fixed_lot=vol_to_close)
-                                        
-                                        if p.ticket not in TRADES_PROCESSED_LEVELS: TRADES_PROCESSED_LEVELS[p.ticket] = set()
-                                        TRADES_PROCESSED_LEVELS[p.ticket].add(tag)
-                                        await run_bg(save_memory)
-                                        
-                                        if success:
-                                            victim_found = True
-                                            break
-                                            
-                                # Si tous les trades sont déjà à 15%, on marque ce palier payé
-                                if not victim_found:
-                                    if positions[0].ticket not in TRADES_PROCESSED_LEVELS: TRADES_PROCESSED_LEVELS[positions[0].ticket] = set()
-                                    TRADES_PROCESSED_LEVELS[positions[0].ticket].add(tag)
-
-                    # --- GESTION INDIVIDUELLE (BE & TRAILING) ---
                     for p in positions:
                         current_sl = p.sl
-                        new_sl = None
                         if is_buy: pips_indiv = ((curr_price - p.price_open) / pt) / div
                         else: pips_indiv = ((p.price_open - curr_price) / pt) / div
 
@@ -3458,68 +3376,63 @@ async def monitor_positions():
                         if pips_indiv > active_trades_max_pips.get(p.ticket, 0): active_trades_max_pips[p.ticket] = pips_indiv
                         if pips_indiv < active_trades_min_pips.get(p.ticket, 999): active_trades_min_pips[p.ticket] = pips_indiv
 
-                        # --- TP1 GLOBAL À 100 PIPS (25% sur TOUS LES ORDRES) ---
+                        # --- 100 PIPS : BE + CLÔTURE 60% DU VOLUME INITIAL ---
                         if pips_indiv >= 100:
-                            tag_100 = "SABR_TP_100"
+                            tag_100 = "SABR_100_BE_60"
                             if tag_100 not in TRADES_PROCESSED_LEVELS[p.ticket]:
+                                # 1. BE (priorité absolue, comme avant)
+                                be_p = p.price_open
+                                new_sl = None
+                                if is_buy:
+                                    if current_sl < be_p: new_sl = be_p
+                                else:
+                                    if current_sl > be_p or current_sl == 0: new_sl = be_p
+
+                                if new_sl:
+                                    new_sl = round(new_sl / pt) * pt
+                                    if abs(new_sl - current_sl) > (pt / 2):
+                                        req = {"action": mt5.TRADE_ACTION_SLTP, "symbol": sym, "position": p.ticket, "sl": new_sl, "tp": p.tp}
+                                        res = await run_bg(_send_order_blocking, req)
+                                        if res and res.retcode == mt5.TRADE_RETCODE_DONE:
+                                            p_open_time = (datetime.fromtimestamp(p.time) - timedelta(hours=1)).strftime('%H:%M')
+                                            p_src_clean = ACTIVE_TRADE_SOURCES.get(p.ticket, "INCONNU").replace("CANAL ", "").replace("_", " ")
+                                            await send_channel_alert(f"☄️ **SABR: BE ACTIVÉ (+100p)**\n\n"
+                                                             f"Symbole: {sym} ({p_open_time})\n"
+                                                             f"Source: {p_src_clean}\n"
+                                                             f"Ticket: {p.ticket}", ACTIVE_TRADE_SOURCES.get(p.ticket, ""))
+
+                                # 2. Clôture 60% du volume initial
                                 deals = await run_bg(mt5.history_deals_get, position=p.ticket)
                                 initial_vol = deals[0].volume if (deals and len(deals) > 0) else p.volume
-                                
-                                vol_to_close = round(initial_vol * 0.25, 2)
+
+                                vol_to_close = round(initial_vol * 0.60, 2)
                                 if vol_to_close < 0.01: vol_to_close = 0.01
-                                
-                                # On vend seulement si ça ne tue pas le trade
+
                                 if round(p.volume - vol_to_close, 2) >= 0.01:
-                                    success = await close_partial(p, 0.0, "SABR TP1 100p (25%)", pips_indiv, fixed_lot=vol_to_close)
+                                    success = await close_partial(p, 0.0, "SABR 100p (BE+60%)", pips_indiv, fixed_lot=vol_to_close)
                                     if success:
                                         TRADES_PROCESSED_LEVELS[p.ticket].add(tag_100)
                                         await run_bg(save_memory)
                                 else:
                                     TRADES_PROCESSED_LEVELS[p.ticket].add(tag_100)
-                        
-                        # --- NOUVEAU REGLAGE BE : 150 PIPS ---
-                        if pips_indiv >= 150:
-                            be_p = p.price_open
-                            if is_buy:
-                                # On ne remonte que si le SL actuel est pire que le BE
-                                if current_sl < be_p: new_sl = be_p
-                            else:
-                                # On ne descend que si le SL actuel est pire que le BE ou inexistant (0)
-                                if current_sl > be_p or current_sl == 0: new_sl = be_p
-                            
-                            if new_sl:
-                                new_sl = round(new_sl / pt) * pt
-                                # 🛡️ LE BOUCLIER ANTI-SPAM MT5
-                                if abs(new_sl - current_sl) > (pt / 2):
-                                    req = {"action": mt5.TRADE_ACTION_SLTP, "symbol": sym, "position": p.ticket, "sl": new_sl, "tp": p.tp}
-                                    res = await run_bg(_send_order_blocking, req) 
-                                    if res and res.retcode == mt5.TRADE_RETCODE_DONE:
-                                        p_open_time = (datetime.fromtimestamp(p.time) - timedelta(hours=1)).strftime('%H:%M')
-                                        p_src_clean = ACTIVE_TRADE_SOURCES.get(p.ticket, "INCONNU").replace("CANAL ", "").replace("_", " ")
-                                        await send_channel_alert(f"☄️ **SABR: BE ACTIVÉ (+150p)**\n\n"
-                                                         f"Symbole: {sym} ({p_open_time})\n"
-                                                         f"Source: {p_src_clean}\n"
-                                                         f"Ticket: {p.ticket}", ACTIVE_TRADE_SOURCES.get(p.ticket, ""))
 
-                        # --- TRAILING STOP (200 PIPS) ---
-                        if SABR_TRAILING_ACTIVE and pips_indiv >= 200:
-                            dist_points = 200 * pt * (div/10) * 10
-                            if is_buy:
-                                target_sl = curr_price - dist_points
-                                if target_sl > current_sl + (30*pt): new_sl = target_sl
-                            else:
-                                target_sl = curr_price + dist_points
-                                if (current_sl == 0) or (target_sl < current_sl - (30*pt)): new_sl = target_sl
-                            
-                            if new_sl:
-                                new_sl = round(new_sl / pt) * pt
-                                # 🛡️ LE BOUCLIER ANTI-SPAM MT5
-                                if abs(new_sl - current_sl) > (pt / 2):
-                                    req = {"action": mt5.TRADE_ACTION_SLTP, "symbol": sym, "position": p.ticket, "sl": new_sl, "tp": p.tp}
-                                    res = await run_bg(_send_order_blocking, req)
-                                    if res and res.retcode == mt5.TRADE_RETCODE_DONE:
-                                        act_time = (datetime.fromtimestamp(p.time) - timedelta(hours=1)).strftime('%H:%M')
-                                        log(f"⏫ SABR TRAIL: {sym} ({act_time}) | Ticket {p.ticket} -> {new_sl}", important=True)
+                        # --- 150 PIPS : +10% SUPPLÉMENTAIRES DU VOLUME INITIAL ---
+                        if pips_indiv >= 150:
+                            tag_150 = "SABR_150_PLUS10"
+                            if tag_150 not in TRADES_PROCESSED_LEVELS[p.ticket]:
+                                deals = await run_bg(mt5.history_deals_get, position=p.ticket)
+                                initial_vol = deals[0].volume if (deals and len(deals) > 0) else p.volume
+
+                                vol_to_close = round(initial_vol * 0.10, 2)
+                                if vol_to_close < 0.01: vol_to_close = 0.01
+
+                                if round(p.volume - vol_to_close, 2) >= 0.01:
+                                    success = await close_partial(p, 0.0, "SABR 150p (+10%)", pips_indiv, fixed_lot=vol_to_close)
+                                    if success:
+                                        TRADES_PROCESSED_LEVELS[p.ticket].add(tag_150)
+                                        await run_bg(save_memory)
+                                else:
+                                    TRADES_PROCESSED_LEVELS[p.ticket].add(tag_150)
 
         except Exception as e: 
             logger.error(f"Monitor Error: {e}")
@@ -3595,7 +3508,7 @@ async def admin_commands(event):
     global TRAILING_STOP_PIPS, MAX_DAILY_DRAWDOWN
     global SOFT_SL_PERCENT, RISK_PERCENT_INDICES
     global TIME_OFF_PEAK_FACTOR, PRIME_HOURS
-    global SABR_TRAILING_ACTIVE, SABR_ANTI_DOUBLON_ACTIVE, SABR_FORWARD_ACTIVE  # (#11) SABR_FORWARD_ACTIVE manquait -> /forward_sabr ne faisait rien
+    global SABR_ANTI_DOUBLON_ACTIVE, SABR_FORWARD_ACTIVE  # (#11) SABR_FORWARD_ACTIVE manquait -> /forward_sabr ne faisait rien
 
     # 👉 LE BOUCLIER EST ICI : On bloque tout ce qui n'est pas le maître
     if ADMIN_ID == 0 or event.sender_id != ADMIN_ID: # 👈 CORRECTION 5 (sender_id)
@@ -3637,7 +3550,6 @@ async def admin_commands(event):
 
         soft_txt = f"{SOFT_SL_PERCENT*100:.0f}%"
         doublon_state = "🛡️ Actif" if SABR_ANTI_DOUBLON_ACTIVE else "⚠️ Désactivé (Risque Spam)"
-        sabr_trail_state = "✅ Actif" if SABR_TRAILING_ACTIVE else "⏸️ Désactivé (BE seul)"
 
         # --- ⏳ Calcul du Statut Horaire Actuel ---
         current_h = datetime.now().hour
@@ -3662,7 +3574,6 @@ async def admin_commands(event):
                           f"Sécurité DD: {secu_state}\n"
                           f"**SL Suiveur: {sl_info}** (Vente: {soft_txt})\n"
                           f"**Anti-Doublon SABR:** {doublon_state}\n"
-                          f"**SABR Trailing:** {sabr_trail_state}\n"
                           f"\n"
                           f"Or: **{risk_g}%** | Indices: **{risk_i}%** | Autre: **{risk_o}%**\n"
                           f"MDT VIP: **{fmt_ch(RISK_PERCENT_MDT_VIP, 'CANAL MDT_VIP')}** | MDT Free: **{fmt_ch(RISK_PERCENT_MDT_FREE, 'CANAL MDT_FREE')}**\n"
@@ -3828,22 +3739,6 @@ async def admin_commands(event):
             if val > 1: val = val/100
             SOFT_SL_PERCENT = val; await run_bg(save_settings); await event.reply(f"📉 Vente Soft SL : **{val*100:.0f}%**")
         except: await event.reply("❌ Usage: /sl_sell 20")
-
-# --- 10.bis REGLAGE TRAILING SABR ---
-    elif text.startswith("/trail_sabr"):
-        try:
-            val_raw = text.split()[1].lower()
-            if val_raw in ["on", "oui", "true", "1"]:
-                SABR_TRAILING_ACTIVE = True
-                await run_bg(save_settings)
-                await event.reply("⏫ **Trailing Stop SABR : ACTIVÉ**")
-            elif val_raw in ["off", "non", "false", "0"]:
-                SABR_TRAILING_ACTIVE = False
-                await run_bg(save_settings)
-                await event.reply("⏸️ **Trailing Stop SABR : DÉSACTIVÉ** (Seul le BE à 150p restera)")
-            else:
-                await event.reply("❌ Usage: `/trail_sabr on` ou `/trail_sabr off`")
-        except: await event.reply("❌ Usage: `/trail_sabr off`")
 
 # --- 10.ter REGLAGE ANTI-DOUBLON SABR ---
     elif text.startswith("/doublon_sabr"):
@@ -4092,7 +3987,6 @@ async def admin_commands(event):
                "`/sl_sell 30` : % Vente Soft SL\n"
                "`/sell_lot VIP 50` : % Vente TP1 (Tous canaux)\n"
                "`/reactivate 1 50` : Relancer signal SABR (ID: 1, 50%)\n"
-               "`/trail_sabr on/off` : Trailing Stop SABR\n"
                "`/doublon_sabr on/off` : Anti-Doublon SABR\n"
                "`/forward_sabr on/off` : Transfert msg SABR\n"
                "`/risk_heure 8-10 11-16 0.5` : Diviseur horaire\n"
@@ -4132,6 +4026,42 @@ async def main_handler(event):
             
         except Exception as e:
             logger.error(f"⚠️ Erreur de transfert du message SABR : {e}")
+
+    # ==================================================================
+    # 👇 (#26) MESSAGE "PARTIEL" SUR UN CANAL SABR -> +10% DU VOLUME INITIAL 👇
+    # ==================================================================
+    # Priorité absolue sur la gestion générique ci-dessous (qui interprète aussi
+    # "PARTIEL" mais avec une logique différente, pensée pour MDT_VIP) -- on
+    # traite ici et on sort, que le message soit une réponse ou non.
+    if event.chat_id in (ID_SABR_VIP, ID_SABR_FREE, ID_CANAL_SABR_COPIE) and "PARTIEL" in (event.raw_text or "").upper():
+        target_msg_id = None
+        if event.is_reply and event.reply_to_msg_id in TELEGRAM_TO_TICKET:
+            target_msg_id = event.reply_to_msg_id
+        else:
+            last_ctx = SABR_CONTEXT.get("last")
+            if last_ctx and "msg_id" in last_ctx:
+                target_msg_id = last_ctx["msg_id"]
+
+        if target_msg_id and target_msg_id in TELEGRAM_TO_TICKET:
+            for tk in TELEGRAM_TO_TICKET[target_msg_id]:
+                pos_data = await run_bg(mt5.positions_get, ticket=tk)
+                if not pos_data: continue
+                pos = pos_data[0]
+
+                deals = await run_bg(mt5.history_deals_get, position=tk)
+                initial_vol = deals[0].volume if (deals and len(deals) > 0) else pos.volume
+                vol_to_close = round(initial_vol * 0.10, 2)
+                if vol_to_close < 0.01: vol_to_close = 0.01
+
+                pt_p = get_cached_point(pos.symbol); div_p = get_pip_divisor(pos.symbol)
+                if pos.type == mt5.ORDER_TYPE_BUY:
+                    pips_now = ((pos.price_current - pos.price_open) / pt_p) / div_p
+                else:
+                    pips_now = ((pos.price_open - pos.price_current) / pt_p) / div_p
+
+                if round(pos.volume - vol_to_close, 2) >= 0.01:
+                    await close_partial(pos, 0.0, "SABR PARTIEL (+10%)", pips_now, fixed_lot=vol_to_close)
+        return
 
     # ==================================================================
     # 👇 GESTION DES COMMANDES ADMIN (CLÔTURE & SUPPRESSION) 👇
@@ -4402,6 +4332,9 @@ async def main_handler(event):
 
                     if opened_tickets:
                         TELEGRAM_TO_TICKET[event.id] = opened_tickets
+                        # (#26) Mémorise le message d'origine pour qu'un futur message
+                        # "PARTIEL" (sans reply) sache à quel signal s'appliquer.
+                        SABR_CONTEXT.setdefault("last", {})["msg_id"] = event.id
             else:
                 # --- CANAUX NON-SABR : comportement inchangé ---
                 await send_channel_alert(f"✔️ Signal traité ({display_source}) :{display_type_line}\n\n {act} {sym} à {log_p}\n\n🛑 SL: {sl} & 🎯 TP: {tp}", final_source)
@@ -4649,7 +4582,7 @@ async def get_current_state_for_firebase() -> dict:
             "risk_perso": RISK_PERCENT_PERSO or 0,
             "sabr_lot_vip": FIXED_LOT_SABR_VIP, "sabr_lot_free": FIXED_LOT_SABR_FREE,
             "risk_sabr_other": RISK_PERCENT_SABR_OTHER,
-            "sabr_anti_doublon": SABR_ANTI_DOUBLON_ACTIVE, "sabr_trailing": SABR_TRAILING_ACTIVE,
+            "sabr_anti_doublon": SABR_ANTI_DOUBLON_ACTIVE,
             "sabr_forward": SABR_FORWARD_ACTIVE, "max_dd": MAX_DAILY_DRAWDOWN,
             "drawdown_active": DRAWDOWN_ACTIVE,
             "sl_suiveur": TRAILING_STOP_PIPS, "sl_sell": SOFT_SL_PERCENT,
