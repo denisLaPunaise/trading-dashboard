@@ -8,12 +8,15 @@
 
 | Quoi | Commande | Active quoi |
 |---|---|---|
-| **Frontend → Vercel** | `git push` ou `npx vercel --prod` (depuis `frontend/`) | Fix curseurs (#11), filtrage dashboard (#7), toggles inline (#14), nettoyage eslint (#12), ergonomie panneau (#15), risque journalier (#16), toggles instantanés (#17) |
-| **Bot licence → VPS** | Copier-coller `admin_license_bot_V3.py` manuellement sur le VPS | `/gen dev` (#13), `/gen [pack]`, `/channels` (#7), relais sécu 5s→1h, fix nom client écrasé |
+| **Frontend → Vercel** | `git push` ou `npx vercel --prod` (depuis `frontend/`) | Fix curseurs (#11), filtrage dashboard (#7), toggles inline (#14), nettoyage eslint (#12), ergonomie panneau (#15), risque journalier (#16), toggles instantanés (#17), mailbox feedback (#29) |
+| **Bot licence → VPS** | Copier-coller `admin_license_bot_V3.py` manuellement sur le VPS | `/gen dev` (#13), `/gen [pack]`, `/channels` (#7), relais sécu 5s→1h, fix nom client écrasé, relais + commande `/vu` mailbox (#29) |
+| **Firestore rules** | `firebase deploy --only firestore:rules` | Collection `feedback` + `counters` (#29) |
 
 > L'exe (`Bot_FTMO_V14.0.0.exe`) recompilé (inclut : filtre spread #11, parsing MDT_FREE #22 + clôture 40% au vrai TP1, suivi des instructions du canal MDT_VIP #20, refonte gestion SABR #26, fix répartition lots SABR #27, délai anti-détection #28, retrait de la zone de la mort #24, contrôle d'accès réel par pack #25) — à recopier sur le VPS avec le reste du lot.
 
 **Rappel commande** : pour régler le % de clôture au TP1 d'un canal, la commande est **`/sell_lot CANAL %`** (pas `/tp1`) — ex: `/sell_lot MDT_VIP 40`.
+
+**Prérequis mailbox (#29)** : `SECURITY_BOT_TOKEN` est vide dans `admin_license_bot_V3.py` — à remplir (token @BotFather), et ce bot doit être ajouté comme admin du canal feedback (`-1004458498840`) en plus du canal sécurité existant.
 
 ## TTL Firestore — abandonné (non prioritaire)
 
@@ -48,7 +51,6 @@ Checklist complète dans `TESTS_A_FAIRE.md`. Issues à valider :
 |---|---|---|
 | **#1** | Refactor monolithe `bot_release13.py` | ~4900 lignes → chantier séparé, pas commencé |
 | **#21** | Canal INDO (parsing par IA, or uniquement) | Plan complet validé (commentaire sur l'issue), pas encore codé -- attente feu vert |
-| **#29** | Dashboard : mailbox retour client (bugs/suggestions) | Recommandation faite, pas de plan technique détaillé |
 
 ---
 
@@ -83,3 +85,4 @@ Checklist complète dans `TESTS_A_FAIRE.md`. Issues à valider :
 | #28 | Délai aléatoire supplémentaire (0-1.5s) avant envoi MT5, anti-détection groupe | `05c0fec` |
 | #24 | Retrait de la zone de la mort (tous canaux) | `05c0fec` |
 | #25 | Contrôle d'accès réel par pack client (mute verrouillé + commandes filtrées) | `e201320` |
+| #29 | Mailbox retour client (bugs/suggestions) : formulaire dashboard + relais Telegram + `/vu` | `c5a1f67` |
