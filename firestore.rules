@@ -51,5 +51,16 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/licenses/$(request.auth.uid)).data.status == 'ACTIVE';
       allow read, update, delete: if false; // Admin SDK (VPS) uniquement
     }
+
+    // ── (#29) Mailbox retour client : écrite par le DASHBOARD (uid == telegram_id,
+    // comme users/{userId}) -- pas par le bot, donc pas le même motif que security_events. ──
+    match /feedback/{ticketId} {
+      allow create: if request.auth != null && request.resource.data.user_uid == request.auth.uid;
+      allow read: if request.auth != null && resource.data.user_uid == request.auth.uid;
+      allow update, delete: if false; // Admin SDK (VPS) uniquement (/vu, relais)
+    }
+    match /counters/{counterId} {
+      allow read, write: if false; // Admin SDK (VPS) uniquement
+    }
   }
 }

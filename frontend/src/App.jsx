@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Activity, Wallet, TrendingUp, TrendingDown, Settings, XCircle, Shield, ChevronDown, ChevronUp, Briefcase, AlertTriangle, Lock, Unlock, Power, BellOff, Target, Award, Crosshair, Calendar } from 'lucide-react'
+import { Activity, Wallet, TrendingUp, TrendingDown, Settings, XCircle, Shield, ChevronDown, ChevronUp, Briefcase, AlertTriangle, Lock, Unlock, Power, BellOff, Target, Award, Crosshair, Calendar, MessageCircle } from 'lucide-react'
 import './App.css'
 import { db, auth } from './firebase'
-import { doc, collection, onSnapshot, addDoc, serverTimestamp, Timestamp } from 'firebase/firestore'
+import { doc, collection, onSnapshot, addDoc, serverTimestamp, Timestamp, query, where, orderBy } from 'firebase/firestore'
 import { signInAnonymously, signInWithCustomToken } from 'firebase/auth'
 
 // (#12) TTL Firestore sur users/{uid}/commands : la politique pointe sur ce champ pour purger après 3 jours
@@ -66,6 +66,13 @@ function App() {
   
   const [isTradesOpen, setIsTradesOpen] = useState(false) // (#9) fermé par défaut
   const [isSettingsOpen, setIsSettingsOpen] = useState(false) // (#9) fermé par défaut
+
+  // (#29) Mailbox retour client (bugs/suggestions)
+  const [isFeedbackOpen, setIsFeedbackOpen] = useState(false) // (#9) fermé par défaut
+  const [feedbackType, setFeedbackType] = useState('bug')
+  const [feedbackMessage, setFeedbackMessage] = useState('')
+  const [feedbackSending, setFeedbackSending] = useState(false)
+  const [myFeedback, setMyFeedback] = useState([])
   const [isDangerOpen, setIsDangerOpen] = useState(false)
 
   const [isClosedTradesOpen, setIsClosedTradesOpen] = useState(false) // Fermé par défaut pour ne pas polluer l'écran
@@ -245,6 +252,17 @@ function App() {
     return () => { if (unsubscribeState) unsubscribeState(); };
   }, []);
 
+  // (#29) Historique "Mes signalements" -- state séparé de dashboardData pour ne pas
+  // interférer avec le moteur d'animation (useEffect ci-dessus qui réagit à dashboardData).
+  useEffect(() => {
+    if (!userId) return;
+    const q = query(collection(db, 'feedback'), where('user_uid', '==', userId), orderBy('created_at', 'desc'));
+    const unsub = onSnapshot(q, (snap) => {
+      setMyFeedback(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    }, (err) => console.error('Feedback snapshot error:', err));
+    return () => unsub();
+  }, [userId]);
+
   // --- FONCTION POUR OUVRIR LA MODAL ---
   const requestConfirm = (message, action, type = 'warning') => {
     setConfirmModal({
@@ -365,6 +383,31 @@ function App() {
     addDoc(collection(db, 'users', userId, 'commands'), {
       type, payload, status: 'pending', created_at: serverTimestamp(), expire_at: commandExpiry(),
     }).catch((err) => console.error(`${type} échoué`, err));
+  };
+
+  // (#29) Anti-spam 1 message / 15 min / client -- basé sur le dernier signalement connu.
+  const FEEDBACK_COOLDOWN_MS = 15 * 60 * 1000;
+  const lastFeedbackAt = myFeedback[0]?.created_at?.toMillis ? myFeedback[0].created_at.toMillis() : 0;
+  const feedbackRemainingMs = lastFeedbackAt ? FEEDBACK_COOLDOWN_MS - (Date.now() - lastFeedbackAt) : 0;
+  const feedbackOnCooldown = feedbackRemainingMs > 0;
+
+  const handleSendFeedback = async () => {
+    if (!userId || !feedbackMessage.trim() || feedbackOnCooldown || feedbackSending) return;
+    setFeedbackSending(true);
+    try {
+      await addDoc(collection(db, 'feedback'), {
+        user_uid: userId, type: feedbackType, message: feedbackMessage.trim(),
+        status: 'nouveau', ticket: null, reply: null, relayed: false, created_at: serverTimestamp(),
+      });
+      setFeedbackMessage('');
+      triggerHaptic('success');
+    } catch (err) {
+      console.error('Envoi feedback échoué :', err);
+      triggerHaptic('error');
+      alert("❌ Échec de l'envoi, réessaie plus tard.");
+    } finally {
+      setFeedbackSending(false);
+    }
   };
 
   const toggleMute = (channelName) => {
@@ -1344,6 +1387,94 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
           </button>
         </div>
       </div>
+      </div>
+
+      {/* SECTION 6 : MAILBOX (#29) -- signaler un bug/suggestion, historique + réponses admin */}
+      <div onClick={() => { triggerHaptic('light'); setIsFeedbackOpen(!isFeedbackOpen); }} style={{ display: 'flex', justifyContent: 'flex-start', alignItems: 'center', cursor: 'pointer', borderTop: '1px solid #333', paddingTop: '25px', marginTop: '25px', userSelect: 'none' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#ddd' }}>
+          <MessageCircle size={20} color="#64b5f6" />
+          <h2 style={{ fontSize: '1.2rem', margin: 0 }}>Signaler un bug / suggestion</h2>
+          {isFeedbackOpen ? <ChevronUp size={20} color="#64b5f6" /> : <ChevronDown size={20} color="#64b5f6" />}
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateRows: isFeedbackOpen ? '1fr' : '0fr', transition: 'grid-template-rows 0.4s ease-out' }}>
+        <div style={{ overflow: 'hidden' }}>
+          <div style={{ background: '#1e1e1e', border: '1px solid #333', borderRadius: '12px', padding: '20px', marginTop: '15px', marginBottom: '20px' }}>
+
+            <div style={{ display: 'flex', gap: '10px', marginBottom: '12px' }}>
+              {[
+                { key: 'bug', label: '🐛 Bug' },
+                { key: 'suggestion', label: '💡 Suggestion' },
+                { key: 'autre', label: '💬 Autre' },
+              ].map(({ key, label }) => (
+                <button key={key} onClick={() => { triggerHaptic('light'); setFeedbackType(key); }}
+                  style={{
+                    flex: 1, padding: '10px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem', fontWeight: 'bold',
+                    border: `1px solid ${feedbackType === key ? '#64b5f6' : '#444'}`,
+                    background: feedbackType === key ? 'rgba(100, 181, 246, 0.15)' : '#2a2a2a',
+                    color: feedbackType === key ? '#64b5f6' : '#aaa',
+                  }}>
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            <textarea
+              value={feedbackMessage}
+              onChange={(e) => setFeedbackMessage(e.target.value)}
+              placeholder="Décris le bug ou ta suggestion..."
+              maxLength={1000}
+              rows={3}
+              style={{ width: '100%', background: '#000', color: '#eee', border: '1px solid #444', borderRadius: '8px', padding: '10px', fontSize: '0.9rem', resize: 'vertical', boxSizing: 'border-box' }}
+            />
+
+            <button
+              onClick={handleSendFeedback}
+              disabled={!feedbackMessage.trim() || feedbackOnCooldown || feedbackSending}
+              style={{
+                marginTop: '10px', width: '100%', padding: '12px', borderRadius: '8px', border: 'none', cursor: 'pointer', fontWeight: 'bold',
+                background: (!feedbackMessage.trim() || feedbackOnCooldown || feedbackSending) ? '#333' : '#64b5f6',
+                color: (!feedbackMessage.trim() || feedbackOnCooldown || feedbackSending) ? '#777' : '#000',
+              }}>
+              {feedbackSending ? 'Envoi...' : feedbackOnCooldown
+                ? `Patiente encore ${Math.ceil(feedbackRemainingMs / 60000)} min`
+                : 'Envoyer'}
+            </button>
+
+            {myFeedback.length > 0 && (
+              <div style={{ marginTop: '20px', borderTop: '1px solid #333', paddingTop: '15px' }}>
+                <h3 style={{ margin: '0 0 12px 0', fontSize: '0.9rem', color: '#aaa' }}>Mes signalements</h3>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  {myFeedback.map((fb) => (
+                    <div key={fb.id} style={{ background: '#2a2a2a', border: '1px solid #383838', borderRadius: '8px', padding: '12px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                        <span style={{ fontSize: '0.8rem', color: '#888' }}>
+                          {{ bug: '🐛 Bug', suggestion: '💡 Suggestion', autre: '💬 Autre' }[fb.type] || fb.type}
+                          {fb.ticket ? ` — #${fb.ticket}` : ''}
+                        </span>
+                        <span style={{
+                          fontSize: '0.75rem', fontWeight: 'bold', padding: '2px 8px', borderRadius: '10px',
+                          color: fb.status === 'lu' ? '#00e676' : '#ffb74d',
+                          background: fb.status === 'lu' ? 'rgba(0,230,118,0.1)' : 'rgba(255,183,77,0.1)',
+                        }}>
+                          {fb.status === 'lu' ? 'Lu ✓' : 'Envoyé'}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: '0.85rem', color: '#ddd', whiteSpace: 'pre-wrap' }}>{fb.message}</div>
+                      {fb.reply && (
+                        <div style={{ marginTop: '8px', paddingTop: '8px', borderTop: '1px dashed #444', fontSize: '0.85rem', color: '#64b5f6' }}>
+                          ↳ {fb.reply}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+          </div>
+        </div>
       </div>
     </div>
   )

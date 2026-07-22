@@ -187,8 +187,13 @@ SHEET_NAME = "FTMO_BOT_LICENSES" # <--- METS LE VRAI NOM ICI
 # ID du canal de sécurité où arrivent les messages (Check Licence)
 SECURITY_CHANNEL_ID = -1003872071233
 
+# (#29) ID du canal dédié à la mailbox retour client (bugs/suggestions).
+FEEDBACK_CHANNEL_ID = -1004458498840
+
 # Token du bot de sécurité — UNIQUEMENT sur le VPS, jamais dans l'exe distribué.
 # À remplir avec le NOUVEAU token (après révocation de l'ancien via BotFather).
+# Réutilisé par le relais feedback (#29) -- ce bot doit aussi être admin du canal
+# FEEDBACK_CHANNEL_ID, en plus de SECURITY_CHANNEL_ID.
 SECURITY_BOT_TOKEN = ""
 
 # MAPPAGE DES COLONNES 
@@ -584,7 +589,7 @@ def set_expired(key):
 # ==========================================
 client_tg = TelegramClient('admin_session', API_ID, API_HASH)
 
-@client_tg.on(events.NewMessage(chats=SECURITY_CHANNEL_ID))
+@client_tg.on(events.NewMessage(chats=[SECURITY_CHANNEL_ID, FEEDBACK_CHANNEL_ID]))  # (#29) /vu depuis le canal feedback
 async def main_handler(event):
     msg = event.raw_text.strip()
     
@@ -718,6 +723,40 @@ async def main_handler(event):
                                   f"sinon à son prochain démarrage. La validité n'est PAS modifiée.")
             else:
                 await event.reply("❌ Échec de l'envoi de la commande (Firebase indisponible ?).")
+        except Exception as e:
+            await event.reply(f"❌ Crash: {e}")
+
+    # (#29) Marquer un feedback comme lu, avec réponse optionnelle -- visible sur le
+    # dashboard du client (jamais renvoyée en DM Telegram, décidé par l'utilisateur).
+    elif msg.lower().startswith("/vu"):
+        try:
+            from google.cloud.firestore_v1.base_query import FieldFilter
+            parts = msg.split(maxsplit=2)  # ["/vu", "<ticket>", "<reponse libre>"] -- préserve les espaces de la réponse
+            if len(parts) < 2 or not parts[1].isdigit():
+                await event.reply("❌ Usage: `/vu <numero_ticket> [reponse]`")
+                return
+            ticket_num = int(parts[1])
+            reponse = parts[2] if len(parts) > 2 else None
+
+            def _find():
+                docs = list(_fb_db.collection("feedback").where(
+                    filter=FieldFilter("ticket", "==", ticket_num)).limit(1).stream())
+                return docs[0] if docs else None
+
+            doc = await asyncio.to_thread(_find)
+            if not doc:
+                await event.reply(f"❌ Ticket #{ticket_num} introuvable.")
+                return
+
+            update = {"status": "lu"}
+            if reponse:
+                update["reply"] = reponse
+            await asyncio.to_thread(lambda: doc.reference.update(update))
+
+            if reponse:
+                await event.reply(f"✅ Ticket #{ticket_num} marqué lu, réponse enregistrée (visible sur son dashboard).")
+            else:
+                await event.reply(f"✅ Ticket #{ticket_num} marqué lu.")
         except Exception as e:
             await event.reply(f"❌ Crash: {e}")
 
@@ -1029,9 +1068,79 @@ async def security_events_relay():
         await asyncio.sleep(3600)
 
 
+def _next_feedback_ticket():
+    """(#29) Incrémente et retourne le prochain numéro de ticket feedback, de façon
+    atomique (transaction Firestore -- infra déjà disponible via le SDK Admin réel)."""
+    counter_ref = _fb_db.collection("counters").document("feedback_ticket")
+    transaction = _fb_db.transaction()
+
+    @fb_firestore.transactional
+    def _increment(tx):
+        snap = counter_ref.get(transaction=tx)
+        current = snap.get("value") if snap.exists else 0
+        new_value = current + 1
+        tx.set(counter_ref, {"value": new_value})
+        return new_value
+
+    return _increment(transaction)
+
+
+async def feedback_relay():
+    """(#29) Relaie les nouveaux messages de la mailbox (collection Firestore `feedback`,
+    écrite par le dashboard client) vers FEEDBACK_CHANNEL_ID, avec un numéro de ticket
+    court assigné ici. Poll rapide (contrairement au relais sécurité) car c'est un
+    retour utilisateur qu'on veut voir arriver vite, pas juste une notification de secours."""
+    if not (FIREBASE_ENABLED and _fb_db):
+        return
+    if not SECURITY_BOT_TOKEN:
+        print("⚠️ SECURITY_BOT_TOKEN vide — relais feedback en pause. Remplis-le puis relance le bot.")
+        return
+    from google.cloud.firestore_v1.base_query import FieldFilter
+    print("📬 Relais de la mailbox feedback activé.")
+    seen = set()
+    type_icons = {"bug": "🐛", "suggestion": "💡", "autre": "💬"}
+    while True:
+        try:
+            def _fetch():
+                docs = _fb_db.collection("feedback").where(
+                    filter=FieldFilter("relayed", "==", False)).limit(20).stream()
+                return [(d.id, d.to_dict()) for d in docs]
+            for doc_id, data in await asyncio.to_thread(_fetch):
+                if doc_id in seen:
+                    continue
+                seen.add(doc_id)
+
+                ticket_num = await asyncio.to_thread(_next_feedback_ticket)
+                icon = type_icons.get(data.get("type", "autre"), "💬")
+                cat = (data.get("type") or "autre").capitalize()
+                user = data.get("user_uid", "Inconnu")
+                message = data.get("message", "")
+                full = f"{icon} #{ticket_num} ({cat}) — {user} :\n{message}"
+
+                try:
+                    def _send(_t=full):
+                        requests.post(
+                            f"https://api.telegram.org/bot{SECURITY_BOT_TOKEN}/sendMessage",
+                            json={"chat_id": FEEDBACK_CHANNEL_ID, "text": _t}, timeout=10)
+                    await asyncio.to_thread(_send)
+                except Exception as e:
+                    print(f"⚠️ relais feedback envoi : {e}")
+                    seen.discard(doc_id)
+                    continue
+
+                await asyncio.to_thread(
+                    lambda _id=doc_id, _tk=ticket_num: _fb_db.collection("feedback").document(_id).update(
+                        {"relayed": True, "ticket": _tk})
+                )
+        except Exception as e:
+            print(f"⚠️ feedback_relay : {e}")
+        await asyncio.sleep(20)
+
+
 async def main():
     print("🤖 ADMIN BOT : Prêt à gérer les licences.")
     asyncio.create_task(security_events_relay())
+    asyncio.create_task(feedback_relay())
     await client_tg.run_until_disconnected()
 
 if __name__ == '__main__':
