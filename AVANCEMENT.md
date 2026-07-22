@@ -50,6 +50,10 @@ Checklist complète dans `TESTS_A_FAIRE.md`. Issues à valider :
 | **#21** | Canal INDO (parsing par IA, or uniquement) | Plan complet validé (commentaire sur l'issue), pas encore codé -- attente feu vert |
 | **#24** | Retirer la zone de la mort (tous canaux) | Décidé, petit chantier séparé, pas encore codé |
 | **#25** | Contrôle d'accès réel par pack client (mute verrouillé + commandes filtrées) | Besoin exprimé, pas encore de plan technique |
+| **#26** | Refonte gestion SABR VIP/Free (BE+60% à 100p, +10% à 150p, +10% sur message PARTIEL) | Clarifié avec l'utilisateur, pas encore codé |
+| **#27** | Bug répartition lots SABR (sur-allocation si lot réglé trop petit pour 3 ordres) | Bug confirmé par calcul, correctif défini, pas encore codé |
+| **#28** | Délai aléatoire anti-détection avant envoi MT5 | Existant confirmé (2-4s), renforcement optionnel proposé |
+| **#29** | Dashboard : mailbox retour client (bugs/suggestions) | Recommandation faite, pas de plan technique détaillé |
 
 ---
 
