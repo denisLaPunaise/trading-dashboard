@@ -47,7 +47,9 @@ Checklist complète dans `TESTS_A_FAIRE.md`. Issues à valider :
 | # | Titre | Notes |
 |---|---|---|
 | **#1** | Refactor monolithe `bot_release13.py` | ~4900 lignes → chantier séparé, pas commencé |
-| **#21** | Parsing par IA (LLM) pour canaux au format libre (ex: canal indonésien) | Exploration faisable, attente exemples de messages |
+| **#21** | Canal INDO (parsing par IA, or uniquement) | Plan complet validé (commentaire sur l'issue), pas encore codé -- attente feu vert |
+| **#24** | Retirer la zone de la mort (tous canaux) | Décidé, petit chantier séparé, pas encore codé |
+| **#25** | Contrôle d'accès réel par pack client (mute verrouillé + commandes filtrées) | Besoin exprimé, pas encore de plan technique |
 
 ---
 
