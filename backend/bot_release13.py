@@ -178,6 +178,12 @@ MUTED_CHANNELS = []
 # (#7) Pack du client : liste blanche des canaux VISIBLES (logs + dashboard).
 # Vide = tout visible (rétro-compatible). Purement cosmétique : ne touche pas au trading.
 ALLOWED_CHANNELS = []
+# (#25) Verrouillage RÉEL par pack : canaux absents du pack, calculés automatiquement
+# (recompute_pack_lock()) -- jamais modifié à la main, distinct de MUTED_CHANNELS pour
+# qu'un /unmute ne puisse jamais lever un verrouillage imposé par le pack.
+ALL_PACK_CHANNELS = ["CANAL SABR_VIP", "CANAL SABR_FREE", "CANAL SABR_COPIE",
+                     "CANAL MDT_VIP", "CANAL MDT_FREE", "CANAL SPACE", "CANAL LIGUE", "CANAL PERSO"]
+PACK_LOCKED_CHANNELS = []
 ID_CANAL_PERSO = -5093508256
 CHANNEL_TP1_PCT = {}
 SABR_ZONE_MIN_DIST = {} # Mémorise la distance la plus proche atteinte par le marché
@@ -1107,6 +1113,7 @@ def load_settings():
                 if "FIREBASE_EMAIL" in data:    FIREBASE_EMAIL    = data["FIREBASE_EMAIL"]
                 if "FIREBASE_PASSWORD" in data: FIREBASE_PASSWORD = data["FIREBASE_PASSWORD"]
 
+            recompute_pack_lock()  # (#25) verrouille réellement les canaux hors pack
             logger.info("⚙️ Ensemble des réglages chargés avec succès.")
             logger.info(f"🔕 Canaux Ignorés : {MUTED_CHANNELS}")
             logger.info(f"📦 Pack client (canaux visibles) : {ALLOWED_CHANNELS if ALLOWED_CHANNELS else 'TOUS'}")
@@ -2410,7 +2417,10 @@ def _channel_base_token(name):
 
 
 def channel_allowed(source):
-    """(#7) True si le canal source est visible pour ce client (filtre cosmétique des logs).
+    """(#7/#25) True si le canal source fait partie du pack de ce client -- utilisé à la
+    fois pour l'affichage (send_channel_alert) ET, depuis #25, pour verrouiller réellement
+    les commandes admin ciblant un canal (channel_allowed n'affecte pas le trading lui-même,
+    c'est PACK_LOCKED_CHANNELS + MUTED_CHANNELS qui s'en chargent, cf. main_handler).
     ALLOWED_CHANNELS vide = tout visible (rétro-compatible). Source inconnue = visible (sécurité)."""
     try:
         if not ALLOWED_CHANNELS:
@@ -2422,6 +2432,35 @@ def channel_allowed(source):
         return base in allowed
     except Exception:
         return True
+
+
+def recompute_pack_lock():
+    """(#25) Recalcule PACK_LOCKED_CHANNELS = les canaux de ALL_PACK_CHANNELS absents du
+    pack courant. Appelée au chargement des settings et à chaque mise à jour à chaud du
+    pack (commande Firestore set_allowed_channels). Ne modifie jamais MUTED_CHANNELS."""
+    global PACK_LOCKED_CHANNELS
+    if not ALLOWED_CHANNELS:
+        PACK_LOCKED_CHANNELS = []
+    else:
+        allowed_bases = {_channel_base_token(c) for c in ALLOWED_CHANNELS}
+        PACK_LOCKED_CHANNELS = [c for c in ALL_PACK_CHANNELS if _channel_base_token(c) not in allowed_bases]
+
+
+def resolve_channel_arg(target):
+    """(#25) Résout un argument texte libre (ex: 'VIP', 'SABR_VIP', 'SPACE') en nom de
+    canal interne ('CANAL MDT_VIP'...). Logique unique partagée par /mute, /unmute,
+    /sell_lot et le filtre de pack -- remplace 3 résolutions différentes et incohérentes
+    (dont un bug sur /sell_lot VIP/FREE seuls, cf. issue #25)."""
+    target = target.upper()
+    if "SABR" in target and "VIP" in target: return "CANAL SABR_VIP"
+    if "SABR" in target and ("COPIE" in target or "CP" in target): return "CANAL SABR_COPIE"
+    if "SABR" in target: return "CANAL SABR_FREE"
+    mapping = {
+        "VIP": "CANAL MDT_VIP", "MDT_VIP": "CANAL MDT_VIP",
+        "FREE": "CANAL MDT_FREE", "GRATUIT": "CANAL MDT_FREE", "MDT_FREE": "CANAL MDT_FREE",
+        "SPACE": "CANAL SPACE", "LIGUE": "CANAL LIGUE", "PERSO": "CANAL PERSO",
+    }
+    return mapping.get(target, f"CANAL {target}")
 
 
 async def send_channel_alert(msg, source, buttons=None):
@@ -3640,6 +3679,7 @@ async def admin_commands(event):
     
     # MDT VIP (Anciennement VIP)
     elif text.startswith("/risk_mdt_vip") or text.startswith("/risk_vip"):
+        if not channel_allowed("CANAL MDT_VIP"): await event.reply("❌ MDT_VIP ne fait pas partie de ton pack."); return
         try:
             val_raw = text.split()[1]
             if val_raw.lower() == "auto": RISK_PERCENT_MDT_VIP = None
@@ -3649,6 +3689,7 @@ async def admin_commands(event):
 
     # MDT FREE (Anciennement Gratuit)
     elif text.startswith("/risk_mdt_free") or text.startswith("/risk_gratuit"):
+        if not channel_allowed("CANAL MDT_FREE"): await event.reply("❌ MDT_FREE ne fait pas partie de ton pack."); return
         try:
             val_raw = text.split()[1]
             if val_raw.lower() == "auto": RISK_PERCENT_MDT_FREE = None
@@ -3658,6 +3699,7 @@ async def admin_commands(event):
 
     # SABR VIP (Lots Fixes)
     elif text.startswith("/risk_sabr_vip"):
+        if not channel_allowed("CANAL SABR_VIP"): await event.reply("❌ SABR_VIP ne fait pas partie de ton pack."); return
         try:
             val_raw = text.split()[1]
             # Pas de division par 100 ici ! On prend la valeur brute (ex: 0.10)
@@ -3668,6 +3710,7 @@ async def admin_commands(event):
 
     # SABR FREE (Lots Fixes)
     elif text.startswith("/risk_sabr_free") or text.startswith("/risk_sabr"):
+        if not channel_allowed("CANAL SABR_FREE"): await event.reply("❌ SABR_FREE ne fait pas partie de ton pack."); return
         try:
             val_raw = text.split()[1]
             # Pas de division par 100 ici !
@@ -3678,6 +3721,7 @@ async def admin_commands(event):
 
     # AUTRES CANAUX
     elif text.startswith("/risk_space"):
+        if not channel_allowed("CANAL SPACE"): await event.reply("❌ SPACE ne fait pas partie de ton pack."); return
         try:
             val_raw = text.split()[1]
             if val_raw.lower() == "auto": RISK_PERCENT_SPACE = None
@@ -3686,6 +3730,7 @@ async def admin_commands(event):
         except: await event.reply("❌ Usage: /risk_space 1.0")
 
     elif text.startswith("/risk_ligue"):
+        if not channel_allowed("CANAL LIGUE"): await event.reply("❌ LIGUE ne fait pas partie de ton pack."); return
         try:
             val_raw = text.split()[1]
             if val_raw.lower() == "auto": RISK_PERCENT_LIGUE = None
@@ -3694,6 +3739,7 @@ async def admin_commands(event):
         except: await event.reply("❌ Usage: /risk_ligue 1.0")
 
     elif text.startswith("/risk_perso"):
+        if not channel_allowed("CANAL PERSO"): await event.reply("❌ PERSO ne fait pas partie de ton pack."); return
         try:
             val_raw = text.split()[1]
             if val_raw.lower() == "auto": RISK_PERCENT_PERSO = None
@@ -3742,6 +3788,8 @@ async def admin_commands(event):
 
 # --- 10.ter REGLAGE ANTI-DOUBLON SABR ---
     elif text.startswith("/doublon_sabr"):
+        if not (channel_allowed("CANAL SABR_VIP") or channel_allowed("CANAL SABR_FREE") or channel_allowed("CANAL SABR_COPIE")):
+            await event.reply("❌ SABR ne fait pas partie de ton pack."); return
         try:
             val_raw = text.split()[1].lower()
             if val_raw in ["on", "oui", "true", "1"]:
@@ -3758,6 +3806,8 @@ async def admin_commands(event):
 
 # --- 10.quater REGLAGE FORWARD SABR ---
     elif text.startswith("/forward_sabr"):
+        if not (channel_allowed("CANAL SABR_VIP") or channel_allowed("CANAL SABR_FREE") or channel_allowed("CANAL SABR_COPIE")):
+            await event.reply("❌ SABR ne fait pas partie de ton pack."); return
         try:
             val_raw = text.split()[1].lower()
             if val_raw in ["on", "oui", "true", "1"]:
@@ -3805,23 +3855,11 @@ async def admin_commands(event):
     elif text.startswith("/mute"):
         try:
             parts = text.split(); target = parts[1].upper()
-            
-            # Mapping pour faciliter la vie de l'utilisateur
-            mapping_mute = {
-                "VIP": "CANAL MDT_VIP", "MDT_VIP": "CANAL MDT_VIP",
-                "FREE": "CANAL MDT_FREE", "GRATUIT": "CANAL MDT_FREE", "MDT_FREE": "CANAL MDT_FREE",
-                "SPACE": "CANAL SPACE", "LIGUE": "CANAL LIGUE", "PERSO": "CANAL PERSO",
-                "SABR": "CANAL SABR_FREE_SNIPER", # Mute tout le SABR FREE
-                "SABR_VIP": "CANAL SABR_VIP_SNIPER", 
-                "SABR_CP": "CANAL SABR_COPIE_SNIPER" # Mute tout le SABR VIP
-            }
-            
-            # Astuce : Pour SABR, on mute le préfixe principal
-            if "SABR" in target and "VIP" in target: full_name = "CANAL SABR_VIP" # D'abord le VIP
-            elif "SABR" in target and ("COPIE" in target or "CP" in target): full_name = "CANAL SABR_COPIE"
-            elif "SABR" in target: full_name = "CANAL SABR_FREE"
-            elif target in mapping_mute: full_name = mapping_mute[target]
-            else: full_name = f"CANAL {target}" # Tentative directe
+            full_name = resolve_channel_arg(target)  # (#25) résolveur centralisé
+
+            if not channel_allowed(full_name):
+                await event.reply(f"❌ {full_name.replace('CANAL ', '')} ne fait pas partie de ton pack.")
+                return
 
             # On ajoute à la liste des mute (gestion partielle des préfixes SABR dans le main_handler)
             if full_name not in MUTED_CHANNELS:
@@ -3835,8 +3873,14 @@ async def admin_commands(event):
     elif text.startswith("/unmute"):
         try:
             parts = text.split(); target = parts[1].upper()
-            # Même logique simplifiée
-            full_name = f"CANAL {target}"
+            full_name = resolve_channel_arg(target)  # (#25) résolveur centralisé
+
+            # (#25) Un canal verrouillé par le pack ne peut jamais être démuté --
+            # message dédié pour ne pas laisser croire que /unmute a fonctionné.
+            if _channel_base_token(full_name) in {_channel_base_token(c) for c in PACK_LOCKED_CHANNELS}:
+                await event.reply(f"❌ {full_name.replace('CANAL ', '')} ne fait pas partie de ton pack -- contacte l'administrateur.")
+                return
+
             # On essaie de trouver le nom exact dans la liste
             found = False
             for m in MUTED_CHANNELS:
@@ -3853,13 +3897,11 @@ async def admin_commands(event):
             if len(parts) < 3: await event.reply("❌ Format: `/sell_lot CANAL %`"); return
 
             target = parts[1].upper()
-            # Mapping intelligent
-            if "VIP" in target and "SABR" not in target: full_name = "CANAL MDT_VIP"
-            elif "FREE" in target or "GRATUIT" in target: full_name = "CANAL MDT_FREE"
-            if "SABR" in target and "VIP" in target: full_name = "CANAL SABR_VIP" # D'abord le VIP
-            elif "SABR" in target and ("COPIE" in target or "CP" in target): full_name = "CANAL SABR_COPIE"
-            elif "SABR" in target: full_name = "CANAL SABR_FREE"
-            else: full_name = f"CANAL {target}"
+            full_name = resolve_channel_arg(target)  # (#25) résolveur centralisé, corrige le bug VIP/FREE seuls
+
+            if not channel_allowed(full_name):
+                await event.reply(f"❌ {full_name.replace('CANAL ', '')} ne fait pas partie de ton pack.")
+                return
 
             val_raw = float(parts[2])
             if val_raw > 1: val_raw = val_raw / 100
@@ -3960,6 +4002,23 @@ async def admin_commands(event):
 
 # --- 17. AIDE ---
     elif text == "/help":
+        # (#25) Section RISQUES filtrée par pack : chaque ligne liée à un canal précis
+        # n'apparaît que si ce canal fait partie du pack du client (None = toujours affichée).
+        risk_lines = [
+            (None, "`/risk_gold 0.6`"),
+            (None, "`/risk_other 0.6`"),
+            (None, "`/risk_indice 0.8`"),
+            (None, "`/risk_all 0.5`"),
+            ("CANAL MDT_VIP", "`/risk_mdt_vip 1.0`"),
+            ("CANAL MDT_FREE", "`/risk_mdt_free 0.5`"),
+            ("CANAL SABR_VIP", "`/risk_sabr_vip 0.06` (Lots Fixes)"),
+            ("CANAL SABR_FREE", "`/risk_sabr_free 0.06` (Lots Fixes)"),
+            ("CANAL SPACE", "`/risk_space 1.0`"),
+            ("CANAL LIGUE", "`/risk_ligue 1.0`"),
+            ("CANAL PERSO", "`/risk_perso 1.0`"),
+        ]
+        risk_txt = "\n".join(line for ch, line in risk_lines if ch is None or channel_allowed(ch))
+
         msg = ("**🤖 MENU COMMANDES V11.1**\n\n\n"
                "**📌 GÉNÉRALES :**\n\n"
                "`/info` : Bilan compte\n"
@@ -3970,17 +4029,7 @@ async def admin_commands(event):
                "`/closeall` : Fermer TOUT\n"
                "`/close XAUUSD` : Fermer par paire\n\n\n"
                "**⚙️ RISQUES (0.5 = 0.5%) :**\n\n"
-               "`/risk_gold 0.6` \n"
-               "`/risk_other 0.6`\n"
-               "`/risk_indice 0.8` \n"
-               "`/risk_all 0.5`\n"
-               "`/risk_mdt_vip 1.0` \n"
-               "`/risk_mdt_free 0.5`\n"
-               "`/risk_sabr_vip 0.06` (Lots Fixes)\n"
-               "`/risk_sabr_free 0.06` (Lots Fixes)\n"
-               "`/risk_space 1.0` \n"
-               "`/risk_ligue 1.0`\n"
-               "`/risk_perso 1.0`\n\n\n"
+               f"{risk_txt}\n\n\n"
                "**🛠️ GESTION & PARAMÈTRES :**\n\n"
                "`/max_dd 4` : Max Drawdown 4%\n"
                "`/sl_suiveur 85` : Trailing Pips (ou '0' pour paliers)\n"
@@ -4302,9 +4351,11 @@ async def main_handler(event):
                 clean_type = raw_type.replace("_", " ")
 
             # --- NOUVELLE LOGIQUE (MUTE TOTAL INTELLIGENT) ---
-            is_muted = any(m in final_source for m in MUTED_CHANNELS)
+            # (#25) PACK_LOCKED_CHANNELS bloque réellement le trading sur un canal absent
+            # du pack du client (avant, ALLOWED_CHANNELS ne faisait que filtrer l'affichage).
+            is_muted = any(m in final_source for m in MUTED_CHANNELS) or any(m in final_source for m in PACK_LOCKED_CHANNELS)
             if is_muted:
-                logger.warning(f"🚫 SIGNAL IGNORÉ : Le canal {final_source} est bloqué par le mode MUTE.")
+                logger.warning(f"🚫 SIGNAL IGNORÉ : Le canal {final_source} est bloqué par le mode MUTE ou hors pack.")
                 return # On arrête tout ici : pas d'alerte, PAS DE TRADE.
 
             if is_sabr_signal:
@@ -4715,6 +4766,7 @@ async def handle_firebase_command(cmd_id: str, cmd_data: dict) -> None:
             if isinstance(new_list, str):
                 new_list = [c.strip() for c in new_list.split(",") if c.strip()]
             ALLOWED_CHANNELS = [c for c in (new_list or []) if c]
+            recompute_pack_lock()  # (#25) reverrouille les canaux hors du nouveau pack
             await run_bg(save_settings)
             pack_txt = ", ".join(c.replace("CANAL ", "") for c in ALLOWED_CHANNELS) if ALLOWED_CHANNELS else "TOUS les canaux"
             await send_alert(f"📦 **Pack mis à jour**\n\nCanaux visibles : {pack_txt}")
