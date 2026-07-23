@@ -1424,12 +1424,12 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
             </button>
 
             {myFeedback.length > 0 && (
-              <div style={{ marginTop: '20px', borderTop: '1px solid #333', paddingTop: '15px' }}>
+              <div style={{ marginTop: isMyFeedbackOpen ? '20px' : '8px', borderTop: '1px solid #333', paddingTop: isMyFeedbackOpen ? '15px' : '8px' }}>
                 <div
                   onClick={() => { triggerHaptic('light'); setIsMyFeedbackOpen(!isMyFeedbackOpen); }}
                   style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', userSelect: 'none' }}
                 >
-                  <h3 style={{ margin: '0 0 12px 0', fontSize: '0.9rem', color: '#aaa' }}>Mes signalements ({myFeedback.length})</h3>
+                  <h3 style={{ margin: 0, fontSize: '0.9rem', color: '#aaa' }}>Mes signalements ({myFeedback.length})</h3>
                   {isMyFeedbackOpen ? <ChevronUp size={16} color="#aaa" /> : <ChevronDown size={16} color="#aaa" />}
                 </div>
                 <div style={{ display: 'grid', gridTemplateRows: isMyFeedbackOpen ? '1fr' : '0fr', transition: 'grid-template-rows 0.4s ease-out' }}>
