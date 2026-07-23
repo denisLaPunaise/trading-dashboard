@@ -1370,7 +1370,7 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
       {/* SECTION 5 : MAILBOX (#29) -- signaler un bug/suggestion, historique + réponses admin.
           Placée ici (sous Analyses & Stats, au-dessus de la ligne rouge) plutôt qu'après
           Contrôle Système, sur demande utilisateur -- seul "Contrôle Système" reste sous la ligne rouge. */}
-      <div onClick={() => { triggerHaptic('light'); setIsFeedbackOpen(!isFeedbackOpen); }} style={{ display: 'flex', justifyContent: 'flex-start', alignItems: 'center', cursor: 'pointer', borderTop: '1px solid #333', paddingTop: '25px', marginTop: '25px', userSelect: 'none' }}>
+      <div onClick={() => { triggerHaptic('light'); setIsFeedbackOpen(!isFeedbackOpen); }} style={{ display: 'flex', justifyContent: 'flex-start', alignItems: 'center', cursor: 'pointer', borderBottom: '1px solid #333', paddingBottom: '25px', marginBottom: '0px', marginTop: '25px', userSelect: 'none' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#ddd' }}>
           <MessageCircle size={20} color="#64b5f6" />
           <h2 style={{ fontSize: '1.2rem', margin: 0 }}>Signaler un bug / suggestion</h2>
@@ -1458,7 +1458,7 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
       </div>
 
       {/* SECTION 6 : ACTIONS CRITIQUES (reste la dernière section, sous la ligne rouge) */}
-      <div onClick={() => { triggerHaptic('heavy'); setIsDangerOpen(!isDangerOpen); }} style={{ display: 'flex', justifyContent: 'flex-start', alignItems: 'center', cursor: 'pointer', borderTop: '2px dashed #ff4444', paddingTop: '25px', marginTop: '0px', userSelect: 'none' }}>
+      <div onClick={() => { triggerHaptic('heavy'); setIsDangerOpen(!isDangerOpen); }} style={{ display: 'flex', justifyContent: 'flex-start', alignItems: 'center', cursor: 'pointer', borderTop: '2px dashed #ff4444', paddingTop: '25px', marginTop: '25px', userSelect: 'none' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#ff4444' }}>
           <AlertTriangle size={20} />
           <h2 style={{ fontSize: '1.2rem', margin: 0 }}>Contrôle Système</h2>
