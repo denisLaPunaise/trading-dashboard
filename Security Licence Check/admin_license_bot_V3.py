@@ -1015,7 +1015,10 @@ async def main_handler(event):
                           "*Valeur :\n"
                           "     - nb jour a ajouter (30)\n"
                           "     - date fin (25/12/2025)\n"
-                          "     - 'unlimited' pour (illimité)")
+                          "     - 'unlimited' pour (illimité)\n\n\n"
+                          "💬 **MAILBOX (canal feedback)**\n\n"
+                          "`/vu 1234` : Marquer le ticket #1234 comme lu\n"
+                          "`/vu 1234 Merci, corrigé !` : Marquer lu + répondre (visible sur son dashboard)")
 
 
 async def security_events_relay():
