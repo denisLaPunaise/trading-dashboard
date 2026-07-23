@@ -1371,7 +1371,7 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
       {/* SECTION 5 : MAILBOX (#29) -- signaler un bug/suggestion, historique + réponses admin.
           Placée ici (sous Analyses & Stats, au-dessus de la ligne rouge) plutôt qu'après
           Contrôle Système, sur demande utilisateur -- seul "Contrôle Système" reste sous la ligne rouge. */}
-      <div onClick={() => { triggerHaptic('light'); setIsFeedbackOpen(!isFeedbackOpen); }} style={{ display: 'flex', justifyContent: 'flex-start', alignItems: 'center', cursor: 'pointer', paddingBottom: '15px', marginTop: '25px', userSelect: 'none' }}>
+      <div onClick={() => { triggerHaptic('light'); setIsFeedbackOpen(!isFeedbackOpen); }} style={{ display: 'flex', justifyContent: 'flex-start', alignItems: 'center', cursor: 'pointer', marginTop: '25px', userSelect: 'none' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#ddd' }}>
           <MessageCircle size={20} color="#64b5f6" />
           <h2 style={{ fontSize: '1.2rem', margin: 0 }}>Signaler un bug / suggestion</h2>
