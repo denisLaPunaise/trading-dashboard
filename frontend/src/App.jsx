@@ -1424,7 +1424,7 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
             </button>
 
             {myFeedback.length > 0 && (
-              <div style={{ marginTop: isMyFeedbackOpen ? '20px' : '8px', borderTop: '1px solid #333', paddingTop: isMyFeedbackOpen ? '15px' : '8px' }}>
+              <div style={{ marginTop: isMyFeedbackOpen ? '20px' : '8px', borderTop: isMyFeedbackOpen ? '1px solid #333' : 'none', paddingTop: isMyFeedbackOpen ? '15px' : '0px' }}>
                 <div
                   onClick={() => { triggerHaptic('light'); setIsMyFeedbackOpen(!isMyFeedbackOpen); }}
                   style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', userSelect: 'none' }}
