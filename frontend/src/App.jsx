@@ -1381,7 +1381,7 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
 
       <div style={{ display: 'grid', gridTemplateRows: isFeedbackOpen ? '1fr' : '0fr', transition: 'grid-template-rows 0.4s ease-out' }}>
         <div style={{ overflow: 'hidden' }}>
-          <div style={{ background: '#1e1e1e', border: '1px solid #333', borderRadius: '12px', padding: '20px', marginTop: '15px', marginBottom: '20px' }}>
+          <div style={{ background: '#1e1e1e', border: '1px solid #333', borderRadius: '12px', padding: '20px', marginTop: '15px' }}>
 
             <div style={{ display: 'flex', gap: '10px', marginBottom: '12px' }}>
               {[
