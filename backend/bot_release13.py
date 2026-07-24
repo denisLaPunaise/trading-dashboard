@@ -184,6 +184,10 @@ ALLOWED_CHANNELS = []
 ALL_PACK_CHANNELS = ["CANAL SABR_VIP", "CANAL SABR_FREE", "CANAL SABR_COPIE",
                      "CANAL MDT_VIP", "CANAL MDT_FREE", "CANAL SPACE", "CANAL LIGUE", "CANAL PERSO"]
 PACK_LOCKED_CHANNELS = []
+# (#26) Pack source de vérité = Firestore (licenses/{key}.allowed_channels), pas le
+# settings.json local (sinon un client peut éditer le fichier pour tout débloquer).
+# None = licence pas encore vérifiée en ligne -> on retombe sur ALLOWED_CHANNELS local.
+SERVER_PACK_CHANNELS = None
 ID_CANAL_PERSO = -5093508256
 CHANNEL_TP1_PCT = {}
 SABR_ZONE_MIN_DIST = {} # Mémorise la distance la plus proche atteinte par le marché
@@ -476,6 +480,8 @@ def check_license_online(silent=False):
     Les alertes (connexion / vol / expiration) sont écrites dans Firestore et relayées
     sur Telegram par le bot de licence (VPS) — aucun token Telegram n'est embarqué dans l'exe.
     """
+    global ALLOWED_CHANNELS, SERVER_PACK_CHANNELS
+
     if not silent:
         logger.info("🌍 Vérification de la licence en cours...")
 
@@ -548,6 +554,13 @@ def check_license_online(silent=False):
                 return False
         except Exception:
             pass
+
+    # --- D-bis. (#26) Pack de canaux : Firestore fait autorité, jamais le settings.json local ---
+    srv_pack = lic.get("allowed_channels")
+    if srv_pack is not None:
+        SERVER_PACK_CHANNELS = list(srv_pack)
+        ALLOWED_CHANNELS = list(srv_pack)
+        recompute_pack_lock()
 
     # --- D. HWID ---
     if registered_hwid == "":
@@ -1070,7 +1083,7 @@ FIREBASE_PASSWORD = ""
 
 def load_settings():
     """Charge les réglages au démarrage"""
-    global RISK_PERCENT_GOLD, SABR_FORWARD_ACTIVE, RISK_PERCENT_OTHER, RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE, MAX_DAILY_DRAWDOWN, DRAWDOWN_ACTIVE, TRAILING_STOP_PIPS, RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO, SOFT_SL_PERCENT, MUTED_CHANNELS, ALLOWED_CHANNELS, CHANNEL_TP1_PCT, TELEGRAM_DESTINATION_ID, ADMIN_ID, RISK_PERCENT_INDICES, PRIME_HOURS, TIME_OFF_PEAK_FACTOR, DAY_RISK_FACTORS, FIXED_LOT_SABR_FREE, FIXED_LOT_SABR_VIP, RISK_PERCENT_SABR_OTHER, SL_SUIVEUR_ACTIVE, SOFT_SL_ACTIVE, FIREBASE_EMAIL, FIREBASE_PASSWORD
+    global RISK_PERCENT_GOLD, SABR_FORWARD_ACTIVE, RISK_PERCENT_OTHER, RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE, MAX_DAILY_DRAWDOWN, DRAWDOWN_ACTIVE, TRAILING_STOP_PIPS, RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO, SOFT_SL_PERCENT, MUTED_CHANNELS, ALLOWED_CHANNELS, CHANNEL_TP1_PCT, TELEGRAM_DESTINATION_ID, ADMIN_ID, RISK_PERCENT_INDICES, PRIME_HOURS, TIME_OFF_PEAK_FACTOR, DAY_RISK_FACTORS, FIXED_LOT_SABR_FREE, FIXED_LOT_SABR_VIP, RISK_PERCENT_SABR_OTHER, SL_SUIVEUR_ACTIVE, SOFT_SL_ACTIVE, FIREBASE_EMAIL, FIREBASE_PASSWORD, SERVER_PACK_CHANNELS
 
     if os.path.exists(SETTINGS_FILENAME):
         try:
@@ -1097,7 +1110,12 @@ def load_settings():
                 if "SL_SUIVEUR_ACTIVE" in data: SL_SUIVEUR_ACTIVE = data["SL_SUIVEUR_ACTIVE"]
                 if "SOFT_SL_ACTIVE" in data: SOFT_SL_ACTIVE = data["SOFT_SL_ACTIVE"]
                 if "MUTED_CHANNELS" in data: MUTED_CHANNELS = data["MUTED_CHANNELS"]
-                if "ALLOWED_CHANNELS" in data: ALLOWED_CHANNELS = data["ALLOWED_CHANNELS"]  # (#7) pack du client
+                # (#26) Le pack local n'est qu'un repli avant la 1ère vérif licence en ligne --
+                # dès que le serveur a répondu (SERVER_PACK_CHANNELS non None), il fait autorité.
+                if SERVER_PACK_CHANNELS is not None:
+                    ALLOWED_CHANNELS = list(SERVER_PACK_CHANNELS)
+                elif "ALLOWED_CHANNELS" in data:
+                    ALLOWED_CHANNELS = data["ALLOWED_CHANNELS"]  # (#7) pack du client (repli hors-ligne)
                 if "CHANNEL_TP1_PCT" in data: CHANNEL_TP1_PCT = data["CHANNEL_TP1_PCT"]
                 if "TELEGRAM_DESTINATION_ID" in data: 
                     TELEGRAM_DESTINATION_ID = data["TELEGRAM_DESTINATION_ID"]

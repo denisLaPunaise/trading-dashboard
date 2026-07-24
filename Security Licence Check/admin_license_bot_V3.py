@@ -26,19 +26,26 @@ except Exception as e:
     _fb_db = None
     print(f"⚠️ Firebase non disponible (mode dégradé) : {e}")
 
-def fb_sync_license(key, user, status, ver_min="14.0.0", hwid="", date_fin=""):
-    """Écrit/met à jour une licence dans Firestore /licenses/{key}"""
+def fb_sync_license(key, user, status, ver_min="14.0.0", hwid="", date_fin="", allowed_channels=None):
+    """Écrit/met à jour une licence dans Firestore /licenses/{key}.
+
+    allowed_channels : (#26) pack de canaux, source de vérité lue par le bot client au
+    check de licence (remplace le settings.json local, trafiquable). None = ne touche
+    pas au champ existant (merge=True) ; [] = tout débloqué."""
     if not FIREBASE_ENABLED or not _fb_db:
         return
     try:
-        _fb_db.collection("licenses").document(key).set({
+        payload = {
             "user": user,
             "status": status,
             "ver_min": ver_min,
             "hwid": hwid,
             "date_fin": date_fin,
             "updated_at": fb_firestore.SERVER_TIMESTAMP,
-        }, merge=True)
+        }
+        if allowed_channels is not None:
+            payload["allowed_channels"] = list(allowed_channels)
+        _fb_db.collection("licenses").document(key).set(payload, merge=True)
     except Exception as e:
         print(f"⚠️ fb_sync_license error: {e}")
 
@@ -203,6 +210,7 @@ COL_STATUS = 3     # C: ACTIVE / BANNED
 COL_VER = 4        # D: Version Min
 COL_HWID = 5       # E: L'ID du PC
 COL_EXP = 6        # F: Date Expiration (JJ/MM/AAAA)
+COL_PACK = 7       # G: (#26) Pack / canaux autorisés (ex: "SABR_VIP,PERSO" ou vide = tous)
 COL_CONFIG_VER = 8 # H: Config Version min
 ROW_CONFIG_VER = 2 # Ligne Config Version min
 
@@ -266,6 +274,11 @@ def resolve_channels(arg):
         return None, (f"Jeton(s) inconnu(s) : {', '.join(unknown)}.\n"
                       f"Profils dispo : {profs}\nCanaux dispo : {valid}")
     return out, None
+
+
+def channels_to_pack_text(channels):
+    """(#26) Liste de canaux internes -> texte stocké en colonne G (ex: 'SABR_VIP,PERSO')."""
+    return ",".join(c.replace("CANAL ", "") for c in (channels or []))
 
 
 SETTINGS_TEMPLATE = {
@@ -421,6 +434,28 @@ def update_sheet(license_key, pc_id):
         print(f"❌ Erreur Sheet : {e}")
         return "ERROR"
     
+def update_sheet_pack(key, allowed_channels):
+    """(#26) Écrit le pack en colonne G + Firestore (licenses/{key}.allowed_channels) --
+    c'est CE champ Firestore que le bot client vérifie à chaque check de licence, donc
+    ça s'applique même si le client n'a jamais lié son dashboard (contrairement au hot-push
+    via fb_push_set_channels qui nécessite un telegram_id)."""
+    try:
+        sheet = get_sheet()
+        cell = sheet.find(key)
+        if not cell:
+            return False
+        sheet.update_cell(cell.row, COL_PACK, channels_to_pack_text(allowed_channels))
+        row_vals = sheet.row_values(cell.row)
+        while len(row_vals) < 6:
+            row_vals.append("")
+        fb_sync_license(key, row_vals[0], row_vals[2] or "ACTIVE", row_vals[3] or "14.0.0",
+                         row_vals[4] or "", row_vals[5] or "", allowed_channels=allowed_channels or [])
+        return True
+    except Exception as e:
+        print(f"⚠️ update_sheet_pack error: {e}")
+        return False
+
+
 def get_current_default_version():
     """Lit la version par défaut dans la case H2"""
     try:
@@ -445,12 +480,12 @@ def set_default_version(new_ver):
     
 # --- FONCTIONS UTILITAIRES ---
 
-def add_license_row(user, key, days=None):
+def add_license_row(user, key, days=None, allowed_channels=None):
     """Version modifiée pour lire la version dynamique"""
     try:
         sheet = get_sheet()
         if sheet.find(key): return False, "Clé existe déjà !"
-        
+
         # 1. On récupère la version depuis le Sheet (H2)
         version_to_use = sheet.cell(ROW_CONFIG_VER, COL_CONFIG_VER).value
         if not version_to_use: version_to_use = "7.2" # Sécurité
@@ -461,10 +496,11 @@ def add_license_row(user, key, days=None):
             fin = datetime.now() + timedelta(days=int(days))
             date_fin = fin.strftime("%d/%m/%Y")
 
-        # 3. On inscrit la ligne avec la version dynamique
-        row_data = [user, key, "ACTIVE", version_to_use, "", date_fin]
+        # 3. On inscrit la ligne avec la version dynamique + le pack (#26, colonne G)
+        pack_text = channels_to_pack_text(allowed_channels)
+        row_data = [user, key, "ACTIVE", version_to_use, "", date_fin, pack_text]
         sheet.append_row(row_data)
-        fb_sync_license(key, user, "ACTIVE", version_to_use, "", date_fin)
+        fb_sync_license(key, user, "ACTIVE", version_to_use, "", date_fin, allowed_channels=allowed_channels or [])
         # 4. Création du compte Firebase Auth pour ce client
         fb_email, fb_password = fb_create_firebase_user(key)
         msg_fin = f" (Expire le {date_fin})" if date_fin else " (Illimité)"
@@ -513,17 +549,18 @@ def get_license_info(key):
         
         row_vals = sheet.row_values(cell.row)
         # On complète la liste avec des vides si elle est trop courte
-        while len(row_vals) < 6:
+        while len(row_vals) < 7:
             row_vals.append("")
-            
+
         info = (f"👤 **{row_vals[0]}**\n"
                 f"🔑 `{row_vals[1]}`\n"
                 f"📅 Statut: {row_vals[2]}\n"
-                f"💻 ID: `{row_vals[4]}`\n")
-        
+                f"💻 ID: `{row_vals[4]}`\n"
+                f"📦 Pack: {row_vals[6] if row_vals[6] else 'TOUS les canaux'}\n")
+
         if row_vals[5]:
             info += f"⏳ Expire: {row_vals[5]}"
-            
+
         return True, info
     except Exception as e: return False, str(e)
 
@@ -654,7 +691,7 @@ async def main_handler(event):
             new_key = f"FTMO-{unique_id}"
 
             await event.reply("⏳ Création de la licence et du package client...")
-            success, info, fb_email, fb_password = await asyncio.to_thread(add_license_row, user, new_key, days)
+            success, info, fb_email, fb_password = await asyncio.to_thread(add_license_row, user, new_key, days, allowed)
 
             if success:
                 # Génération du ZIP
@@ -708,21 +745,30 @@ async def main_handler(event):
             if not found:
                 await event.reply(f"❌ Clé `{key}` introuvable dans la Sheet.")
                 return
-            # Le client doit avoir lié son dashboard au moins une fois (telegram_id présent)
-            tg = await asyncio.to_thread(_license_telegram_id, key)
-            if not tg:
-                await event.reply("⚠️ Ce client n'a pas encore lié son dashboard (telegram_id absent).\n"
-                                  "Il doit lancer son bot au moins une fois, puis réessaie.")
-                return
-            ok = await asyncio.to_thread(fb_push_set_channels, tg, allowed)
             pack_txt = ", ".join(c.replace("CANAL ", "") for c in allowed) if allowed else "TOUS les canaux"
-            if ok:
-                await event.reply(f"✅ **PACK MIS À JOUR** pour `{key}`\n"
-                                  f"📦 Canaux visibles : {pack_txt}\n\n"
-                                  f"⏳ Appliqué quand le bot du client tourne (sous quelques secondes), "
-                                  f"sinon à son prochain démarrage. La validité n'est PAS modifiée.")
+
+            # (#26) Sheet (colonne G) + Firestore licenses/{key} = source de vérité, lue par
+            # le bot client à CHAQUE check de licence -- s'applique dans tous les cas, même
+            # si le client n'a jamais lié son dashboard.
+            sheet_ok = await asyncio.to_thread(update_sheet_pack, key, allowed)
+            if not sheet_ok:
+                await event.reply("❌ Échec de l'écriture dans la Sheet/Firestore.")
+                return
+
+            # Hot-push dashboard (nécessite un telegram_id lié) : mise à jour immédiate en plus
+            # de la vérification licence -- purement pour l'affichage instantané du dashboard.
+            tg = await asyncio.to_thread(_license_telegram_id, key)
+            pushed = await asyncio.to_thread(fb_push_set_channels, tg, allowed) if tg else False
+
+            reply = (f"✅ **PACK MIS À JOUR** pour `{key}`\n"
+                     f"📦 Canaux visibles : {pack_txt}\n\n")
+            if pushed:
+                reply += "⏳ Appliqué immédiatement (dashboard + bot). La validité n'est PAS modifiée."
             else:
-                await event.reply("❌ Échec de l'envoi de la commande (Firebase indisponible ?).")
+                reply += ("⏳ Appliqué au prochain check de licence du bot (démarrage ou sous 4h). "
+                          "Dashboard non mis à jour à chaud (client pas encore lié). "
+                          "La validité n'est PAS modifiée.")
+            await event.reply(reply)
         except Exception as e:
             await event.reply(f"❌ Crash: {e}")
 
