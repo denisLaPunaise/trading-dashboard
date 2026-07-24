@@ -1102,6 +1102,21 @@ async def security_events_relay():
                 if data.get("pc_id"):    details.append(f"💻 PC : {data['pc_id']}")
                 if data.get("got_hwid"): details.append(f"💻 Machine : {data['got_hwid']}")
                 full = msg + ("\n" + "\n".join(details) if details else "")
+
+                # (#27) Le HWID n'est écrit qu'en Firestore par le bot client (jamais dans la
+                # Sheet) -- on le recopie ici pour garder un visuel à jour. Seulement sur un
+                # "connection" (licence acceptée sur cette machine) : un "theft" est un refus,
+                # le HWID enregistré n'a pas changé, y toucher afficherait la mauvaise machine.
+                if data.get("type") == "connection" and data.get("license_key") and data.get("pc_id"):
+                    def _sync_hwid_sheet(_key=data["license_key"], _pc=data["pc_id"]):
+                        try:
+                            sheet = get_sheet()
+                            cell = sheet.find(_key)
+                            if cell:
+                                sheet.update_cell(cell.row, COL_HWID, _pc)
+                        except Exception as e:
+                            print(f"⚠️ sync HWID Sheet: {e}")
+                    await asyncio.to_thread(_sync_hwid_sheet)
                 try:
                     def _send(_t=full):
                         requests.post(
