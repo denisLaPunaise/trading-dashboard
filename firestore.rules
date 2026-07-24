@@ -13,10 +13,15 @@ service cloud.firestore {
     match /licenses/{licenseKey} {
       // Le bot lit sa propre licence
       allow read: if request.auth != null && request.auth.uid == licenseKey;
-      // Le bot peut écrire telegram_id sur SA licence ; et hwid UNIQUEMENT s'il était vide (1ère inscription)
+      // Le bot peut écrire telegram_id ET hwid sur SA licence, mais UNIQUEMENT à la 1ère
+      // inscription (champ vide) -- sinon un client actif pourrait réécrire telegram_id vers
+      // l'ID d'un AUTRE client et devenir propriétaire de son compte via licenseOwns() (#30).
       allow update: if request.auth != null && request.auth.uid == licenseKey
         && (
-          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['telegram_id'])
+          (
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['telegram_id'])
+            && (!('telegram_id' in resource.data) || resource.data.telegram_id == null || resource.data.telegram_id == 0)
+          )
           || (
             request.resource.data.diff(resource.data).affectedKeys().hasOnly(['hwid'])
             && (resource.data.hwid == null || resource.data.hwid == '')
