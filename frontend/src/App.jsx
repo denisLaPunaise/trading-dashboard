@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { Activity, Wallet, TrendingUp, TrendingDown, Settings, XCircle, Shield, ChevronDown, ChevronUp, Briefcase, AlertTriangle, Lock, Unlock, Power, BellOff, Target, Award, Crosshair, Calendar, MessageCircle } from 'lucide-react'
 import './App.css'
 import { db, auth } from './firebase'
-import { doc, collection, onSnapshot, addDoc, serverTimestamp, Timestamp, query, where, orderBy } from 'firebase/firestore'
+import { doc, collection, onSnapshot, addDoc, writeBatch, serverTimestamp, Timestamp, query, where, orderBy } from 'firebase/firestore'
 import { signInAnonymously, signInWithCustomToken } from 'firebase/auth'
 
 // (#12) TTL Firestore sur users/{uid}/commands : la politique pointe sur ce champ pour purger après 3 jours
@@ -404,10 +404,17 @@ function App() {
     if (!userId || !feedbackMessage.trim() || feedbackOnCooldown || feedbackSending) return;
     setFeedbackSending(true);
     try {
-      await addDoc(collection(db, 'feedback'), {
+      // (#38) Écriture groupée atomique : les règles Firestore exigent que la création du
+      // ticket avance AUSSI feedback_cooldown/{uid}.last_at dans le même batch -- ce document
+      // est lui-même limité à 1 écriture/15min par sa propre règle, ce qui rend le cooldown
+      // infranchissable côté serveur (avant, seul le bouton désactivé l'appliquait).
+      const batch = writeBatch(db);
+      batch.set(doc(collection(db, 'feedback')), {
         user_uid: userId, type: feedbackType, message: feedbackMessage.trim(),
         status: 'nouveau', ticket: null, reply: null, relayed: false, created_at: serverTimestamp(),
       });
+      batch.set(doc(db, 'feedback_cooldown', userId), { last_at: serverTimestamp() });
+      await batch.commit();
       setFeedbackMessage('');
       triggerHaptic('success');
     } catch (err) {

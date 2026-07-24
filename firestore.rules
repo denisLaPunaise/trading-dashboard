@@ -74,10 +74,29 @@ service cloud.firestore {
 
     // ── (#29) Mailbox retour client : écrite par le DASHBOARD (uid == telegram_id,
     // comme users/{userId}) -- pas par le bot, donc pas le même motif que security_events. ──
+    // (#38) Le cooldown 15 min n'était appliqué que côté UI (bouton désactivé) -- contournable
+    // en appelant Firestore directement. Le create doit désormais, dans le MÊME batch,
+    // avancer feedback_cooldown/{uid}.last_at -- lui-même limité à 1 écriture/15min par sa
+    // propre règle -- ce qui rend le cooldown réellement infranchissable côté serveur.
     match /feedback/{ticketId} {
-      allow create: if request.auth != null && request.resource.data.user_uid == request.auth.uid;
+      allow create: if request.auth != null
+        && request.resource.data.user_uid == request.auth.uid
+        && request.resource.data.status == 'nouveau'
+        && request.resource.data.ticket == null
+        && request.resource.data.reply == null
+        && request.resource.data.relayed == false
+        && getAfter(/databases/$(database)/documents/feedback_cooldown/$(request.auth.uid)).data.last_at == request.time;
       allow read: if request.auth != null && resource.data.user_uid == request.auth.uid;
-      allow update, delete: if false; // Admin SDK (VPS) uniquement (/vu, relais)
+      allow update, delete: if false; // Admin SDK (VPS) uniquement (/vu, /corrige, /rep)
+    }
+    match /feedback_cooldown/{uid} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow write: if request.auth != null && request.auth.uid == uid
+        && request.resource.data.last_at == request.time
+        && (
+          !exists(/databases/$(database)/documents/feedback_cooldown/$(uid))
+          || request.time > resource.data.last_at + duration.value(15, 'm')
+        );
     }
     match /counters/{counterId} {
       allow read, write: if false; // Admin SDK (VPS) uniquement
