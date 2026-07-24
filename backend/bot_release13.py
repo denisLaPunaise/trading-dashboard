@@ -1980,8 +1980,14 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
                     if pos.magic == MAGIC_NUMBER and pos.ticket in ACTIVE_TRADE_SOURCES:
                         if "SABR" in ACTIVE_TRADE_SOURCES[pos.ticket]:
                             req = {"action": mt5.TRADE_ACTION_SLTP, "position": pos.ticket, "sl": new_sl, "tp": pos.tp}
-                            if (await run_bg(_send_order_blocking, req)).retcode == mt5.TRADE_RETCODE_DONE: count += 1
-            
+                            res = await run_bg(_send_order_blocking, req)
+                            # (#44) res peut être None (timeout MT5) -- .retcode dessus levait une
+                            # AttributeError avalée par le bare except plus bas, sans alerter l'admin.
+                            if res is None:
+                                logger.warning(f"⚠️ MT5 Timeout (UPDATE_SL SABR) sur ticket {pos.ticket}")
+                            elif res.retcode == mt5.TRADE_RETCODE_DONE:
+                                count += 1
+
             # B. Ordres en attente
             orders = await run_bg(mt5.orders_get, symbol="XAUUSD")
             if orders:
@@ -1991,8 +1997,10 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
                         await run_bg(_send_order_blocking, req)
 
             if count > 0: await send_alert(f"🔄 **SL SABR MIS À JOUR**\nNouveau SL: {new_sl}\nTrades modifiés: {count}")
-            return None 
-        except: return None
+            return None
+        except Exception as e:
+            logger.error(f"⚠️ Erreur UPDATE_SL SABR : {e}")
+            return None
 
     # 1. Vérification Drawdown (Disjoncteur)
     if check_daily_max_loss(): 
@@ -2944,6 +2952,21 @@ async def api_update_setting(data: SettingUpdate):
 
     k = data.key
     v = data.value
+
+    # (#44) Même verrou de pack que les commandes Telegram équivalentes (ex: /risk_mdt_vip) --
+    # sans ça, le dashboard laissait configurer un réglage pour un canal hors du pack payé du
+    # client, alors que le bot Telegram le refuse explicitement pour la même action.
+    CHANNEL_SETTING_KEYS = {
+        "risk_mdt_vip": "CANAL MDT_VIP", "risk_mdt_free": "CANAL MDT_FREE",
+        "risk_space": "CANAL SPACE", "risk_ligue": "CANAL LIGUE", "risk_perso": "CANAL PERSO",
+        "sabr_lot_vip": "CANAL SABR_VIP", "sabr_lot_free": "CANAL SABR_FREE",
+    }
+    if k in CHANNEL_SETTING_KEYS and not channel_allowed(CHANNEL_SETTING_KEYS[k]):
+        return {"status": "error", "message": f"{k} : canal hors de ton pack."}
+    if k == "risk_sabr_other" and not (
+        channel_allowed("CANAL SABR_VIP") or channel_allowed("CANAL SABR_FREE") or channel_allowed("CANAL SABR_COPIE")
+    ):
+        return {"status": "error", "message": "risk_sabr_other : SABR hors de ton pack."}
 
     if k == "risk_gold": RISK_PERCENT_GOLD = float(v)
     elif k == "risk_indices": RISK_PERCENT_INDICES = float(v)
@@ -4868,8 +4891,8 @@ async def handle_firebase_command(cmd_id: str, cmd_data: dict) -> None:
             class _S(BM):
                 key: str
                 value: Any
-            await api_update_setting(_S(key=payload.get("key", ""), value=payload.get("value")))
-            set_status("done", {"success": True})
+            _res = await api_update_setting(_S(key=payload.get("key", ""), value=payload.get("value")))
+            set_status("done", {"success": _res.get("status") == "success", **({"message": _res["message"]} if "message" in _res else {})})
 
         elif cmd_type == "update_planning":
             class _P(BM):
