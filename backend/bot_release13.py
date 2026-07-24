@@ -3609,14 +3609,17 @@ async def admin_commands(event):
     if ADMIN_ID == 0 or event.sender_id != ADMIN_ID: # 👈 CORRECTION 5 (sender_id)
         return
 
-    # (#30) REVERT du garde chat_id ajouté pour le double /help : TELEGRAM_DESTINATION_ID est
-    # capturé depuis event.sender_id lors du /start PIN en DM (cf. pairing_handler) -- dans ce
-    # contexte, sender_id (l'admin) et chat_id (le pair du DM, donc le bot lui-même) sont deux
-    # valeurs DIFFÉRENTES. Comparer event.chat_id à cette valeur ne matche quasiment jamais,
-    # ce qui bloquait TOUTES les commandes, partout (pas seulement le canal support visé).
-    # Le garde sender_id juste au-dessus suffit à restreindre à l'admin ; le double /help
-    # (2 bots distincts qui répondent au même admin dans un même canal) reste à corriger
-    # autrement si besoin (ex: exclure explicitement l'ID du canal support une fois connu).
+    # (#30) Le fix précédent comparait event.chat_id à TELEGRAM_DESTINATION_ID (capturé depuis
+    # event.sender_id lors du /start PIN en DM -- deux valeurs différentes dans ce contexte),
+    # ce qui bloquait TOUTES les commandes partout. Cette fois : liste noire explicite des
+    # canaux du bot de licence (où il répond déjà lui-même), pour éviter le double /help sans
+    # toucher au reste. ID en dur (pas de dépendance à admin_license_bot_V3.py, process séparé).
+    LICENSE_BOT_CHANNELS = {
+        -1003872071233,  # SECURITY_CHANNEL_ID (canal de licence/sécurité)
+        -1004458498840,  # FEEDBACK_CHANNEL_ID (canal de support/mailbox)
+    }
+    if event.chat_id in LICENSE_BOT_CHANNELS:
+        return
 
     text = event.raw_text.lower().strip()
 
