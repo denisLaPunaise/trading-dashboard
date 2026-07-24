@@ -140,7 +140,7 @@ if API_ID == 0 or API_HASH == "" or BOT_TOKEN == "" or API_HASH == "A_REMPLIR_PA
     print(" Bienvenue ! Avant de démarrer le bot pour la première fois,")
     print(" vous devez configurer vos accès personnels.\n")
     print(" 👉 ÉTAPE 1 : Ouvrez le fichier 'settings.json' (clic droit > Modifier).")
-    print(" 👉 ÉTAPE 2 : Remplissez les 4 lignes suivantes :")
+    print(" 👉 ÉTAPE 2 : Remplissez les 3 lignes suivantes :")
     print("      - TELEGRAM_API_ID    (Vos chiffres, SANS guillemets)")
     print("      - TELEGRAM_API_HASH  (Vos lettres/chiffres, ENTRE guillemets)")
     print("      - TELEGRAM_BOT_TOKEN (Votre token BotFather, ENTRE guillemets)\n")
