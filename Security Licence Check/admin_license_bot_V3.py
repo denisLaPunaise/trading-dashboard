@@ -53,20 +53,28 @@ def fb_sync_license(key, user, status, ver_min=None, hwid=None, date_fin=None, a
         print(f"⚠️ fb_sync_license error: {e}")
 
 
-def fb_create_firebase_user(key):
+def fb_create_firebase_user(key, force=False):
     """Crée un compte Firebase Auth pour un nouveau client.
     UID = license_key, email = key@ftmobot.com, mot de passe aléatoire.
-    Retourne (email, password) ou (None, None) en cas d'échec."""
+
+    (#37) Si le compte existe DÉJÀ et force=False (défaut) : on ne touche à RIEN -- avant,
+    relancer cette fonction sur un client déjà provisionné régénérait silencieusement un
+    nouveau mot de passe (invalidant celui déjà dans le settings.json distribué au client)
+    ET forçait disabled=False (annulant silencieusement un ban/expiration). force=True
+    reproduit l'ancien comportement, pour un vrai besoin de reset explicite.
+
+    Retourne (email, password, already_existed)."""
     if not FIREBASE_ENABLED:
-        return None, None
+        return None, None, False
     import secrets, string
     alphabet = string.ascii_letters + string.digits + "!@#$%"
     password = "".join(secrets.choice(alphabet) for _ in range(20))
     email = f"{key.lower()}@ftmobot.com"
     try:
-        # Si l'utilisateur existe déjà (re-génération), on le met à jour
         try:
             fb_auth.get_user(key)
+            if not force:
+                return None, None, True
             fb_auth.update_user(key, email=email, password=password, disabled=False)
         except fb_auth.UserNotFoundError:
             fb_auth.create_user(uid=key, email=email, password=password)
@@ -76,10 +84,10 @@ def fb_create_firebase_user(key):
                 {"firebase_email": email, "firebase_password": password},
                 merge=True
             )
-        return email, password
+        return email, password, False
     except Exception as e:
         print(f"⚠️ fb_create_firebase_user error: {e}")
-        return None, None
+        return None, None, False
 
 
 def fb_disable_firebase_user(key):
@@ -524,8 +532,8 @@ def add_license_row(user, key, days=None, allowed_channels=None):
         row_data = [user, key, "ACTIVE", version_to_use, "", date_fin, pack_text]
         sheet.append_row(row_data)
         fb_sync_license(key, user, "ACTIVE", version_to_use, "", date_fin, allowed_channels=allowed_channels or [])
-        # 4. Création du compte Firebase Auth pour ce client
-        fb_email, fb_password = fb_create_firebase_user(key)
+        # 4. Création du compte Firebase Auth pour ce client (clé neuve -> force sans effet)
+        fb_email, fb_password, _ = fb_create_firebase_user(key, force=True)
         msg_fin = f" (Expire le {date_fin})" if date_fin else " (Illimité)"
         return True, f"Licence ajoutée [v{version_to_use}]{msg_fin}.", fb_email, fb_password
     except Exception as e: return False, str(e), None, None
@@ -639,6 +647,11 @@ def set_expired(key):
         if not cell: return False
         # On écrit EXPIRED dans la colonne statut (3)
         sheet.update_cell(cell.row, COL_STATUS, "EXPIRED")
+        # (#37) Manquait : sans ça, licenses/{key}.status restait "ACTIVE" en Firestore -- pour
+        # une licence "vie"/illimitée (pas de date_fin), le bot client ne vérifie la date que
+        # si date_fin est renseigné, donc il continuait de tourner malgré l'expiration forcée.
+        current_user = sheet.cell(cell.row, COL_USER).value or ""
+        fb_sync_license(key, current_user, "EXPIRED")
         fb_disable_firebase_user(key)
         fb_disable_dashboard(key)
         return True
@@ -921,17 +934,26 @@ async def main_handler(event):
         try:
             parts = msg.split()
             if len(parts) < 2:
-                await event.reply("❌ Usage: `/fbcreate CLE`")
+                await event.reply("❌ Usage: `/fbcreate CLE` (ou `/fbcreate CLE force` pour régénérer un compte existant)")
                 return
             key = parts[1]
+            force = len(parts) > 2 and parts[2].lower() == "force"
             # On vérifie d'abord que la clé existe dans la Sheet (évite les comptes orphelins)
             found, _ = await asyncio.to_thread(get_license_info, key)
             if not found:
                 await event.reply(f"❌ Clé `{key}` introuvable dans la Sheet. Crée-la d'abord (`/gen` ou `/add`).")
                 return
             await event.reply("⏳ Création du compte Firebase...")
-            fb_email, fb_password = await asyncio.to_thread(fb_create_firebase_user, key)
-            if fb_email:
+            fb_email, fb_password, already_existed = await asyncio.to_thread(fb_create_firebase_user, key, force)
+            if already_existed:
+                # (#37) Ne régénère plus silencieusement -- casserait le settings.json déjà
+                # distribué au client (mot de passe changé) et annulerait un ban/expiration.
+                await event.reply(
+                    f"⚠️ Un compte Firebase existe déjà pour `{key}` -- rien n'a été modifié.\n"
+                    f"Utilise `/fbcreate {key} force` si tu veux VRAIMENT régénérer le mot de passe "
+                    f"(le client devra re-télécharger un settings.json à jour, et ça réactive le compte s'il était désactivé)."
+                )
+            elif fb_email:
                 await event.reply(
                     f"✅ **Compte Firebase provisionné**\n"
                     f"🔑 Clé : `{key}`\n\n"
@@ -972,10 +994,18 @@ async def main_handler(event):
 
     elif msg.lower().startswith("/ban"):
         try:
-            key = msg.split()[1]
+            parts = msg.split()
+            if len(parts) < 2:
+                await event.reply("❌ Usage: `/ban Clé`")
+                return
+            key = parts[1]
             success, res = await asyncio.to_thread(ban_license, key)
-            if success: await event.reply(f"🚫 Banni: `{key}`")
-        except: pass
+            if success:
+                await event.reply(f"🚫 Banni: `{key}`")
+            else:
+                await event.reply(f"❌ {res}")
+        except Exception as e:
+            await event.reply(f"❌ Crash: {e}")
 
     # F. Modifier le temps (/time Clé Valeur)
     elif msg.lower().startswith("/time"):
@@ -1006,8 +1036,11 @@ async def main_handler(event):
         if key_match:
             key_to_kill = key_match.group(1).strip()
             # On demande au sheet de mettre à jour
-            await asyncio.to_thread(set_expired, key_to_kill)
-            print(f"💀 Clé {key_to_kill} marquée comme EXPIRED (Signal reçu).")
+            ok = await asyncio.to_thread(set_expired, key_to_kill)
+            if ok:
+                print(f"💀 Clé {key_to_kill} marquée comme EXPIRED (Signal reçu).")
+            else:
+                print(f"⚠️ Échec du marquage EXPIRED pour {key_to_kill} (clé introuvable ou erreur Sheet/Firestore).")
 
     # H. Changer la version par défaut (/set_ver 7.2)
     elif msg.lower().startswith("/set_ver"):
@@ -1132,7 +1165,8 @@ async def main_handler(event):
                           "⚠️ SABR_COPIE jamais dans un pack (à mettre à la main)\n\n\n"
                           "🔧 **GESTION**\n\n"
                           "`/info Clé` : Voir détails (PC, Date...)\n"
-                          "`/fbcreate Clé` : Créer compte Firebase (clé existante)\n"
+                          "`/fbcreate Clé` : Créer compte Firebase (clé existante, sans effet si déjà provisionné)\n"
+                          "`/fbcreate Clé force` : Régénère le mot de passe d'un compte existant (⚠️ casse le settings.json déjà distribué)\n"
                           "`/reset Clé` : Changer de PC\n"
                           "`/ban Clé` : Bloquer accès\n"
                           "`/del Clé` : Supprimer ligne\n"
