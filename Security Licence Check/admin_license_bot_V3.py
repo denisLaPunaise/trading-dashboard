@@ -406,8 +406,10 @@ def sheet_safe(value):
 # 🔌 CONNEXION GOOGLE SHEET
 # ==========================================
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+# (#42) Valide service_account.json dès l'import (échec rapide si absent/invalide) --
+# get_sheet() ci-dessous recrée son propre client à chaque appel, celui-ci n'est jamais
+# réutilisé (l'ancien client_google, mort, a été retiré).
 creds = ServiceAccountCredentials.from_json_keyfile_name("service_account.json", scope)
-client_google = gspread.authorize(creds)
 
 def get_sheet():
     """Reconnexion robuste à chaque appel"""
@@ -415,28 +417,6 @@ def get_sheet():
     creds = ServiceAccountCredentials.from_json_keyfile_name("service_account.json", scope)
     client = gspread.authorize(creds) # On recrée le client frais
     return client.open(SHEET_NAME).sheet1
-
-def is_version_older(current_ver, min_ver):
-    """
-    Compare deux versions (ex: '10.1.1' et '7.2').
-    Retourne True si current_ver est PLUS VIEILLE que min_ver.
-    """
-    try:
-        # On découpe en liste d'entiers: '10.1.1' -> [10, 1, 1]
-        c_parts = [int(x) for x in current_ver.split('.')]
-        m_parts = [int(x) for x in min_ver.split('.')]
-        
-        # On compare élément par élément
-        for i in range(max(len(c_parts), len(m_parts))):
-            c = c_parts[i] if i < len(c_parts) else 0
-            m = m_parts[i] if i < len(m_parts) else 0
-            
-            if c < m: return True  # Obsolète
-            if c > m: return False # À jour ou plus récent
-            
-        return False # Exactement la même version
-    except:
-        return False # En cas d'erreur de format, on laisse passer
 
 def update_sheet(license_key, pc_id):
     try:
@@ -609,7 +589,9 @@ def get_license_info(key):
         info = (f"👤 **{row_vals[0]}**\n"
                 f"🔑 `{row_vals[1]}`\n"
                 f"📅 Statut: {row_vals[2]}\n"
-                f"💻 ID: `{row_vals[4]}`\n"
+                # (#42) La Sheet n'est qu'un miroir du HWID, resynchronisé au plus une fois/heure
+                # (security_events_relay) -- Firestore (licenses/{key}.hwid) fait toujours foi.
+                f"💻 ID (Sheet, ≤1h de retard) : `{row_vals[4]}`\n"
                 f"📦 Pack: {row_vals[6] if row_vals[6] else 'TOUS les canaux'}\n")
 
         if row_vals[5]:
@@ -694,35 +676,37 @@ def set_expired(key):
 # ==========================================
 client_tg = TelegramClient('admin_session', API_ID, API_HASH)
 
-@client_tg.on(events.NewMessage(chats=[SECURITY_CHANNEL_ID, FEEDBACK_CHANNEL_ID]))  # (#29) /vu depuis le canal feedback
+@client_tg.on(events.NewMessage(chats=[SECURITY_CHANNEL_ID, FEEDBACK_CHANNEL_ID], incoming=True))  # (#29) /vu depuis le canal feedback ; (#42) incoming=True -- évite que le bot retraite ses propres réponses
 async def main_handler(event):
     msg = event.raw_text.strip()
     
     # --- 1. DETECTION CONNEXION AUTOMATIQUE ---
     if "CONNEXION RÉUSSIE" in msg:
+        try:
+            print("\n📨 Nouveau login détecté...")
 
-        print("\n📨 Nouveau login détecté...")
+            key_match = re.search(r"🔑 Clé:\s*[`]?([^`\n]+)[`]?", msg)
+            hwid_match = re.search(r"💻 PC ID:\s*[`]?([^`\n]+)[`]?", msg)
 
-        key_match = re.search(r"🔑 Clé:\s*[`]?([^`\n]+)[`]?", msg)
-        hwid_match = re.search(r"💻 PC ID:\s*[`]?([^`\n]+)[`]?", msg)
-        
-        if key_match and hwid_match:
-            licence = key_match.group(1).strip()
-            hwid = hwid_match.group(1).strip()
+            if key_match and hwid_match:
+                licence = key_match.group(1).strip()
+                hwid = hwid_match.group(1).strip()
 
-            print(f"🔍 Traitement : {licence} | ID: {hwid}")
-            
-            # Appel ASYNC bloquant pour ne pas figer le bot
-            result = await asyncio.to_thread(update_sheet, licence, hwid)
-            
-            if result == "NEW_REGISTER":
-                await event.reply(f"🔒 **LICENCE VERROUILLÉE**\nAppareil lié.")
-            elif result == "CONFLICT":
-                await event.reply(f"🚨 **ALERTE VOL**\nID non reconnu !")
-            elif result == "EXPIRED":
-                await event.reply(f"⛔ **LICENCE EXPIRÉE**\nAccès refusé.")
-            elif result == "NOT_FOUND":
-                print(f"Clé inconnue: {licence}")
+                print(f"🔍 Traitement : {licence} | ID: {hwid}")
+
+                # Appel ASYNC bloquant pour ne pas figer le bot
+                result = await asyncio.to_thread(update_sheet, licence, hwid)
+
+                if result == "NEW_REGISTER":
+                    await event.reply(f"🔒 **LICENCE VERROUILLÉE**\nAppareil lié.")
+                elif result == "CONFLICT":
+                    await event.reply(f"🚨 **ALERTE VOL**\nID non reconnu !")
+                elif result == "EXPIRED":
+                    await event.reply(f"⛔ **LICENCE EXPIRÉE**\nAccès refusé.")
+                elif result == "NOT_FOUND":
+                    print(f"Clé inconnue: {licence}")
+        except Exception as e:
+            print(f"⚠️ Erreur détection connexion: {e}")
 
     # --- 2. GESTION DES COMMANDES ADMIN ---
     
@@ -742,7 +726,11 @@ async def main_handler(event):
             if rest and rest[0].isdigit():
                 days = rest[0]
                 chan_parts = rest[1:]
-            chan_arg = "".join(chan_parts).strip()  # tolère "SABR_VIP, PERSO"
+            # (#42) join sur "," (pas "") -- sinon "SABR_VIP PERSO" (espace, sans virgule, faute de
+            # frappe courante) s'écrasait silencieusement en un jeton bogus "SABR_VIPPERSO".
+            # Une virgule double ("SABR_VIP, PERSO" -> "SABR_VIP,,PERSO") reste sans risque :
+            # resolve_channels() ignore les jetons vides entre deux virgules.
+            chan_arg = ",".join(chan_parts).strip()
             # (#13) profil 'dev' → validité illimitée forcée
             is_dev = chan_arg.strip().lower() == "dev"
             if is_dev:
@@ -806,7 +794,7 @@ async def main_handler(event):
                                   f"💡 `/channels CLE full` = tout afficher.")
                 return
             key = parts[1]
-            chan_arg = "".join(parts[2:]).strip()
+            chan_arg = ",".join(parts[2:]).strip()  # (#42) cf. /gen : "," évite d'écraser "SABR_VIP PERSO" en un jeton bogus
             allowed, ch_err = resolve_channels(chan_arg)
             if ch_err:
                 await event.reply(f"❌ {ch_err}")
@@ -847,6 +835,9 @@ async def main_handler(event):
     # dashboard du client (jamais renvoyée en DM Telegram, décidé par l'utilisateur).
     elif msg.lower().startswith("/vu") or msg.lower().startswith("/corrige") or msg.lower().startswith("/rep"):
         try:
+            if not (FIREBASE_ENABLED and _fb_db):
+                await event.reply("❌ Firebase indisponible.")
+                return
             from google.cloud.firestore_v1.base_query import FieldFilter
 
             def _find_feedback(ticket_num):
@@ -899,6 +890,10 @@ async def main_handler(event):
     # triés par numéro de ticket -- vue de triage rapide dans le canal support.
     elif msg.lower().strip() == "/message":
         try:
+            if not (FIREBASE_ENABLED and _fb_db):
+                await event.reply("❌ Firebase indisponible.")
+                return
+
             def _fetch_all():
                 return [d.to_dict() for d in _fb_db.collection("feedback").stream()]
 
@@ -1003,9 +998,12 @@ async def main_handler(event):
         # Cette commande est simple : elle répète le message.
         # Utile si tu ajoutes le bot Admin dans le canal des clients pour faire des annonces.
         # Ici, elle répond juste dans le canal de sécurité pour tester.
-        content = msg[5:].strip()
-        if content:
-            await event.reply(f"📢 **ANNONCE:**\n\n{content}")
+        try:
+            content = msg[5:].strip()
+            if content:
+                await event.reply(f"📢 **ANNONCE:**\n\n{content}")
+        except Exception as e:
+            await event.reply(f"❌ Crash: {e}")
 
     # E. Reset, Del, Ban (Classiques)
     elif msg.lower().startswith("/reset"):
@@ -1018,11 +1016,16 @@ async def main_handler(event):
 
     elif msg.lower().startswith("/del"):
         try:
-            key = msg.split()[1]
+            parts = msg.split()
+            if len(parts) < 2:
+                await event.reply("❌ Usage: `/del Clé`")
+                return
+            key = parts[1]
             success, res = await asyncio.to_thread(delete_license_row, key)
             if success: await event.reply(f"🗑️ Supprimé: `{key}`")
             else: await event.reply(f"❌ {res}")
-        except: pass
+        except Exception as e:
+            await event.reply(f"❌ Crash: {e}")
 
     elif msg.lower().startswith("/ban"):
         try:
@@ -1065,15 +1068,18 @@ async def main_handler(event):
     # G. Gestion Automatique Expiration (Réception du signal du Worker)
     elif "SIGNAL EXPIRATION" in msg:
         # Le worker a envoyé : "⌛ SIGNAL EXPIRATION \n Clé: FTMO-..."
-        key_match = re.search(r"Clé:\s*[`]?([^`\n]+)[`]?", msg)
-        if key_match:
-            key_to_kill = key_match.group(1).strip()
-            # On demande au sheet de mettre à jour
-            ok = await asyncio.to_thread(set_expired, key_to_kill)
-            if ok:
-                print(f"💀 Clé {key_to_kill} marquée comme EXPIRED (Signal reçu).")
-            else:
-                print(f"⚠️ Échec du marquage EXPIRED pour {key_to_kill} (clé introuvable ou erreur Sheet/Firestore).")
+        try:
+            key_match = re.search(r"Clé:\s*[`]?([^`\n]+)[`]?", msg)
+            if key_match:
+                key_to_kill = key_match.group(1).strip()
+                # On demande au sheet de mettre à jour
+                ok = await asyncio.to_thread(set_expired, key_to_kill)
+                if ok:
+                    print(f"💀 Clé {key_to_kill} marquée comme EXPIRED (Signal reçu).")
+                else:
+                    print(f"⚠️ Échec du marquage EXPIRED pour {key_to_kill} (clé introuvable ou erreur Sheet/Firestore).")
+        except Exception as e:
+            print(f"⚠️ Erreur traitement SIGNAL EXPIRATION: {e}")
 
     # H. Changer la version par défaut (/set_ver 7.2)
     elif msg.lower().startswith("/set_ver"):
@@ -1190,7 +1196,7 @@ async def main_handler(event):
                           "`/gen Pierre 30` : Clé 30 jours (tous canaux)\n"
                           "`/gen Pierre 30 sabr` : 30 jours, pack sabr\n"
                           "`/gen Pierre 30 SABR_VIP,PERSO` : canaux sur-mesure\n"
-                          "`/add Pierre Clé` : Ajout manuel\n\n\n"
+                          "`/add Pierre Clé [30]` : Ajout manuel (jours optionnels, illimité sinon)\n\n\n"
                           "📦 **PACK CANAUX (visibles : logs + dashboard)**\n\n"
                           "`/channels Clé profil|canaux` : change le pack à distance\n"
                           "`/channels Clé none` : suspend tous les canaux (pack vidé, pas \"tout débloqué\")\n"
@@ -1213,11 +1219,11 @@ async def main_handler(event):
                           "`/stats_users` : Nb actifs, bannis, expirés\n\n\n"
                           "📢 **AUTRE**\n\n"
                           "`/say Texte` : Faire une annonce\n"
-                          "`/time Clé *Valeur` : Modifier la durée\n"
-                          "*Valeur :\n"
+                          "`/time Clé Valeur` : Modifier la durée. Valeur :\n"
                           "     - nb jour a ajouter (30)\n"
                           "     - date fin (25/12/2025)\n"
-                          "     - 'unlimited' pour (illimité)\n\n\n"
+                          "     - 'unlimited' pour (illimité)\n"
+                          "`/time Clé Valeur force` : Idem, même si la clé est bannie\n\n\n"
                           "💬 **MAILBOX (canal feedback)**\n\n"
                           "`/vu 1234` : Marquer le ticket #1234 comme vu\n"
                           "`/corrige 1234` : Marquer le ticket #1234 comme corrigé\n"
