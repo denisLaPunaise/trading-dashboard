@@ -26,23 +26,26 @@ except Exception as e:
     _fb_db = None
     print(f"⚠️ Firebase non disponible (mode dégradé) : {e}")
 
-def fb_sync_license(key, user, status, ver_min="14.0.0", hwid="", date_fin="", allowed_channels=None):
+def fb_sync_license(key, user, status, ver_min=None, hwid=None, date_fin=None, allowed_channels=None):
     """Écrit/met à jour une licence dans Firestore /licenses/{key}.
 
-    allowed_channels : (#26) pack de canaux, source de vérité lue par le bot client au
-    check de licence (remplace le settings.json local, trafiquable). None = ne touche
-    pas au champ existant (merge=True) ; [] = tout débloqué."""
+    user/status : toujours écrits (obligatoires pour tous les appelants).
+    ver_min/hwid/date_fin/allowed_channels : None (défaut) = ne touche PAS au champ
+    existant -- avant ce fix, ver_min/hwid/date_fin avaient des défauts "vides" TOUJOURS
+    envoyés, donc /ban et /time (qui ne les passent pas) écrasaient silencieusement le
+    HWID enregistré et la version min à chaque appel. Passer explicitement "" pour
+    effacer un champ volontairement (ex: hwid="" à la création d'une clé neuve)."""
     if not FIREBASE_ENABLED or not _fb_db:
         return
     try:
         payload = {
             "user": user,
             "status": status,
-            "ver_min": ver_min,
-            "hwid": hwid,
-            "date_fin": date_fin,
             "updated_at": fb_firestore.SERVER_TIMESTAMP,
         }
+        if ver_min is not None: payload["ver_min"] = ver_min
+        if hwid is not None: payload["hwid"] = hwid
+        if date_fin is not None: payload["date_fin"] = date_fin
         if allowed_channels is not None:
             payload["allowed_channels"] = list(allowed_channels)
         _fb_db.collection("licenses").document(key).set(payload, merge=True)
