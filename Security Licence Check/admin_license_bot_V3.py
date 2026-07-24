@@ -177,16 +177,21 @@ if not hasattr(asyncio, 'to_thread'):
 # ⚙️ CONFIGURATION ADMIN
 # ==========================================
 
-# Identifiants Telegram — chargés depuis un fichier local NON commité (license_secrets.json)
+# Identifiants Telegram + token du bot de sécurité — chargés depuis un fichier local NON
+# commité (license_secrets.json, à côté de ce script sur le VPS). Ainsi une modif du code
+# (par Claude ou toi) n'efface jamais ces valeurs : plus besoin de les recopier à chaque
+# relance, le fichier reste intact tant que tu n'y touches pas.
 API_ID = 0
 API_HASH = ""
+SECURITY_BOT_TOKEN = ""
 try:
     with open("license_secrets.json", "r", encoding="utf-8") as _sf:
         _secrets = json.load(_sf)
     API_ID = int(_secrets.get("API_ID", 0))
     API_HASH = _secrets.get("API_HASH", "")
+    SECURITY_BOT_TOKEN = _secrets.get("SECURITY_BOT_TOKEN", "")
 except Exception as _e:
-    print(f"ATTENTION: license_secrets.json introuvable ou invalide ({_e}). Cree-le avec API_ID + API_HASH.")
+    print(f"ATTENTION: license_secrets.json introuvable ou invalide ({_e}). Cree-le avec API_ID + API_HASH + SECURITY_BOT_TOKEN.")
 
 # Le nom EXACT de ton Google Sheet (celui affiché en haut de la page)
 SHEET_NAME = "FTMO_BOT_LICENSES" # <--- METS LE VRAI NOM ICI
@@ -197,13 +202,11 @@ SECURITY_CHANNEL_ID = -1003872071233
 # (#29) ID du canal dédié à la mailbox retour client (bugs/suggestions).
 FEEDBACK_CHANNEL_ID = -1004458498840
 
-# Token du bot de sécurité — UNIQUEMENT sur le VPS, jamais dans l'exe distribué.
-# À remplir avec le NOUVEAU token (après révocation de l'ancien via BotFather).
-# Réutilisé par le relais feedback (#29) -- ce bot doit aussi être admin du canal
-# FEEDBACK_CHANNEL_ID, en plus de SECURITY_CHANNEL_ID.
-SECURITY_BOT_TOKEN = ""
+# (SECURITY_BOT_TOKEN est maintenant chargé depuis license_secrets.json, cf. plus haut --
+# UNIQUEMENT sur le VPS, jamais dans l'exe distribué. Réutilisé par le relais feedback (#29)
+# -- ce bot doit aussi être admin du canal FEEDBACK_CHANNEL_ID, en plus de SECURITY_CHANNEL_ID.)
 
-# MAPPAGE DES COLONNES 
+# MAPPAGE DES COLONNES
 COL_USER = 1       # A: Nom du client
 COL_KEY = 2        # B: La clé de licence
 COL_STATUS = 3     # C: ACTIVE / BANNED
