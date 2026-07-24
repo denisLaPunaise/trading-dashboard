@@ -1957,6 +1957,15 @@ def distribute_lots(total_vol, n_orders):
     return lots
 
 async def execute_trade(symbol, action, sl, tp, price_signal, message_date, channel_source, custom_lot_modifier=1.0, tp1_price=None):
+    # (#32) Verrou de pack centralisé : execute_trade() est le SEUL point d'entrée vers un vrai
+    # ordre MT5, quel que soit l'appelant (main_handler, edit_handler, /reactivate, UPDATE_SL...).
+    # Avant, ce check n'existait que dans main_handler -- edit_handler (signal "blind" complété
+    # par une édition de message) et /reactivate (rejoue un signal déjà en mémoire) pouvaient
+    # donc faire exécuter un trade hors pack payé ou sur un canal mute en contournant main_handler.
+    if any(m in channel_source for m in MUTED_CHANNELS) or any(m in channel_source for m in PACK_LOCKED_CHANNELS):
+        logger.warning(f"🚫 TRADE BLOQUÉ (execute_trade) : canal {channel_source} mute ou hors pack.")
+        return None
+
     # -----------------------------------------------------------
     # 🛠️ GESTION SPECIALE: MISE A JOUR SL SABR
     # -----------------------------------------------------------
@@ -3428,25 +3437,28 @@ async def monitor_positions():
                         new_sl_price = round(new_sl_price / info_sl.point) * info_sl.point
                         
                         # 🛡️ LE BOUCLIER ANTI-SPAM MT5 (Évite la boucle infinie)
+                        # (#31) req n'existe QUE dans ce bloc -- l'envoi de l'ordre doit rester
+                        # dedans, sinon on utilise un `req` non défini (NameError) ou périmé
+                        # (mauvais ticket/SL d'une itération précédente).
                         if abs(new_sl_price - pos.sl) > (info_sl.point / 2):
                             req = {"action": mt5.TRADE_ACTION_SLTP, "symbol": sym, "position": pos.ticket, "sl": new_sl_price, "tp": pos.tp}
-                        
-                        # --- CORRECTION CRITIQUE SL ---
-                        # On utilise la fonction de retry _send_order_blocking pour être SÛR que le SL bouge
-                        # même si le réseau est instable
-                        res = await run_bg(_send_order_blocking, req)
 
-                        if res is None:
-                            logger.warning(f"⚠️ MT5 Timeout (SL) sur ticket {pos.ticket}")
-                            # Pas de continue ici, on laisse la boucle tourner pour les autres trades
-    
-                        elif res.retcode == mt5.TRADE_RETCODE_DONE:
-                            log(f"🛡️ SL DÉPLACÉ: {sym} -> {new_sl_price} ({sl_reason})", important=True)
-                            if "Palier" in sl_reason or "Secu BE" in sl_reason: 
-                                await send_channel_alert(f"🛡️ **SL SÉCURISÉ** ({sym})\n\n"
-                                                 f"Symbole: {sym} ({open_time})\n"
-                                                 f"Source: {src_clean}\n"
-                                                 f"Niveau : {sl_reason}", src_trade)
+                            # --- CORRECTION CRITIQUE SL ---
+                            # On utilise la fonction de retry _send_order_blocking pour être SÛR que le SL bouge
+                            # même si le réseau est instable
+                            res = await run_bg(_send_order_blocking, req)
+
+                            if res is None:
+                                logger.warning(f"⚠️ MT5 Timeout (SL) sur ticket {pos.ticket}")
+                                # Pas de continue ici, on laisse la boucle tourner pour les autres trades
+
+                            elif res.retcode == mt5.TRADE_RETCODE_DONE:
+                                log(f"🛡️ SL DÉPLACÉ: {sym} -> {new_sl_price} ({sl_reason})", important=True)
+                                if "Palier" in sl_reason or "Secu BE" in sl_reason:
+                                    await send_channel_alert(f"🛡️ **SL SÉCURISÉ** ({sym})\n\n"
+                                                     f"Symbole: {sym} ({open_time})\n"
+                                                     f"Source: {src_clean}\n"
+                                                     f"Niveau : {sl_reason}", src_trade)
 
                 # --- (#26) GESTION SABR VIP/Free/Copie : BE + 60% à 100p, +10% à 150p ---
                 # (remplace l'ancien systeme TP1@100/25%, BE@150, trailing@200, cascade@250+)
