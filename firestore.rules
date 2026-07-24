@@ -43,9 +43,24 @@ service cloud.firestore {
       }
 
       // Commandes : dashboard ou bot
+      // (#36) Le dashboard ne peut CRÉER que des types qu'il écrit réellement (cf. App.jsx) --
+      // sans cette liste blanche, rien n'empêchait un client de se déposer lui-même une
+      // commande "set_allowed_channels" (réservée au bot de licence via l'Admin SDK) et de
+      // s'auto-attribuer un pack complet sans payer. update/delete restent réservés au bot
+      // (licenseOwns) : le dashboard ne fait que créer une commande puis lire son statut.
       match /commands/{cmdId} {
-        allow read, write: if request.auth != null
+        allow read: if request.auth != null
           && (request.auth.uid == userId || licenseOwns(userId));
+        allow create: if request.auth != null
+          && (
+            licenseOwns(userId)
+            || (
+              request.auth.uid == userId
+              && request.resource.data.type in
+                 ['request_stats', 'update_setting', 'close_trade', 'be_trade', 'suivre', 'panic', 'kill', 'unlock']
+            )
+          );
+        allow update, delete: if request.auth != null && licenseOwns(userId);
       }
     }
 
