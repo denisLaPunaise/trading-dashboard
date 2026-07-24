@@ -4958,6 +4958,8 @@ async def main():
     asyncio.create_task(monitor_positions())
     asyncio.create_task(license_watchdog())
     asyncio.create_task(safety_net_scanner())
+    asyncio.create_task(heartbeat_monitor())  # (#35) oublié -- sans lui, alive.txt n'est jamais
+    # réécrit et le watchdog ne peut jamais détecter un gel du worker.
 
     # ─── Firebase : initialisation ───
     if FIREBASE_EMAIL and FIREBASE_PASSWORD:
