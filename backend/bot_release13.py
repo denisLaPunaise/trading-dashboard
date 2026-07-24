@@ -48,9 +48,11 @@ logging.getLogger('telethon').setLevel(logging.WARNING)
 # En mode "dev" seulement : on affiche aussi les logs bruts dans la console. En mode
 # "client", la console reste épurée (logo + statut via client_status()) -- rien n'est
 # perdu pour autant, tout continue d'être écrit dans kairos.log.
+# (#45) console_handler est toujours créé (objet existe dans les deux modes) mais seulement
+# ATTACHÉ en mode dev -- permet à /display_mode de basculer à chaud sans redémarrage.
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(log_formatter)
 if DISPLAY_MODE == "dev":
-    console_handler = logging.StreamHandler()
-    console_handler.setFormatter(log_formatter)
     logger.addHandler(console_handler)
 
 
@@ -4116,6 +4118,36 @@ async def admin_commands(event):
         
         await event.reply(msg)
 
+    # (#45) Bascule DISPLAY_MODE à chaud, sans redémarrage -- persisté dans settings.json.
+    elif text.startswith("/display_mode"):
+        global DISPLAY_MODE
+        parts = text.split()
+        if len(parts) < 2 or parts[1] not in ("dev", "client"):
+            await event.reply(f"ℹ️ Mode actuel : **{DISPLAY_MODE}**\nUsage: `/display_mode dev` ou `/display_mode client`")
+            return
+        new_mode = parts[1]
+        if new_mode == DISPLAY_MODE:
+            await event.reply(f"ℹ️ Déjà en mode **{new_mode}**.")
+            return
+        DISPLAY_MODE = new_mode
+        if new_mode == "dev":
+            if console_handler not in logger.handlers:
+                logger.addHandler(console_handler)
+        elif console_handler in logger.handlers:
+            logger.removeHandler(console_handler)
+        try:
+            with SETTINGS_LOCK:
+                _s = {}
+                if os.path.exists(SETTINGS_FILENAME):
+                    with open(SETTINGS_FILENAME, "r", encoding="utf-8") as f:
+                        _s = json.load(f)
+                _s["DISPLAY_MODE"] = new_mode
+                with open(SETTINGS_FILENAME, "w", encoding="utf-8") as f:
+                    json.dump(_s, f, indent=4)
+        except Exception as e:
+            logger.error(f"Erreur sauvegarde DISPLAY_MODE: {e}")
+        await event.reply(f"✅ Mode console : **{new_mode}** ({'détaillée' if new_mode == 'dev' else 'épurée'})")
+
 # --- 17. AIDE ---
     elif text == "/help":
         # (#25) Section RISQUES filtrée par pack : chaque ligne liée à un canal précis
@@ -4139,6 +4171,7 @@ async def admin_commands(event):
                "**📌 GÉNÉRALES :**\n\n"
                "`/info` : Bilan compte\n"
                "`/stats` | `/canal_stats` : Rapports\n"
+               "`/display_mode dev|client` : Console détaillée ou épurée, à chaud\n"
                "`/suivi 12345` : Activer suivi manuel\n"
                "`/unlock` : Débloquer après DD\n"
                "`/kill` : Stop Bot (Urgence)\n"

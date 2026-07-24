@@ -575,6 +575,24 @@ def ban_license(key):
         return True, "Licence BANNIE."
     except Exception as e: return False, str(e)
 
+def unban_license(key):
+    """(#45) Débannit sans toucher à la date d'expiration -- contrairement à /time, qui
+    réactive aussi mais force une nouvelle durée. Ne fait rien si la clé n'est pas bannie."""
+    try:
+        sheet = get_sheet()
+        cell = sheet.find(key)
+        if not cell: return False, "Clé introuvable."
+        current_status = sheet.cell(cell.row, COL_STATUS).value or ""
+        if current_status != "BANNED":
+            return False, f"Cette clé n'est pas bannie (statut actuel : {current_status})."
+        current_user = sheet.cell(cell.row, COL_USER).value or ""
+        sheet.update_cell(cell.row, COL_STATUS, "ACTIVE")
+        fb_sync_license(key, current_user, "ACTIVE")
+        fb_enable_firebase_user(key)
+        fb_enable_dashboard(key)
+        return True, "Licence débannie (ACTIVE)."
+    except Exception as e: return False, str(e)
+
 def get_license_info(key):
     try:
         sheet = get_sheet()
@@ -676,10 +694,21 @@ def set_expired(key):
 # ==========================================
 client_tg = TelegramClient('admin_session', API_ID, API_HASH)
 
+def audit_log(sender_id, text):
+    """(#45) Journal simple des commandes admin traitées -- qui a tapé quoi, quand."""
+    try:
+        with open("admin_audit.log", "a", encoding="utf-8") as f:
+            f.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | {sender_id} | {text}\n")
+    except Exception as e:
+        print(f"⚠️ audit_log: {e}")
+
+
 @client_tg.on(events.NewMessage(chats=[SECURITY_CHANNEL_ID, FEEDBACK_CHANNEL_ID], incoming=True))  # (#29) /vu depuis le canal feedback ; (#42) incoming=True -- évite que le bot retraite ses propres réponses
 async def main_handler(event):
     msg = event.raw_text.strip()
-    
+    if msg.startswith("/"):
+        audit_log(event.sender_id, msg)
+
     # --- 1. DETECTION CONNEXION AUTOMATIQUE ---
     if "CONNEXION RÉUSSIE" in msg:
         try:
@@ -1018,9 +1047,13 @@ async def main_handler(event):
         try:
             parts = msg.split()
             if len(parts) < 2:
-                await event.reply("❌ Usage: `/del Clé`")
+                await event.reply("❌ Usage: `/del Clé confirm` (confirmation requise, suppression définitive)")
                 return
             key = parts[1]
+            # (#45) Suppression définitive et irréversible -- exige une confirmation explicite.
+            if len(parts) < 3 or parts[2].lower() != "confirm":
+                await event.reply(f"⚠️ Tape `/del {key} confirm` pour confirmer la suppression DÉFINITIVE.")
+                return
             success, res = await asyncio.to_thread(delete_license_row, key)
             if success: await event.reply(f"🗑️ Supprimé: `{key}`")
             else: await event.reply(f"❌ {res}")
@@ -1031,12 +1064,33 @@ async def main_handler(event):
         try:
             parts = msg.split()
             if len(parts) < 2:
-                await event.reply("❌ Usage: `/ban Clé`")
+                await event.reply("❌ Usage: `/ban Clé confirm` (confirmation requise, action destructrice)")
                 return
             key = parts[1]
+            # (#45) Confirmation explicite exigée pour une action destructrice -- évite un ban
+            # accidentel sur une faute de frappe/mix-up de clé.
+            if len(parts) < 3 or parts[2].lower() != "confirm":
+                await event.reply(f"⚠️ Tape `/ban {key} confirm` pour confirmer le bannissement.")
+                return
             success, res = await asyncio.to_thread(ban_license, key)
             if success:
                 await event.reply(f"🚫 Banni: `{key}`")
+            else:
+                await event.reply(f"❌ {res}")
+        except Exception as e:
+            await event.reply(f"❌ Crash: {e}")
+
+    # E-bis. (#45) Débannir sans toucher à la date (contrairement à /time)
+    elif msg.lower().startswith("/unban"):
+        try:
+            parts = msg.split()
+            if len(parts) < 2:
+                await event.reply("❌ Usage: `/unban Clé`")
+                return
+            key = parts[1]
+            success, res = await asyncio.to_thread(unban_license, key)
+            if success:
+                await event.reply(f"✅ `{key}` : {res}")
             else:
                 await event.reply(f"❌ {res}")
         except Exception as e:
@@ -1159,9 +1213,18 @@ async def main_handler(event):
     # K. Mise à jour de version massive
     elif msg.lower().startswith("/push_ver"):
         try:
-            new_ver = msg.split()[1]
+            parts = msg.split()
+            if len(parts) < 2:
+                await event.reply("❌ Usage: `/push_ver VersionX confirm`")
+                return
+            new_ver = parts[1]
+            # (#45) Action groupée irréversible (touche TOUS les clients actifs) -- confirmation
+            # explicite exigée, comme /ban et /del.
+            if len(parts) < 3 or parts[2].lower() != "confirm":
+                await event.reply(f"⚠️ Tape `/push_ver {new_ver} confirm` pour confirmer -- passe TOUS les clients ACTIFS en version {new_ver}.")
+                return
             await event.reply(f"⚠️ **ATTENTION** : Je vais passer tous les clients ACTIFS en version **{new_ver}**.\nCela peut prendre du temps...")
-            
+
             sheet = await asyncio.to_thread(get_sheet)
             all_rows = await asyncio.to_thread(sheet.get_all_values)
 
@@ -1210,10 +1273,11 @@ async def main_handler(event):
                           "`/fbcreate Clé` : Créer compte Firebase (clé existante, sans effet si déjà provisionné)\n"
                           "`/fbcreate Clé force` : Régénère le mot de passe d'un compte existant (⚠️ casse le settings.json déjà distribué)\n"
                           "`/reset Clé` : Changer de PC\n"
-                          "`/ban Clé` : Bloquer accès\n"
-                          "`/del Clé` : Supprimer ligne\n"
-                          "`/set_ver Version` : Changer version min\n"
-                          "`/push_ver VersionX` : Forcer les clients en VersionX\n"
+                          "`/ban Clé confirm` : Bloquer accès (confirmation requise)\n"
+                          "`/unban Clé` : Réactive sans toucher à la date (contrairement à /time)\n"
+                          "`/del Clé confirm` : Supprimer ligne (⚠️ définitif, confirmation requise)\n"
+                          "`/set_ver Version` : Changer version min par défaut (prochaines clés /gen)\n"
+                          "`/push_ver VersionX confirm` : Forcer TOUS les clients actifs en VersionX (confirmation requise)\n"
                           "`/search Terme` : Recherche terme dans licences\n\n\n"
                           "📊 **STATISTIQUES**\n\n"
                           "`/stats_users` : Nb actifs, bannis, expirés\n\n\n"
