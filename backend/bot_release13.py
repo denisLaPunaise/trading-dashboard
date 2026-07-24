@@ -1125,7 +1125,9 @@ def load_settings():
 
     if os.path.exists(SETTINGS_FILENAME):
         try:
-            with open(SETTINGS_FILENAME, "r") as f:
+            # (#43) save_settings() écrit toujours sous SETTINGS_LOCK -- la lecture doit
+            # utiliser le même verrou pour éviter de lire un fichier à moitié écrit.
+            with SETTINGS_LOCK, open(SETTINGS_FILENAME, "r") as f:
                 data = json.load(f)
                 
                 # On met à jour les variables globales si elles existent dans le fichier
@@ -3682,7 +3684,9 @@ async def admin_commands(event):
         risk_i = round(RISK_PERCENT_INDICES * 100, 2)
 
         def fmt_ch(val, ch_name, is_lot=False):
-            if ch_name in MUTED_CHANNELS:
+            # (#43) masque aussi les canaux verrouillés par pack, pas seulement mutés --
+            # cohérent avec /help qui filtre déjà via channel_allowed().
+            if ch_name in MUTED_CHANNELS or not channel_allowed(ch_name):
                 return "🔇"
             if is_lot:
                 return f"{val} lot"
@@ -4087,6 +4091,9 @@ async def admin_commands(event):
         
         # On parcourt chaque canal enregistré
         for chan, data in CHANNEL_STATS.items():
+            # (#43) masque les canaux hors pack, cohérent avec /help et /status
+            if not channel_allowed(chan):
+                continue
             cnt = data["count"]
             prof = data["profit"]
             pips_total = data["pips"]
@@ -4128,7 +4135,7 @@ async def admin_commands(event):
         ]
         risk_txt = "\n".join(line for ch, line in risk_lines if ch is None or channel_allowed(ch))
 
-        msg = ("**🤖 MENU COMMANDES V11.1**\n\n\n"
+        msg = (f"**🤖 MENU COMMANDES v{VERSION_BOT}**\n\n\n"
                "**📌 GÉNÉRALES :**\n\n"
                "`/info` : Bilan compte\n"
                "`/stats` | `/canal_stats` : Rapports\n"
