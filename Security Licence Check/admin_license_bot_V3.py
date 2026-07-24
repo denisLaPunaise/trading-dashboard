@@ -850,6 +850,41 @@ async def main_handler(event):
         except Exception as e:
             await event.reply(f"❌ Crash: {e}")
 
+    # (#32) Liste tous les tickets mailbox pas encore corrigés (statut != 'corrige'),
+    # triés par numéro de ticket -- vue de triage rapide dans le canal support.
+    elif msg.lower().strip() == "/message":
+        try:
+            def _fetch_all():
+                return [d.to_dict() for d in _fb_db.collection("feedback").stream()]
+
+            all_fb = await asyncio.to_thread(_fetch_all)
+            pending = [f for f in all_fb if f.get("status") != "corrige"]
+
+            if not pending:
+                await event.reply("✅ Aucun message en attente — tout est corrigé.")
+                return
+
+            pending.sort(key=lambda f: f.get("ticket") or 0)
+            type_icons = {"bug": "🐛", "suggestion": "💡", "autre": "💬"}
+            status_labels = {"nouveau": "Envoyé", "lu": "Vu"}
+
+            lines = [f"📋 **MESSAGES NON CORRIGÉS** ({len(pending)})\n"]
+            for f in pending:
+                icon = type_icons.get(f.get("type", "autre"), "💬")
+                ticket = f.get("ticket")
+                ticket_txt = f"#{ticket}" if ticket else "(en attente)"
+                status_txt = status_labels.get(f.get("status"), f.get("status", "?"))
+                user = f.get("user_uid", "Inconnu")
+                message = (f.get("message") or "")[:150]
+                lines.append(f"{icon} {ticket_txt} [{status_txt}] — {user}\n{message}\n")
+
+            full_msg = "\n".join(lines)
+            if len(full_msg) > 3800:  # Sécurité limite Telegram (4096)
+                full_msg = full_msg[:3800] + "\n… (tronqué -- corrige certains tickets pour voir le reste)"
+            await event.reply(full_msg)
+        except Exception as e:
+            await event.reply(f"❌ Crash: {e}")
+
     # B. Ajout Manuel (/add User Key [Jours])
     elif msg.lower().startswith("/add"):
         try:
@@ -1109,7 +1144,8 @@ async def main_handler(event):
                           "💬 **MAILBOX (canal feedback)**\n\n"
                           "`/vu 1234` : Marquer le ticket #1234 comme vu\n"
                           "`/corrige 1234` : Marquer le ticket #1234 comme corrigé\n"
-                          "`/rep 1234 Merci, corrigé !` : Répondre (visible sur son dashboard, sans changer le statut)")
+                          "`/rep 1234 Merci, corrigé !` : Répondre (visible sur son dashboard, sans changer le statut)\n"
+                          "`/message` : Lister tous les tickets pas encore corrigés")
 
 
 async def security_events_relay():
