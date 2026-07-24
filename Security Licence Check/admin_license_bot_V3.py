@@ -382,6 +382,16 @@ def generate_client_package(client_name: str, key: str, fb_email: str, fb_passwo
     return buf, filename, exe_included
 
 
+def escape_md(text):
+    """(#40) Échappe les caractères spéciaux Markdown (Telethon parse par défaut) avant
+    d'injecter du texte non fiable (message client) dans un event.reply() -- sinon un *,
+    _ ou ` dans un message client peut casser le formatage ou faire échouer l'envoi entier."""
+    text = str(text or "")
+    for ch in ('\\', '`', '*', '_', '['):
+        text = text.replace(ch, '\\' + ch)
+    return text
+
+
 def sheet_safe(value):
     """(#39) Préfixe d'une apostrophe toute valeur commençant par =/+/-/@ avant écriture dans
     la Sheet -- ces caractères sont interprétés comme le début d'une formule par Google Sheets.
@@ -608,19 +618,28 @@ def get_license_info(key):
         return True, info
     except Exception as e: return False, str(e)
 
-def update_license_time(key, value):
+def update_license_time(key, value, force=False):
     """
     Modifie la date ET réactive la licence.
     value peut être :
     - "30" (ajoute 30 jours à partir d'aujourd'hui)
     - "01/01/2026" (met cette date précise)
     - "unlimited" (efface la date)
+
+    (#40) Si la clé est actuellement BANNIE, refuse de la réactiver silencieusement --
+    une faute de frappe/mix-up sur la clé ne doit pas lever un ban par accident.
+    force=True pour réactiver volontairement une clé bannie.
     """
     try:
         sheet = get_sheet()
         cell = sheet.find(key)
         if not cell: return False, "Clé introuvable."
-        
+
+        current_status = sheet.cell(cell.row, COL_STATUS).value or ""
+        if current_status == "BANNED" and not force:
+            return False, (f"Cette clé est actuellement BANNIE. Utilise `/time {key} {value} force` "
+                            f"si tu veux VRAIMENT la réactiver.")
+
         new_date_str = ""
         
         # Cas 1 : Nombre de jours (ex: "30")
@@ -900,8 +919,8 @@ async def main_handler(event):
                 ticket = f.get("ticket")
                 ticket_txt = f"#{ticket}" if ticket else "(en attente)"
                 status_txt = status_labels.get(f.get("status"), f.get("status", "?"))
-                user = f.get("user_uid", "Inconnu")
-                message = (f.get("message") or "")[:150]
+                user = escape_md(f.get("user_uid", "Inconnu"))
+                message = escape_md((f.get("message") or "")[:150])
                 lines.append(f"{icon} {ticket_txt} [{status_txt}] — {user}\n{message}\n")
 
             full_msg = "\n".join(lines)
@@ -1031,9 +1050,10 @@ async def main_handler(event):
             
             key = parts[1]
             value = parts[2]
-            
+            force = len(parts) > 3 and parts[3].lower() == "force"
+
             await event.reply("⏳ Mise à jour...")
-            success, res = await asyncio.to_thread(update_license_time, key, value)
+            success, res = await asyncio.to_thread(update_license_time, key, value, force)
             
             if success:
                 await event.reply(f"✅ **MODIFIÉ & RÉACTIVÉ**\n\n🔑 Clé: `{key}`\n📅 Nouvelle fin: **{res}**\n🟢 Statut: ACTIVE")
@@ -1217,12 +1237,15 @@ async def security_events_relay():
     print("📡 Relais des événements de sécurité activé.")
     seen = set()
     while True:
+        fetched_count = 0
         try:
             def _fetch():
                 docs = _fb_db.collection("security_events").where(
                     filter=FieldFilter("relayed", "==", False)).limit(20).stream()
                 return [(d.id, d.to_dict()) for d in docs]
-            for doc_id, data in await asyncio.to_thread(_fetch):
+            batch = await asyncio.to_thread(_fetch)
+            fetched_count = len(batch)
+            for doc_id, data in batch:
                 if doc_id in seen:
                     continue
                 seen.add(doc_id)
@@ -1267,7 +1290,9 @@ async def security_events_relay():
         # (return False synchrone) -- ce relais ne sert qu'a notifier l'admin, pas a proteger.
         # 1h de delai ne laisse donc aucune fenetre de risque, et evite d'epuiser le quota
         # Firestore gratuit (5s -> ~17000 lectures/jour rien que pour cette boucle).
-        await asyncio.sleep(3600)
+        # (#40) Sauf juste apres une coupure : si le lot etait plein (20, la limite), il reste
+        # probablement un backlog -- on enchaine tout de suite au lieu d'attendre 1h par 20.
+        await asyncio.sleep(5 if fetched_count >= 20 else 3600)
 
 
 def _next_feedback_ticket():
