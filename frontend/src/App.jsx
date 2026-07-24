@@ -11,6 +11,14 @@ const commandExpiry = () => Timestamp.fromMillis(Date.now() + 3 * 24 * 60 * 60 *
 // (#16) day_factor_0..6 = Lundi..Dimanche
 const FULL_DAY_NAMES = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche']
 
+// (#31) Statuts mailbox : 'lu' (/vu) et 'corrige' (/corrige) sont mis à jour indépendamment
+// de la réponse (/rep) côté bot de licence -- cf. admin_license_bot_V3.py.
+const FEEDBACK_STATUS_BADGE = {
+  corrige: { label: 'Corrigé ✓', color: '#00e676', bg: 'rgba(0,230,118,0.1)' },
+  lu:      { label: 'Vu ✓',      color: '#64b5f6', bg: 'rgba(100,181,246,0.1)' },
+  default: { label: 'Envoyé',    color: '#ffb74d', bg: 'rgba(255,183,77,0.1)' },
+}
+
 // Extrait l'ID Telegram de l'utilisateur depuis initData (signé par Telegram)
 const getTelegramUserId = () => {
   try {
@@ -1444,10 +1452,10 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
                         </span>
                         <span style={{
                           fontSize: '0.75rem', fontWeight: 'bold', padding: '2px 8px', borderRadius: '10px',
-                          color: fb.status === 'lu' ? '#00e676' : '#ffb74d',
-                          background: fb.status === 'lu' ? 'rgba(0,230,118,0.1)' : 'rgba(255,183,77,0.1)',
+                          color: FEEDBACK_STATUS_BADGE[fb.status]?.color || FEEDBACK_STATUS_BADGE.default.color,
+                          background: FEEDBACK_STATUS_BADGE[fb.status]?.bg || FEEDBACK_STATUS_BADGE.default.bg,
                         }}>
-                          {fb.status === 'lu' ? 'Lu ✓' : 'Envoyé'}
+                          {FEEDBACK_STATUS_BADGE[fb.status]?.label || FEEDBACK_STATUS_BADGE.default.label}
                         </span>
                       </div>
                       <div style={{ fontSize: '0.85rem', color: '#ddd', whiteSpace: 'pre-wrap' }}>{fb.message}</div>

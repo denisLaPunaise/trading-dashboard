@@ -1,5 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 # V14.0.0 — Migration SaaS Firebase V2 (Auth email/password REST, pas d'Admin SDK côté client)
+# (#30) Renommé Bot_FTMO -> Kairos
 
 from PyInstaller.utils.hooks import collect_all
 
@@ -36,7 +37,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='Bot_FTMO_V14.0.0',
+    name='Kairos_V14.0.0',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

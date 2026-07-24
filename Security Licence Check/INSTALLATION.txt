@@ -1,0 +1,69 @@
+===============================================================
+   KAIROS — GUIDE D'INSTALLATION (5 minutes)
+===============================================================
+
+Ce dossier contient :
+  - Kairos_V14.0.0.exe   -> le programme
+  - settings.json        -> ta configuration (déjà pré-remplie avec ta clé)
+  - INSTALLATION.txt     -> ce guide
+
+---------------------------------------------------------------
+ÉTAPE 1 — Récupérer TELEGRAM_API_ID et TELEGRAM_API_HASH
+---------------------------------------------------------------
+1. Va sur https://my.telegram.org et connecte-toi avec ton numéro
+   de téléphone Telegram.
+2. Clique sur "API development tools".
+3. Remplis le petit formulaire (App title / Short name : ce que tu
+   veux, ex: "Kairos"). Valide.
+4. Tu obtiens deux valeurs :
+     - api_id    -> un nombre (ex: 1234567)
+     - api_hash  -> une suite de lettres/chiffres
+5. Ouvre settings.json (clic droit > Modifier / Ouvrir avec le
+   Bloc-notes) et remplis :
+     "TELEGRAM_API_ID": 1234567,
+     "TELEGRAM_API_HASH": "ton_hash_ici",
+
+---------------------------------------------------------------
+ÉTAPE 2 — Créer ton bot Telegram (BotFather)
+---------------------------------------------------------------
+1. Sur Telegram, cherche "BotFather" (compte officiel, coche bleue).
+2. Envoie-lui la commande : /newbot
+3. Donne un nom (ex: "Mon Bot Kairos") puis un identifiant qui doit
+   se terminer par "bot" (ex: "mon_kairos_bot").
+4. BotFather te donne un TOKEN qui ressemble à :
+     123456789:AAExxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+5. Colle-le dans settings.json :
+     "TELEGRAM_BOT_TOKEN": "123456789:AAExxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+
+---------------------------------------------------------------
+ÉTAPE 3 — Vérifier le chemin de MetaTrader 5
+---------------------------------------------------------------
+Dans settings.json, le champ "MT5_PATH" doit pointer vers ton
+terminal64.exe. Par défaut :
+     "MT5_PATH": "C:\\Program Files\\MetaTrader 5\\terminal64.exe"
+Si MT5 est installé ailleurs, corrige ce chemin (garde bien les \\
+doubles).
+
+Sauvegarde le fichier settings.json.
+
+---------------------------------------------------------------
+ÉTAPE 4 — Premier lancement
+---------------------------------------------------------------
+1. Assure-toi que MetaTrader 5 est ouvert et connecté à ton compte.
+2. Double-clique sur Kairos_V14.0.0.exe.
+3. Au tout premier lancement, Telethon (la librairie Telegram) va
+   te demander dans la console :
+     - ton numéro de téléphone (avec l'indicatif, ex: +33612345678)
+     - le code à 5 chiffres reçu sur ton app Telegram
+   (Le code s'affiche pendant que tu le tapes, c'est normal.)
+4. Une fois connecté, le programme t'affiche un code PIN et te
+   demande d'ouvrir ton bot sur Telegram et de lui envoyer :
+     /start <ton_code_PIN>
+5. C'est fait : le bot est appairé et se met en surveillance des
+   signaux.
+
+---------------------------------------------------------------
+BESOIN D'AIDE ?
+---------------------------------------------------------------
+Contacte l'administrateur avec ta clé de licence (visible dans
+settings.json, champ "USER_LICENSE_KEY") si tu rencontres un souci.

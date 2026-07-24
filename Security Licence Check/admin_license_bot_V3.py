@@ -221,8 +221,13 @@ COL_CONFIG_VER = 8 # H: Config Version min
 ROW_CONFIG_VER = 2 # Ligne Config Version min
 
 # ── Package client ────────────────────────────────────────────────────────────
+# (#30) Nom du produit distribué au client (exe, ZIP, textes) -- renommé depuis "Bot FTMO"
+PRODUCT_NAME = "Kairos"
+EXE_FILENAME = "Kairos_V14.0.0.exe"
 # Chemin vers le .exe compilé (à mettre à jour à chaque nouvelle version)
-BOT_EXE_PATH = os.path.join(os.path.dirname(__file__), "Bot_FTMO_V14.0.0.exe")
+BOT_EXE_PATH = os.path.join(os.path.dirname(__file__), EXE_FILENAME)
+# Fichier texte d'installation fourni dans chaque ZIP client (cf. generate_client_package)
+INSTALL_GUIDE_PATH = os.path.join(os.path.dirname(__file__), "INSTALLATION.txt")
 
 # ── (#7) Packs par client : canaux visibles (logs + dashboard) ─────────────────
 # Jeton tapé au /gen   ->   nom interne du canal
@@ -319,16 +324,23 @@ SETTINGS_TEMPLATE = {
     "CHANNEL_TP1_PCT": {},
     "TIME_PRIME_RANGES": [[8, 17]],
     "TIME_OFF_PEAK_FACTOR": 0.5,
-    "DAY_RISK_FACTORS": {"0": 1.0, "1": 1.0, "2": 1.0, "3": 1.0, "4": 1.0, "5": 1.0, "6": 1.0}
+    "DAY_RISK_FACTORS": {"0": 1.0, "1": 1.0, "2": 1.0, "3": 1.0, "4": 1.0, "5": 1.0, "6": 1.0},
+    # (#30) "dev" = console detaillee (reserve a l'admin) ; "client" = console epuree
+    # (logo + statut, tout continue d'etre journalise dans kairos.log).
+    "DISPLAY_MODE": "client",
 }
 
-def generate_client_package(client_name: str, key: str, fb_email: str, fb_password: str, allowed_channels=None) -> tuple:
+def generate_client_package(client_name: str, key: str, fb_email: str, fb_password: str,
+                             allowed_channels=None, is_dev: bool = False) -> tuple:
     """
     Génère un ZIP en mémoire contenant :
     - settings.json pré-rempli (clé + Firebase + valeurs par défaut)
-    - Bot_FTMO_V14.0.0.exe (si disponible sur le VPS)
+    - {EXE_FILENAME} (si disponible sur le VPS)
+    - INSTALLATION.txt (si présent à côté de ce script)
 
     allowed_channels : (#7) liste blanche des canaux visibles du client (vide = tous).
+    is_dev : (#30) True uniquement pour le profil 'dev' -- écrit DISPLAY_MODE="dev"
+    (console détaillée). Tous les autres packs reçoivent la console épurée par défaut.
 
     Retourne (zip_bytes: io.BytesIO, filename: str, exe_included: bool)
     """
@@ -337,6 +349,7 @@ def generate_client_package(client_name: str, key: str, fb_email: str, fb_passwo
     settings["FIREBASE_EMAIL"]   = fb_email or ""
     settings["FIREBASE_PASSWORD"] = fb_password or ""
     settings["ALLOWED_CHANNELS"] = list(allowed_channels or [])
+    settings["DISPLAY_MODE"] = "dev" if is_dev else "client"
 
     settings_bytes = json.dumps(settings, indent=4, ensure_ascii=False).encode("utf-8")
 
@@ -345,12 +358,15 @@ def generate_client_package(client_name: str, key: str, fb_email: str, fb_passwo
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("settings.json", settings_bytes)
         if os.path.isfile(BOT_EXE_PATH):
-            zf.write(BOT_EXE_PATH, arcname="Bot_FTMO_V14.0.0.exe")
+            zf.write(BOT_EXE_PATH, arcname=EXE_FILENAME)
             exe_included = True
+        if os.path.isfile(INSTALL_GUIDE_PATH):
+            zf.write(INSTALL_GUIDE_PATH, arcname="INSTALLATION.txt")
+
     buf.seek(0)
 
     safe_name = re.sub(r"[^a-zA-Z0-9_-]", "", client_name) or "client"
-    filename = f"FTMO_Bot_{safe_name}.zip"
+    filename = f"{PRODUCT_NAME}_{safe_name}.zip"
     buf.name = filename  # Telethon utilise .name pour nommer un fichier en mémoire
     return buf, filename, exe_included
 
@@ -702,16 +718,19 @@ async def main_handler(event):
 
             if success:
                 # Génération du ZIP
-                zip_buf, zip_name, exe_included = generate_client_package(user, new_key, fb_email, fb_password, allowed_channels=allowed)
+                zip_buf, zip_name, exe_included = generate_client_package(
+                    user, new_key, fb_email, fb_password, allowed_channels=allowed, is_dev=is_dev)
 
                 recap = (f"✅ **PACKAGE CLIENT GÉNÉRÉ**\n"
                          f"👤 Client : {user}\n"
                          f"🔑 Clé : `{new_key}`\n"
                          f"📦 Pack (canaux visibles) : {pack_txt}\n"
+                         f"🖥️ Console : {'détaillée (dev)' if is_dev else 'épurée (client)'}\n"
                          f"📝 {info}\n\n"
                          f"📦 Le ZIP contient :\n"
                          f"  • `settings.json` pré-rempli\n"
-                         f"{'  • `Bot_FTMO_V14.0.0.exe`' if exe_included else '  ⚠️ exe absent du VPS (ajouter `Bot_FTMO_V14.0.0.exe` à côté du bot)'}\n\n"
+                         f"{'  • `' + EXE_FILENAME + '`' if exe_included else '  ⚠️ exe absent du VPS (ajouter `' + EXE_FILENAME + '` à côté du bot)'}\n"
+                         f"  • `INSTALLATION.txt`\n\n"
                          f"📋 **Ce que le client doit remplir dans settings.json :**\n"
                          f"  • `TELEGRAM_API_ID` et `TELEGRAM_API_HASH` → my.telegram.org\n"
                          f"  • `TELEGRAM_BOT_TOKEN` → BotFather `/newbot`")
@@ -781,35 +800,53 @@ async def main_handler(event):
 
     # (#29) Marquer un feedback comme lu, avec réponse optionnelle -- visible sur le
     # dashboard du client (jamais renvoyée en DM Telegram, décidé par l'utilisateur).
-    elif msg.lower().startswith("/vu"):
+    elif msg.lower().startswith("/vu") or msg.lower().startswith("/corrige") or msg.lower().startswith("/rep"):
         try:
             from google.cloud.firestore_v1.base_query import FieldFilter
-            parts = msg.split(maxsplit=2)  # ["/vu", "<ticket>", "<reponse libre>"] -- préserve les espaces de la réponse
-            if len(parts) < 2 or not parts[1].isdigit():
-                await event.reply("❌ Usage: `/vu <numero_ticket> [reponse]`")
-                return
-            ticket_num = int(parts[1])
-            reponse = parts[2] if len(parts) > 2 else None
 
-            def _find():
+            def _find_feedback(ticket_num):
                 docs = list(_fb_db.collection("feedback").where(
                     filter=FieldFilter("ticket", "==", ticket_num)).limit(1).stream())
                 return docs[0] if docs else None
 
-            doc = await asyncio.to_thread(_find)
+            # (#31) 3 commandes independantes -- avant, /vu faisait a la fois le statut ET
+            # la reponse en un seul appel. Desormais statut (/vu, /corrige) et reponse (/rep)
+            # sont decouples, combinables dans n'importe quel ordre.
+            if msg.lower().startswith("/rep"):
+                parts = msg.split(maxsplit=2)  # ["/rep", "<ticket>", "<message libre>"]
+                if len(parts) < 3 or not parts[1].isdigit():
+                    await event.reply("❌ Usage: `/rep <numero_ticket> <message>`")
+                    return
+                ticket_num = int(parts[1])
+                reponse = parts[2]
+
+                doc = await asyncio.to_thread(_find_feedback, ticket_num)
+                if not doc:
+                    await event.reply(f"❌ Ticket #{ticket_num} introuvable.")
+                    return
+
+                await asyncio.to_thread(lambda: doc.reference.update({"reply": reponse}))
+                await event.reply(f"✅ Réponse enregistrée sur le ticket #{ticket_num} (visible sur son dashboard).")
+                return
+
+            # /vu ou /corrige : change uniquement le statut
+            new_status = "lu" if msg.lower().startswith("/vu") else "corrige"
+            cmd_name = "/vu" if new_status == "lu" else "/corrige"
+            label = "vu" if new_status == "lu" else "corrigé"
+
+            parts = msg.split()
+            if len(parts) < 2 or not parts[1].isdigit():
+                await event.reply(f"❌ Usage: `{cmd_name} <numero_ticket>`")
+                return
+            ticket_num = int(parts[1])
+
+            doc = await asyncio.to_thread(_find_feedback, ticket_num)
             if not doc:
                 await event.reply(f"❌ Ticket #{ticket_num} introuvable.")
                 return
 
-            update = {"status": "lu"}
-            if reponse:
-                update["reply"] = reponse
-            await asyncio.to_thread(lambda: doc.reference.update(update))
-
-            if reponse:
-                await event.reply(f"✅ Ticket #{ticket_num} marqué lu, réponse enregistrée (visible sur son dashboard).")
-            else:
-                await event.reply(f"✅ Ticket #{ticket_num} marqué lu.")
+            await asyncio.to_thread(lambda: doc.reference.update({"status": new_status}))
+            await event.reply(f"✅ Ticket #{ticket_num} marqué {label}.")
         except Exception as e:
             await event.reply(f"❌ Crash: {e}")
 
@@ -1070,8 +1107,9 @@ async def main_handler(event):
                           "     - date fin (25/12/2025)\n"
                           "     - 'unlimited' pour (illimité)\n\n\n"
                           "💬 **MAILBOX (canal feedback)**\n\n"
-                          "`/vu 1234` : Marquer le ticket #1234 comme lu\n"
-                          "`/vu 1234 Merci, corrigé !` : Marquer lu + répondre (visible sur son dashboard)")
+                          "`/vu 1234` : Marquer le ticket #1234 comme vu\n"
+                          "`/corrige 1234` : Marquer le ticket #1234 comme corrigé\n"
+                          "`/rep 1234 Merci, corrigé !` : Répondre (visible sur son dashboard, sans changer le statut)")
 
 
 async def security_events_relay():

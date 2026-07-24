@@ -19,15 +19,25 @@ import threading
 import firebase_sync
 
 # --- LE VIDEUR POUR LE FICHIER SETTINGS ---
-SETTINGS_LOCK = threading.Lock() 
+SETTINGS_LOCK = threading.Lock()
 
 from pydantic import BaseModel
 
 from telethon.tl.types import KeyboardButtonWebView
 
+# --- (#30) MODE D'AFFICHAGE : "dev" = logs complets en console (comme avant),
+# "client" (défaut) = console épurée (logo + statut), logs complets toujours écrits
+# dans kairos.log pour le support. Lu tôt, avant la config du logging ci-dessous.
+DISPLAY_MODE = "client"
+try:
+    with open("settings.json", "r", encoding="utf-8") as _dm_f:
+        DISPLAY_MODE = json.load(_dm_f).get("DISPLAY_MODE", "client")
+except Exception:
+    pass
+
 # Configuration du Logging (Fichiers max de 5Mo, on en garde 3 au maximum)
 log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
-log_handler = RotatingFileHandler("bot_ftmo.log", maxBytes=5*1024*1024, backupCount=3, encoding='utf-8')
+log_handler = RotatingFileHandler("kairos.log", maxBytes=5*1024*1024, backupCount=3, encoding='utf-8')
 log_handler.setFormatter(log_formatter)
 
 logger = logging.getLogger()
@@ -35,10 +45,35 @@ logger.setLevel(logging.INFO)
 logger.addHandler(log_handler)
 logging.getLogger('telethon').setLevel(logging.WARNING)
 
-# On ajoute aussi l'affichage dans la console pour que tu vois toujours ce qu'il se passe
-console_handler = logging.StreamHandler()
-console_handler.setFormatter(log_formatter)
-logger.addHandler(console_handler)
+# En mode "dev" seulement : on affiche aussi les logs bruts dans la console. En mode
+# "client", la console reste épurée (logo + statut via client_status()) -- rien n'est
+# perdu pour autant, tout continue d'être écrit dans kairos.log.
+if DISPLAY_MODE == "dev":
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(log_formatter)
+    logger.addHandler(console_handler)
+
+
+def client_status(msg):
+    """Affiche un message epure dans la console -- uniquement en mode "client" (le mode
+    "dev" voit deja l'equivalent, en detaille, via le logger+console_handler ci-dessus)."""
+    if DISPLAY_MODE != "dev":
+        print(msg)
+
+
+def print_kairos_logo():
+    W = 45
+    def _l(txt=""):
+        print("║" + txt.center(W) + "║")
+    print()
+    print("╔" + "═" * W + "╗")
+    _l()
+    _l("K A I R O S")
+    _l("─" * 11)
+    _l(f"Trading Automation Engine — v{VERSION_BOT}")
+    _l()
+    print("╚" + "═" * W + "╝")
+    print()
 
 async def run_bg(func, *args, **kwargs):
     """Wrapper magique pour rendre MT5 non-bloquant"""
@@ -47,10 +82,11 @@ async def run_bg(func, *args, **kwargs):
 
 try:
     import numpy
-    print("--------------------------------------------------")
-    print(f"🕵️ DIAGNOSTIC - VERSION NUMPY: {numpy.__version__}")
-    print(f"🕵️ DIAGNOSTIC - DOSSIER NUMPY: {numpy.__file__}")
-    print("--------------------------------------------------")
+    if DISPLAY_MODE == "dev":
+        print("--------------------------------------------------")
+        print(f"🕵️ DIAGNOSTIC - VERSION NUMPY: {numpy.__version__}")
+        print(f"🕵️ DIAGNOSTIC - DOSSIER NUMPY: {numpy.__file__}")
+        print("--------------------------------------------------")
 except Exception as e:
     logger.critical(f"💀 ERREUR CRITIQUE CHARGEMENT NUMPY: {e}")
 import aiohttp
@@ -97,6 +133,7 @@ if os.path.exists("settings.json"):
 
 # Vérification de sécurité avant de lancer Telegram (Assistant de Première Connexion)
 if API_ID == 0 or API_HASH == "" or BOT_TOKEN == "" or API_HASH == "A_REMPLIR_PAR_LE_CLIENT":
+    print_kairos_logo()
     print("\n" + "█"*75)
     print(" 🛑 PREMIÈRE CONNEXION : CONFIGURATION REQUISE ".center(73, "█"))
     print("█"*75 + "\n")
@@ -107,8 +144,8 @@ if API_ID == 0 or API_HASH == "" or BOT_TOKEN == "" or API_HASH == "A_REMPLIR_PA
     print("      - TELEGRAM_API_ID    (Vos chiffres, SANS guillemets)")
     print("      - TELEGRAM_API_HASH  (Vos lettres/chiffres, ENTRE guillemets)")
     print("      - TELEGRAM_BOT_TOKEN (Votre token BotFather, ENTRE guillemets)\n")
-    print(" 💡 Lisez le fichier texte d'installation fourni avec le bot")
-    print(" pour savoir comment obtenir ces codes en 2 minutes.\n")
+    print(" 💡 Lisez INSTALLATION.txt (fourni avec le bot) pour savoir comment")
+    print(" obtenir ces codes en 2 minutes.\n")
     print(" 👉 ÉTAPE 3 : Sauvegardez le fichier settings.json.")
     print(" 👉 ÉTAPE 4 : Relancez ce programme.\n")
     print("█"*75 + "\n")
@@ -586,6 +623,7 @@ def check_license_online(silent=False):
             "connection", my_key, f"🕵️ Connexion réussie — {user_name}",
             {"user": user_name, "pc_id": current_pc_id, "ip": ip_public})
         logger.info(f"✅ Licence Validée. Bienvenue {user_name} !")
+        client_status(f"✅ Licence validée — bienvenue {user_name} !")
 
     return True
 
@@ -4884,11 +4922,14 @@ async def main():
     
     if not mt5.initialize():
         logger.critical("❌ Erreur Critique : MetaTrader 5 fermé ou inaccessible.")
+        client_status("❌ Erreur : MetaTrader 5 fermé ou inaccessible.")
         return
     logger.info(f"✔️ Terminal MT5 Connecté (Compte: {mt5.account_info().login})")
+    client_status(f"✔️ MetaTrader 5 connecté (compte {mt5.account_info().login})")
 
     await bot_user.start(bot_token=BOT_TOKEN)
     logger.info("✔️ Interface interactive Telegram chargée.")
+    client_status("✔️ Interface Telegram chargée.")
 
     load_memory()
     load_settings()
@@ -4927,27 +4968,27 @@ async def main():
         except:
             bot_username = "le bot que vous avez créé avec BotFather"
 
-        logger.warning("")
-        logger.warning("█"*65)
-        logger.warning(" 🔐 INITIALISATION : LIAISON TELEGRAM REQUISE ".center(64, "█"))
-        logger.warning("█"*65)
-        logger.warning("")
-        logger.warning(" ✅ Succès : Le programme est connecté à MetaTrader 5.")
-        logger.warning(" 👤 Il ne reste plus qu'à vous identifier comme le propriétaire.")
-        logger.warning("")
-        logger.warning(" 📱 ÉTAPE 1 : Ouvrez Telegram sur votre téléphone ou PC.")
-        logger.warning(f" 🔍 ÉTAPE 2 : Cherchez votre bot : {bot_username}")
-        logger.warning(" 💬 ÉTAPE 3 : Cliquez sur 'Démarrer' et envoyez cette commande :")
-        logger.warning("")
-        logger.warning(f"                         /start {SECURITY_PIN}")
-        logger.warning("")
-        logger.warning(" ⏳ Le système est en pause et attend votre message sur Telegram...")
-        logger.warning("█"*65 + "\n")
+        pairing_banner = (
+            "\n" + "█"*65 + "\n" +
+            " 🔐 INITIALISATION : LIAISON TELEGRAM REQUISE ".center(64, "█") + "\n" +
+            "█"*65 + "\n\n" +
+            " ✅ Succès : Le programme est connecté à MetaTrader 5.\n" +
+            " 👤 Il ne reste plus qu'à vous identifier comme le propriétaire.\n\n" +
+            " 📱 ÉTAPE 1 : Ouvrez Telegram sur votre téléphone ou PC.\n" +
+            f" 🔍 ÉTAPE 2 : Cherchez votre bot : {bot_username}\n" +
+            " 💬 ÉTAPE 3 : Cliquez sur 'Démarrer' et envoyez cette commande :\n\n" +
+            f"                         /start {SECURITY_PIN}\n\n" +
+            " ⏳ Le système est en pause et attend votre message sur Telegram...\n" +
+            "█"*65 + "\n"
+        )
+        logger.warning(pairing_banner)
+        client_status(pairing_banner)  # (#30) essentiel -- toujours visible, meme en mode "client"
     else:
         logger.warning("")
         logger.info("═"*50)
         logger.info("✅ SYSTÈME OPÉRATIONNEL ET SÉCURISÉ")
         logger.info("📡 En attente des signaux de trading...")
+        client_status("\n" + "═"*50 + "\n✅ SYSTÈME OPÉRATIONNEL ET SÉCURISÉ\n📡 En attente des signaux de trading...\n" + "═"*50)
         logger.info("═"*50 + "\n")
     
     await client.run_until_disconnected()
@@ -4973,7 +5014,7 @@ def run_watchdog():
     os.system('cls' if os.name == 'nt' else 'clear')
     
     logger.info("==================================================")
-    logger.info("      🚀 DÉMARRAGE DU MOTEUR FTMO BOT 🚀          ")
+    logger.info("      🚀 DÉMARRAGE DU MOTEUR KAIROS 🚀          ")
     logger.info("==================================================")
     logger.info("🛡️ Système de surveillance (Watchdog) activé.")
 
@@ -5037,16 +5078,19 @@ if __name__ == '__main__':
     if "--worker" in sys.argv:
         # 👷 JE SUIS L'OUVRIER (LE BOT)
         # Je fais le travail normal
-        
+        os.system('cls' if os.name == 'nt' else 'clear')
+        print_kairos_logo()
+
         # 1. Synchronisation Heure
         sync_windows_time()
-        
+
         # 2. Vérification Licence
         if not check_license_online():
             time.sleep(5)
             sys.exit()
 
-        logger.info("🔵 Démarrage du Bot FTMO (Mode Worker)...")
+        logger.info("🔵 Démarrage du Bot Kairos (Mode Worker)...")
+        client_status("🔵 Démarrage du bot (Mode Worker)...")
         
         try:
             # On prévient le client pour l'étape du numéro de téléphone
