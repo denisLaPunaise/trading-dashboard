@@ -3609,14 +3609,14 @@ async def admin_commands(event):
     if ADMIN_ID == 0 or event.sender_id != ADMIN_ID: # 👈 CORRECTION 5 (sender_id)
         return
 
-    # (fix double /help) Le décorateur n'a aucun filtre de chat (events.NewMessage() global) --
-    # sans ce garde, une commande tapée dans N'IMPORTE QUEL autre chat/canal où ce compte
-    # Telegram est aussi présent (ex: les canaux du bot de licence) déclenche AUSSI ce bot,
-    # doublant les réponses (ex: deux /help différents). On restreint donc au salon habituel
-    # (celui où le bot envoie déjà ses alertes / où l'appairage a eu lieu) -- si non configuré
-    # (0), on ne restreint rien pour ne rien casser en rétro-compatibilité.
-    if TELEGRAM_DESTINATION_ID != 0 and event.chat_id != TELEGRAM_DESTINATION_ID:
-        return
+    # (#30) REVERT du garde chat_id ajouté pour le double /help : TELEGRAM_DESTINATION_ID est
+    # capturé depuis event.sender_id lors du /start PIN en DM (cf. pairing_handler) -- dans ce
+    # contexte, sender_id (l'admin) et chat_id (le pair du DM, donc le bot lui-même) sont deux
+    # valeurs DIFFÉRENTES. Comparer event.chat_id à cette valeur ne matche quasiment jamais,
+    # ce qui bloquait TOUTES les commandes, partout (pas seulement le canal support visé).
+    # Le garde sender_id juste au-dessus suffit à restreindre à l'admin ; le double /help
+    # (2 bots distincts qui répondent au même admin dans un même canal) reste à corriger
+    # autrement si besoin (ex: exclure explicitement l'ID du canal support une fois connu).
 
     text = event.raw_text.lower().strip()
 
