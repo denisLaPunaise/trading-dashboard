@@ -99,6 +99,13 @@ function App() {
   const [pnlPulse, setPnlPulse] = useState(null); // 'gain' ou 'loss'
   const prevPnl = useRef(0);
   const initialLoad = useRef(true);
+  // (#41) Permet à sendCommand() de couper ses listeners onSnapshot immédiatement si le
+  // composant démonte pendant une commande en vol, au lieu d'attendre jusqu'à 15s chacun.
+  const activeCommandUnsubs = useRef(new Set());
+  useEffect(() => () => {
+    activeCommandUnsubs.current.forEach((unsub) => unsub());
+    activeCommandUnsubs.current.clear();
+  }, []);
 
   // --- FIREBASE SAAS ---
   const [userId, setUserId] = useState(null);
@@ -180,21 +187,33 @@ function App() {
     if (requestedPeriods.current.has(globalPeriod)) return; // requête déjà envoyée
     requestedPeriods.current.add(globalPeriod);
     setIsLoadingStats(true);
+    // (#41) cancelled/unsub/timer permettent au cleanup du useEffect de couper le listener et
+    // le setTimeout de secours immédiatement au démontage, au lieu de les laisser vivre jusqu'à
+    // 20s après (avant, rien ne les annulait avant leur propre résolution interne).
+    let cancelled = false;
+    let unsub = null;
+    let timer = null;
     (async () => {
       try {
         const cmdRef = await addDoc(collection(db, 'users', userId, 'commands'), {
           type: 'request_stats', payload: { days: globalPeriod }, status: 'pending', created_at: serverTimestamp(), expire_at: commandExpiry(),
         });
+        if (cancelled) return;
         await new Promise((resolve) => {
-          const unsub = onSnapshot(doc(db, 'users', userId, 'commands', cmdRef.id), (snap) => {
+          unsub = onSnapshot(doc(db, 'users', userId, 'commands', cmdRef.id), (snap) => {
             const d = snap.data();
             if (d?.status === 'done' || d?.status === 'error') { unsub(); resolve(); }
           });
-          setTimeout(() => { unsub(); resolve(); }, 20000);
+          timer = setTimeout(() => { unsub(); resolve(); }, 20000);
         });
       } catch { /* silencieux */ }
-      setIsLoadingStats(false);
+      if (!cancelled) setIsLoadingStats(false);
     })();
+    return () => {
+      cancelled = true;
+      if (unsub) unsub();
+      if (timer) clearTimeout(timer);
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps -- dashboardData lu volontairement sans redéclencher la requête (cf. commentaire ci-dessus)
   }, [isStatsOpen, statsTab, globalPeriod, userId]);
 
@@ -297,10 +316,14 @@ function App() {
         const unsub = onSnapshot(doc(db, 'users', userId, 'commands', cmdRef.id), (snap) => {
           const d = snap.data();
           if (!d) return;
-          if (d.status === 'done')  { unsub(); resolve(d.result); }
-          if (d.status === 'error') { unsub(); reject(new Error(d.result?.message || 'Erreur bot')); }
+          if (d.status === 'done')  { unsub(); activeCommandUnsubs.current.delete(unsub); resolve(d.result); }
+          if (d.status === 'error') { unsub(); activeCommandUnsubs.current.delete(unsub); reject(new Error(d.result?.message || 'Erreur bot')); }
         });
-        setTimeout(() => { unsub(); reject(new Error('Timeout : le bot ne répond pas (15s).')); }, 15000);
+        activeCommandUnsubs.current.add(unsub);
+        setTimeout(() => {
+          unsub(); activeCommandUnsubs.current.delete(unsub);
+          reject(new Error('Timeout : le bot ne répond pas (15s).'));
+        }, 15000);
       });
       triggerHaptic('success');
     } catch (err) {
@@ -818,7 +841,7 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
                   {/* Profit agrandi (1.25rem) */}
                   <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
                     <div style={{ fontWeight: 'bold', fontSize: '1.25rem', color: trade.profit >= 0 ? '#00e676' : '#ff4444', whiteSpace: 'nowrap' }}>
-                      {trade.profit > 0 ? '+' : ''}{trade.profit.toFixed(2)} €
+                      {trade.profit > 0 ? '+' : ''}{(trade.profit ?? 0).toFixed(2)} €
                     </div>
                     <div style={{ fontSize: '0.75rem', color: '#aaa' }}>
                       {trade.pips > 0 ? '+' : ''}{trade.pips} p
@@ -889,7 +912,7 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
 
                 <div style={{ textAlign: 'right' }}>
                   <div style={{ fontWeight: 'bold', fontSize: '1.1rem', color: trade.profit >= 0 ? '#00e676' : '#ff4444' }}>
-                    {trade.profit > 0 ? '+' : ''}{trade.profit.toFixed(2)} €
+                    {trade.profit > 0 ? '+' : ''}{(trade.profit ?? 0).toFixed(2)} €
                   </div>
                   <div style={{ fontSize: '0.8rem', color: '#666' }}>{trade.pips > 0 ? '+' : ''}{trade.pips} pips</div>
                 </div>
@@ -1269,10 +1292,10 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
               {historicalStats?.channels_lifetime && Object.keys(historicalStats.channels_lifetime).length > 0 ? (
                 Object.entries(historicalStats.channels_lifetime)
                 .filter(([name]) => isChannelVisible(name)) // (#7) pack du client
-                .sort((a, b) => b[1].profit - a[1].profit) // Tri par profit décroissant
+                .sort((a, b) => (b[1].profit ?? 0) - (a[1].profit ?? 0)) // Tri par profit décroissant
                 .map(([name, data]) => {
                   const avgPips = data.count > 0 ? (data.pips / data.count).toFixed(1) : "0.0";
-                  const isPositive = data.profit >= 0;
+                  const isPositive = (data.profit ?? 0) >= 0;
                   
                   return (
                   <div key={name} style={{ background: '#1e1e1e', borderRadius: '12px', padding: '15px', border: '1px solid #333' }}>
@@ -1280,9 +1303,9 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
                       <span style={{ fontWeight: 'bold', fontSize: '1rem', color: '#fff' }}>{name.replace('CANAL ', '').replace('_', ' ')}</span>
                       <div style={{ textAlign: 'right' }}>
                         <div style={{ color: isPositive ? '#00e676' : '#ff4444', fontWeight: 'bold', fontSize: '1.2rem' }}>
-                          {isPositive ? '+' : ''}{data.profit.toFixed(2)} €
+                          {isPositive ? '+' : ''}{(data.profit ?? 0).toFixed(2)} €
                         </div>
-                        <div style={{ fontSize: '0.8rem', color: '#888' }}>{data.pips > 0 ? '+' : ''}{data.pips.toFixed(1)} pips</div>
+                        <div style={{ fontSize: '0.8rem', color: '#888' }}>{data.pips > 0 ? '+' : ''}{(data.pips ?? 0).toFixed(1)} pips</div>
                       </div>
                     </div>
                     
