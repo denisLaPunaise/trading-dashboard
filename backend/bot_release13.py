@@ -5093,18 +5093,21 @@ if __name__ == '__main__':
         client_status("🔵 Démarrage du bot (Mode Worker)...")
         
         try:
-            # On prévient le client pour l'étape du numéro de téléphone
-            print("\n" + "═"*60)
-            print(" 📱 CONNEXION À VOTRE COMPTE TELEGRAM (TELETHON)")
-            print("═"*60)
-            print(" Le bot a besoin de lire les canaux VIP auxquels vous êtes abonné.")
-            print(" Si c'est votre première connexion, la console va vous demander :")
-            print(" 1. Votre numéro de téléphone (avec l'indicatif, ex: +33612345678)")
-            print(" 2. Le code à 5 chiffres que Telegram va vous envoyer sur votre app.")
-            print(" (Note : Quand vous tapez le code, il s'affiche, c'est normal).")
-            print("═"*60 + "\n")
-            
-            # On démarre le client Telegram (ça va mettre le script en pause pour lui demander son numéro)
+            # (#30) Ce bloc n'a de sens QUE la toute première fois (avant que Telethon ait
+            # sauvegardé la session sur disque) -- sinon il s'affichait à chaque relance,
+            # même une fois déjà connecté, ce qui contredit "juste le logo" en mode client.
+            if not os.path.exists("ftmo_bot_session.session"):
+                print("\n" + "═"*60)
+                print(" 📱 CONNEXION À VOTRE COMPTE TELEGRAM (TELETHON)")
+                print("═"*60)
+                print(" Le bot a besoin de lire les canaux VIP auxquels vous êtes abonné.")
+                print(" La console va vous demander :")
+                print(" 1. Votre numéro de téléphone (avec l'indicatif, ex: +33612345678)")
+                print(" 2. Le code à 5 chiffres que Telegram va vous envoyer sur votre app.")
+                print(" (Note : Quand vous tapez le code, il s'affiche, c'est normal).")
+                print("═"*60 + "\n")
+
+            # On démarre le client Telegram (ne redemande le numéro/code que la 1ère fois)
             client.start()
             
             # On crée l'Event Loop asynchrone
