@@ -438,21 +438,22 @@ def update_sheet(license_key, pc_id):
         return "ERROR"
     
 def update_sheet_pack(key, allowed_channels):
-    """(#26) Écrit le pack en colonne G + Firestore (licenses/{key}.allowed_channels) --
-    c'est CE champ Firestore que le bot client vérifie à chaque check de licence, donc
-    ça s'applique même si le client n'a jamais lié son dashboard (contrairement au hot-push
-    via fb_push_set_channels qui nécessite un telegram_id)."""
+    """(#26) Écrit le pack en colonne G + Firestore (licenses/{key}.allowed_channels).
+
+    N'écrit JAMAIS hwid/status/ver_min/date_fin -- la Sheet n'est PAS une source fiable
+    pour ces champs (register_hwid() écrit le HWID directement en Firestore, jamais dans
+    la Sheet, et /push_ver met à jour la Sheet sans resynchroniser Firestore -- relire ces
+    colonnes ici et les repousser via fb_sync_license écraserait Firestore avec des valeurs
+    périmées/vides -- c'est exactement ce qui a cassé un HWID valide la première fois)."""
     try:
         sheet = get_sheet()
         cell = sheet.find(key)
         if not cell:
             return False
         sheet.update_cell(cell.row, COL_PACK, channels_to_pack_text(allowed_channels))
-        row_vals = sheet.row_values(cell.row)
-        while len(row_vals) < 6:
-            row_vals.append("")
-        fb_sync_license(key, row_vals[0], row_vals[2] or "ACTIVE", row_vals[3] or "14.0.0",
-                         row_vals[4] or "", row_vals[5] or "", allowed_channels=allowed_channels or [])
+        if FIREBASE_ENABLED and _fb_db:
+            _fb_db.collection("licenses").document(key).set(
+                {"allowed_channels": list(allowed_channels or [])}, merge=True)
         return True
     except Exception as e:
         print(f"⚠️ update_sheet_pack error: {e}")
