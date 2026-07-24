@@ -270,10 +270,13 @@ CHANNEL_PROFILES = {
 def resolve_channels(arg):
     """(#7) Convertit l'argument /gen|/channels en liste de canaux internes.
     arg = nom de profil (ex 'sabr') OU jetons séparés par des virgules (ex 'SABR_VIP,PERSO').
-    Retourne (channels: list, error: str|None). channels=[] => pas de filtre (tout visible)."""
+    Retourne (channels: list, error: str|None). channels=[] => pas de filtre (tout visible).
+    (#39) channels=['NONE'] => sentinel explicite "aucun canal" (pack suspendu), distinct de []."""
     if not arg:
         return [], None
     key = arg.strip().lower()
+    if key in ("none", "aucun", "rien"):
+        return ["NONE"], None
     if key in CHANNEL_PROFILES:
         return list(CHANNEL_PROFILES[key]), None
     out, unknown = [], []
@@ -379,6 +382,16 @@ def generate_client_package(client_name: str, key: str, fb_email: str, fb_passwo
     return buf, filename, exe_included
 
 
+def sheet_safe(value):
+    """(#39) Préfixe d'une apostrophe toute valeur commençant par =/+/-/@ avant écriture dans
+    la Sheet -- ces caractères sont interprétés comme le début d'une formule par Google Sheets.
+    Le PC-ID/HWID vient in fine du client (bot distribué), donc pas fiable à 100%."""
+    s = str(value or "")
+    if s and s[0] in ("=", "+", "-", "@"):
+        return "'" + s
+    return s
+
+
 # ==========================================
 # 🔌 CONNEXION GOOGLE SHEET
 # ==========================================
@@ -445,7 +458,7 @@ def update_sheet(license_key, pc_id):
                 except: pass # Si format date invalide, on ignore
 
             if not current_hwid or current_hwid == "":
-                sheet.update_cell(cell.row, COL_HWID, pc_id)
+                sheet.update_cell(cell.row, COL_HWID, sheet_safe(pc_id))
                 fb_sync_license(license_key, sheet.cell(cell.row, COL_USER).value or "", sheet.cell(cell.row, COL_STATUS).value or "ACTIVE", hwid=pc_id)
                 print(f"💾 SUCCÈS : HWID {pc_id} enregistré pour {license_key}")
                 return "NEW_REGISTER"
@@ -1160,9 +1173,12 @@ async def main_handler(event):
                           "`/add Pierre Clé` : Ajout manuel\n\n\n"
                           "📦 **PACK CANAUX (visibles : logs + dashboard)**\n\n"
                           "`/channels Clé profil|canaux` : change le pack à distance\n"
-                          "Profils : sabr, mdt, space, ligue, perso, full\n"
+                          "`/channels Clé none` : suspend tous les canaux (pack vidé, pas \"tout débloqué\")\n"
+                          "Profils : sabr, mdt, space, ligue, perso, full, none\n"
+                          "⚠️ `dev` : profil réservé/interne -- inclut SABR_COPIE (seule exception) + validité illimitée. "
+                          "Ne l'assigne JAMAIS à un vrai client payant via /channels.\n"
                           "Canaux : SABR_VIP, SABR_FREE, SABR_COPIE, MDT_VIP, MDT_FREE, SPACE, LIGUE, PERSO\n"
-                          "⚠️ SABR_COPIE jamais dans un pack (à mettre à la main)\n\n\n"
+                          "⚠️ SABR_COPIE jamais dans un pack normal (à mettre à la main, sauf dev)\n\n\n"
                           "🔧 **GESTION**\n\n"
                           "`/info Clé` : Voir détails (PC, Date...)\n"
                           "`/fbcreate Clé` : Créer compte Firebase (clé existante, sans effet si déjà provisionné)\n"
@@ -1228,7 +1244,7 @@ async def security_events_relay():
                             sheet = get_sheet()
                             cell = sheet.find(_key)
                             if cell:
-                                sheet.update_cell(cell.row, COL_HWID, _pc)
+                                sheet.update_cell(cell.row, COL_HWID, sheet_safe(_pc))
                         except Exception as e:
                             print(f"⚠️ sync HWID Sheet: {e}")
                     await asyncio.to_thread(_sync_hwid_sheet)

@@ -2486,8 +2486,12 @@ def channel_allowed(source):
     fois pour l'affichage (send_channel_alert) ET, depuis #25, pour verrouiller réellement
     les commandes admin ciblant un canal (channel_allowed n'affecte pas le trading lui-même,
     c'est PACK_LOCKED_CHANNELS + MUTED_CHANNELS qui s'en chargent, cf. main_handler).
-    ALLOWED_CHANNELS vide = tout visible (rétro-compatible). Source inconnue = visible (sécurité)."""
+    ALLOWED_CHANNELS vide = tout visible (rétro-compatible). Source inconnue = visible (sécurité).
+    (#39) ALLOWED_CHANNELS == ["NONE"] est un sentinel explicite "aucun canal" (pack suspendu) --
+    distinct de la liste vide, qui elle reste "pas de pack configuré -> tout visible"."""
     try:
+        if ALLOWED_CHANNELS == ["NONE"]:
+            return False
         if not ALLOWED_CHANNELS:
             return True
         base = _channel_base_token(source)
@@ -2504,7 +2508,9 @@ def recompute_pack_lock():
     pack courant. Appelée au chargement des settings et à chaque mise à jour à chaud du
     pack (commande Firestore set_allowed_channels). Ne modifie jamais MUTED_CHANNELS."""
     global PACK_LOCKED_CHANNELS
-    if not ALLOWED_CHANNELS:
+    if ALLOWED_CHANNELS == ["NONE"]:  # (#39) sentinel "aucun canal" -> tout est verrouillé
+        PACK_LOCKED_CHANNELS = list(ALL_PACK_CHANNELS)
+    elif not ALLOWED_CHANNELS:
         PACK_LOCKED_CHANNELS = []
     else:
         allowed_bases = {_channel_base_token(c) for c in ALLOWED_CHANNELS}
@@ -4841,11 +4847,15 @@ async def handle_firebase_command(cmd_id: str, cmd_data: dict) -> None:
         elif cmd_type == "set_allowed_channels":
             # (#7) Met à jour à distance le pack du client (canaux visibles).
             # Envoyé par la commande /channels du bot de licence via Firestore.
-            global ALLOWED_CHANNELS
+            global ALLOWED_CHANNELS, SERVER_PACK_CHANNELS
             new_list = payload.get("channels", cmd_data.get("channels", []))
             if isinstance(new_list, str):
                 new_list = [c.strip() for c in new_list.split(",") if c.strip()]
             ALLOWED_CHANNELS = [c for c in (new_list or []) if c]
+            # (#39) Met aussi à jour SERVER_PACK_CHANNELS -- sinon le prochain check_license_online()
+            # (démarrage ou toutes les 4h) réécrase ce changement avec l'ancienne valeur du
+            # document licence Firestore, qui n'était jamais mise à jour par ce chemin.
+            SERVER_PACK_CHANNELS = list(ALLOWED_CHANNELS)
             recompute_pack_lock()  # (#25) reverrouille les canaux hors du nouveau pack
             await run_bg(save_settings)
             pack_txt = ", ".join(c.replace("CANAL ", "") for c in ALLOWED_CHANNELS) if ALLOWED_CHANNELS else "TOUS les canaux"

@@ -483,6 +483,9 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
     return t.replace(/^_+|_+$/g, '');
   };
   const isChannelVisible = (name) => {
+    // (#39) sentinel "aucun canal" (pack suspendu) -- distinct de la liste vide (pas de pack
+    // configuré -> tout visible), cf. channel_allowed()/recompute_pack_lock() côté backend.
+    if (allowedChannels.length === 1 && allowedChannels[0] === 'NONE') return false;
     if (!allowedChannels.length) return true;        // pack vide = tout visible
     const base = channelBaseToken(name);
     if (!base) return true;
