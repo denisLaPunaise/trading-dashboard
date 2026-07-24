@@ -507,7 +507,7 @@ def add_license_row(user, key, days=None, allowed_channels=None):
     """Version modifiée pour lire la version dynamique"""
     try:
         sheet = get_sheet()
-        if sheet.find(key): return False, "Clé existe déjà !"
+        if sheet.find(key): return False, "Clé existe déjà !", None, None  # (#34) 4-tuple, comme tous les autres retours
 
         # 1. On récupère la version depuis le Sheet (H2)
         version_to_use = sheet.cell(ROW_CONFIG_VER, COL_CONFIG_VER).value
@@ -1103,6 +1103,13 @@ async def main_handler(event):
                     # Gspread update_cell est lent, on note juste les changements
                     # Pour faire simple ici on boucle (lent mais sûr)
                     await asyncio.to_thread(sheet.update_cell, i, COL_VER, new_ver)
+                    # (#33) Le bot client ne lit ver_min QUE depuis Firestore (jamais la Sheet) --
+                    # sans cette ligne, la Sheet affichait la nouvelle version mais aucun client
+                    # n'était réellement forcé de mettre à jour.
+                    key = row[1] if len(row) > 1 else ""
+                    user = row[0] if len(row) > 0 else ""
+                    if key:
+                        await asyncio.to_thread(fb_sync_license, key, user, "ACTIVE", new_ver)
                     count += 1
                     
             await event.reply(f"✅ **MIGRATION TERMINÉE**\n\n🔄 {count} clients mis à jour vers la v{new_ver}.")
