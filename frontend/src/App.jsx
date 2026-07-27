@@ -93,6 +93,20 @@ function App() {
 
   // --- ÉTAT DE LA FENÊTRE DE CONFIRMATION ---
   const [confirmModal, setConfirmModal] = useState({ isOpen: false, message: '', onConfirm: null, type: 'warning' })
+  const cancelButtonRef = useRef(null);
+
+  // (#61) La modale de confirmation n'avait ni rôle dialog/aria-modal, ni fermeture Échap, ni
+  // focus initial -- inaccessible au clavier/lecteur d'écran. Focus trap complet (cycle Tab)
+  // volontairement omis : 2 boutons seulement, coût/bénéfice disproportionné pour ce lot.
+  useEffect(() => {
+    if (!confirmModal.isOpen) return;
+    cancelButtonRef.current?.focus();
+    const onKey = (e) => {
+      if (e.key === 'Escape') setConfirmModal((m) => ({ ...m, isOpen: false }));
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [confirmModal.isOpen]);
 
   // --- ÉTATS POUR LES ANIMATIONS (ÉTAPE 1 & 2) ---
   const [displayedTrades, setDisplayedTrades] = useState([]);
@@ -128,6 +142,19 @@ function App() {
       console.log("Haptic feedback non disponible.");
     }
   };
+
+  // (#61) Les sections pliables (Trades Actifs, Panneau de Contrôle, etc.) étaient des
+  // <div onClick> sans role/tabIndex/onKeyDown -- inaccessibles au clavier. Helper commun
+  // pour ne pas dupliquer ces 3 attributs sur chaque section.
+  const a11yToggleProps = (onClick, expanded) => ({
+    role: 'button',
+    tabIndex: 0,
+    'aria-expanded': expanded,
+    onClick,
+    onKeyDown: (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(e); }
+    },
+  });
 
   // Moteur d'animation React pour intercepter les fermetures
   useEffect(() => {
@@ -175,17 +202,29 @@ function App() {
     const periodKey = `global_period_${globalPeriod}`;
     // Fallback sur global_period (poussé par l'exe) si la clé spécifique n'existe pas encore
     const period = dashboardData[periodKey] || (globalPeriod === '30' ? dashboardData.global_period : null);
-    setHistoricalStats({ channels_lifetime: channels || {}, global_period: period || null });
+    // (#60) "Cette Semaine" (onglet Jour & Semaine) a besoin d'un vrai agrégat 7 jours
+    // INDÉPENDANT de la période choisie dans l'onglet Global -- avant, les deux partageaient
+    // le même champ (global_period), donc "Cette Semaine" affichait en fait la période
+    // sélectionnée côté Global (30 jours par défaut), pas un vrai 7 jours.
+    const weekPeriod = dashboardData.global_period_7 || null;
+    setHistoricalStats({ channels_lifetime: channels || {}, global_period: period || null, week_period: weekPeriod });
     if (period) setIsLoadingStats(false);
   }, [dashboardData, globalPeriod]);
 
-  // Déclenche une requête au bot quand la période change (sans alert, sans doublon)
+  // Déclenche une requête au bot quand la période (Global) ou la vue Semaine change (sans alert, sans doublon)
   useEffect(() => {
-    if (!isStatsOpen || !userId || statsTab !== 'global') return;
-    const periodKey = `global_period_${globalPeriod}`;
+    if (!isStatsOpen || !userId) return;
+    // (#60) Deux sources de requête indépendantes : la période choisie dans l'onglet Global,
+    // et un 7 jours fixe pour "Cette Semaine" (onglet Jour & Semaine) -- qui ne doit JAMAIS
+    // suivre le sélecteur de l'onglet Global.
+    const wantWeek = statsTab === 'jour' && dayWeekToggle === 'week';
+    const wantGlobal = statsTab === 'global';
+    if (!wantWeek && !wantGlobal) return;
+    const period = wantWeek ? '7' : globalPeriod;
+    const periodKey = `global_period_${period}`;
     if (dashboardData?.[periodKey]) return; // données déjà en cache
-    if (requestedPeriods.current.has(globalPeriod)) return; // requête déjà envoyée
-    requestedPeriods.current.add(globalPeriod);
+    if (requestedPeriods.current.has(period)) return; // requête déjà envoyée
+    requestedPeriods.current.add(period);
     setIsLoadingStats(true);
     // (#41) cancelled/unsub/timer permettent au cleanup du useEffect de couper le listener et
     // le setTimeout de secours immédiatement au démontage, au lieu de les laisser vivre jusqu'à
@@ -196,7 +235,7 @@ function App() {
     (async () => {
       try {
         const cmdRef = await addDoc(collection(db, 'users', userId, 'commands'), {
-          type: 'request_stats', payload: { days: globalPeriod }, status: 'pending', created_at: serverTimestamp(), expire_at: commandExpiry(),
+          type: 'request_stats', payload: { days: period }, status: 'pending', created_at: serverTimestamp(), expire_at: commandExpiry(),
         });
         if (cancelled) return;
         await new Promise((resolve) => {
@@ -215,7 +254,7 @@ function App() {
       if (timer) clearTimeout(timer);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps -- dashboardData lu volontairement sans redéclencher la requête (cf. commentaire ci-dessus)
-  }, [isStatsOpen, statsTab, globalPeriod, userId]);
+  }, [isStatsOpen, statsTab, dayWeekToggle, globalPeriod, userId]);
 
   // Authentification Firebase + abonnement temps réel Firestore
   useEffect(() => {
@@ -516,7 +555,10 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
   };
 
   // 1. On déclare d'abord la balance
-  const balanceMinuit = account.balance - daily_stats.realized_pnl;
+  // (#61) Valeur DÉRIVÉE (pas un champ direct) -- ?? seul au point d'affichage ne protège pas
+  // contre un NaN si account.balance était transitoirement absent (?? ne rattrape que
+  // null/undefined, pas NaN). On garde les deux opérandes ici, à la source.
+  const balanceMinuit = (account.balance ?? 0) - (daily_stats.realized_pnl ?? 0);
   // Détection du mode Panic (réel du backend ou via le bouton de test)
   const isPanicMode = settings.security_triggered;
   // 2. ENSUITE on calcule le risque en utilisant la balance
@@ -622,25 +664,23 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
           animation: shimmer 1.5s infinite linear forwards;
           border-radius: 12px; border: 1px solid #333;
         }
-        .btn-interactive { transition: all 0.2s ease; }
-        .btn-interactive:hover, .btn-interactive.force-hover { transform: translateY(-2px) scale(1.05); filter: brightness(1.2); box-shadow: 0 4px 12px rgba(255,255,255,0.1); }
       `}</style>
 
       {/* --- MODAL DE CONFIRMATION --- */}
       {confirmModal.isOpen && (
         <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.7)', zIndex: 1000, display: 'flex', justifyContent: 'center', alignItems: 'center', animation: 'fadeIn 0.2s ease-out forwards' }}>
-          <div style={{ background: '#1e1e1e', border: `1px solid ${confirmModal.type === 'danger' ? '#ff4444' : '#ffc107'}`, borderRadius: '15px', padding: '25px', maxWidth: '400px', width: '90%', textAlign: 'center', boxShadow: '0 10px 40px rgba(0,0,0,0.8)', animation: 'popIn 0.2s ease-out' }}>
+          <div role="dialog" aria-modal="true" aria-labelledby="confirm-modal-title" style={{ background: '#1e1e1e', border: `1px solid ${confirmModal.type === 'danger' ? '#ff4444' : '#ffc107'}`, borderRadius: '15px', padding: '25px', maxWidth: '400px', width: '90%', textAlign: 'center', boxShadow: '0 10px 40px rgba(0,0,0,0.8)', animation: 'popIn 0.2s ease-out' }}>
             <div style={{ color: confirmModal.type === 'danger' ? '#ff4444' : '#ffc107', marginBottom: '15px', display: 'flex', justifyContent: 'center' }}>
               <AlertTriangle size={48} />
             </div>
-            <h3 style={{ margin: '0 0 15px 0', fontSize: '1.2rem' }}>
+            <h3 id="confirm-modal-title" style={{ margin: '0 0 15px 0', fontSize: '1.2rem' }}>
               {confirmModal.type === 'danger' ? 'Contrôle Système' : 'Confirmation Requise'}
             </h3>
             <p style={{ color: '#ccc', fontSize: '1rem', lineHeight: '1.5', marginBottom: '25px' }}>
               {confirmModal.message}
             </p>
             <div style={{ display: 'flex', gap: '15px' }}>
-              <button onClick={() => setConfirmModal({ ...confirmModal, isOpen: false })} style={{ flex: 1, padding: '12px', background: 'transparent', border: '1px solid #555', color: '#fff', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', transition: '0.2s' }}>
+              <button ref={cancelButtonRef} onClick={() => setConfirmModal({ ...confirmModal, isOpen: false })} style={{ flex: 1, padding: '12px', background: 'transparent', border: '1px solid #555', color: '#fff', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', transition: '0.2s' }}>
                 Annuler
               </button>
               <button onClick={confirmModal.onConfirm} style={{ flex: 1, padding: '12px', background: confirmModal.type === 'danger' ? '#ff4444' : '#ffc107', border: 'none', color: '#000', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', boxShadow: `0 4px 12px ${confirmModal.type === 'danger' ? 'rgba(255, 68, 68, 0.4)' : 'rgba(255, 193, 7, 0.4)'}` }}>
@@ -698,7 +738,7 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
           <div style={{ display: 'flex', width: '100%', fontSize: '0.65rem', color: '#888', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '8px', marginTop: '5px' }}>
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', borderRight: '1px solid rgba(255,255,255,0.05)' }}>
               <span style={{ whiteSpace: 'nowrap' }}>Equity :</span>
-              <strong style={{ color: '#666' }}>{Math.round(account.equity).toLocaleString('fr-FR')} €</strong>
+              <strong style={{ color: '#666' }}>{Math.round(account.equity ?? 0).toLocaleString('fr-FR')} €</strong>
             </div>
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
               <span style={{ whiteSpace: 'nowrap' }}>Réf 00h :</span>
@@ -734,14 +774,14 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
           <div style={{ display: 'flex', width: '100%', fontSize: '0.65rem', color: '#888', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '8px', marginTop: '5px' }}>
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', borderRight: '1px solid rgba(255,255,255,0.05)' }}>
               <span style={{ whiteSpace: 'nowrap' }}>Flottant :</span>
-              <strong style={{ color: daily_stats.floating_pnl >= 0 ? '#00e676' : '#ff4444' }}>
-                {daily_stats.floating_pnl > 0 ? '+' : ''}{Math.round(daily_stats.floating_pnl).toLocaleString('fr-FR')} €
+              <strong style={{ color: (daily_stats.floating_pnl ?? 0) >= 0 ? '#00e676' : '#ff4444' }}>
+                {daily_stats.floating_pnl > 0 ? '+' : ''}{Math.round(daily_stats.floating_pnl ?? 0).toLocaleString('fr-FR')} €
               </strong>
             </div>
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
               <span style={{ whiteSpace: 'nowrap' }}>Total :</span>
-              <strong style={{ color: daily_stats.total_pnl >= 0 ? '#00e676' : '#ff4444' }}>
-                {daily_stats.total_pnl > 0 ? '+' : ''}{Math.round(daily_stats.total_pnl).toLocaleString('fr-FR')} €
+              <strong style={{ color: (daily_stats.total_pnl ?? 0) >= 0 ? '#00e676' : '#ff4444' }}>
+                {daily_stats.total_pnl > 0 ? '+' : ''}{Math.round(daily_stats.total_pnl ?? 0).toLocaleString('fr-FR')} €
               </strong>
             </div>
           </div>
@@ -775,7 +815,7 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
       </div>
 
       {/* SECTION 2 : TRADES ACTIFS */}
-      <div onClick={() => { triggerHaptic('light'); setIsTradesOpen(!isTradesOpen); }} style={{ display: 'flex', justifyContent: 'flex-start', alignItems: 'center', cursor: 'pointer', borderBottom: '1px solid #333', paddingBottom: '25px', marginBottom: '0px', marginTop: '30px', userSelect: 'none' }}>
+      <div {...a11yToggleProps(() => { triggerHaptic('light'); setIsTradesOpen(!isTradesOpen); }, isTradesOpen)} style={{ display: 'flex', justifyContent: 'flex-start', alignItems: 'center', cursor: 'pointer', borderBottom: '1px solid #333', paddingBottom: '25px', marginBottom: '0px', marginTop: '30px', userSelect: 'none' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#ddd' }}>
           <Briefcase size={20} color="#2196f3" /> {/* 👈 Icône Bleue */}
           <h2 style={{ fontSize: '1.2rem', margin: 0 }}>Trades Actifs ({active_trades.length})</h2>
@@ -875,7 +915,7 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
       </div>
 
       {/* SECTION 2 BIS : TRADES FERMÉS */}
-      <div onClick={() => { triggerHaptic('light'); setIsClosedTradesOpen(!isClosedTradesOpen); }} style={{ display: 'flex', justifyContent: 'flex-start', alignItems: 'center', cursor: 'pointer', borderBottom: '1px solid #333', paddingBottom: '25px', marginBottom: '0px', marginTop: '30px', userSelect: 'none' }}>
+      <div {...a11yToggleProps(() => { triggerHaptic('light'); setIsClosedTradesOpen(!isClosedTradesOpen); }, isClosedTradesOpen)} style={{ display: 'flex', justifyContent: 'flex-start', alignItems: 'center', cursor: 'pointer', borderBottom: '1px solid #333', paddingBottom: '25px', marginBottom: '0px', marginTop: '30px', userSelect: 'none' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#888' }}>
           <XCircle size={20} color="#888" />
           <h2 style={{ fontSize: '1.2rem', margin: 0 }}>Trades Fermés ({closed_trades.length})</h2>
@@ -890,7 +930,10 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
             <div style={{ textAlign: 'center', padding: '20px', color: '#555', background: '#1a1a1a', borderRadius: '10px', fontSize: '0.9rem' }}>Aucun trade clôturé aujourd'hui.</div>
           ) : (
             closed_trades.map((trade, index) => (
-              <div key={trade.ticket || index} style={{ 
+              // (#61) ?? au lieu de || -- un ticket à 0 (peu probable en pratique pour MT5,
+              // mais possible sur des lignes de stats sans vrai ticket) tombait à tort sur
+              // l'index, moins stable en cas de réordonnancement du tableau.
+              <div key={trade.ticket ?? index} style={{
                 background: '#1a1a1a', 
                 borderLeft: `4px solid ${trade.profit >= 0 ? '#00e676' : '#ff4444'}`, 
                 padding: '12px 15px', 
@@ -924,7 +967,7 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
       </div>
 
       {/* SECTION 3 : PANNEAU DE CONTRÔLE */}
-      <div onClick={() => { triggerHaptic('light'); setIsSettingsOpen(!isSettingsOpen); }} style={{ display: 'flex', justifyContent: 'flex-start', alignItems: 'center', cursor: 'pointer', borderBottom: '1px solid #333', paddingBottom: '25px', marginBottom: '0px', marginTop: '25px', userSelect: 'none' }}>
+      <div {...a11yToggleProps(() => { triggerHaptic('light'); setIsSettingsOpen(!isSettingsOpen); }, isSettingsOpen)} style={{ display: 'flex', justifyContent: 'flex-start', alignItems: 'center', cursor: 'pointer', borderBottom: '1px solid #333', paddingBottom: '25px', marginBottom: '0px', marginTop: '25px', userSelect: 'none' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#ddd' }}>
           <Settings size={20} color="#ffb74d" /> {/* 👈 Icône Orange */}
           <h2 style={{ fontSize: '1.2rem', margin: 0 }}>Panneau de Contrôle</h2>
@@ -1018,7 +1061,7 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
                 clic -> liste verticale des 7 jours (1 par ligne, plus de grille 7 colonnes qui débordait à 100%) */}
             {!daysExpanded ? (
               <div
-                onClick={() => { triggerHaptic('light'); setDaysExpanded(true); }}
+                {...a11yToggleProps(() => { triggerHaptic('light'); setDaysExpanded(true); }, false)}
                 style={{ background: '#2a2a2a', border: '1px solid #333', borderRadius: '8px', padding: '12px 15px', marginBottom: '25px', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
               >
                 <span style={{ fontSize: '0.85rem', color: '#888' }}>Aujourd'hui : <strong style={{ color: '#eee' }}>{FULL_DAY_NAMES[pyDay]}</strong></span>
@@ -1027,7 +1070,7 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
             ) : (
               <div style={{ background: '#121212', border: '1px solid #333', borderRadius: '8px', padding: '15px', marginBottom: '25px' }}>
                 <div
-                  onClick={() => { triggerHaptic('light'); setDaysExpanded(false); }}
+                  {...a11yToggleProps(() => { triggerHaptic('light'); setDaysExpanded(false); }, true)}
                   style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer', marginBottom: '15px' }}
                 >
                   <span style={{ fontSize: '0.8rem', color: '#888' }}>Réglage des 7 jours</span>
@@ -1178,7 +1221,7 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
       </div>
 
       {/* SECTION 4 : ANALYSES & STATISTIQUES */}
-      <div onClick={() => { triggerHaptic('light'); setIsStatsOpen(!isStatsOpen); }} style={{ display: 'flex', justifyContent: 'flex-start', alignItems: 'center', cursor: 'pointer', borderBottom: '1px solid #333', paddingBottom: '25px', marginBottom: '0px', marginTop: '25px', userSelect: 'none' }}>
+      <div {...a11yToggleProps(() => { triggerHaptic('light'); setIsStatsOpen(!isStatsOpen); }, isStatsOpen)} style={{ display: 'flex', justifyContent: 'flex-start', alignItems: 'center', cursor: 'pointer', borderBottom: '1px solid #333', paddingBottom: '25px', marginBottom: '0px', marginTop: '25px', userSelect: 'none' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#ddd' }}>
           <TrendingUp size={20} color="#00e676" />
           <h2 style={{ fontSize: '1.2rem', margin: 0 }}>Analyses & Statistiques</h2>
@@ -1225,7 +1268,8 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
 
               {/* On définit quelle source de données utiliser (jour ou semaine) */}
               {(() => {
-                const data = dayWeekToggle === 'day' ? daily_stats : historicalStats?.global_period;
+                // (#60) week_period est un vrai agrégat 7 jours, dédié, indépendant de l'onglet Global
+                const data = dayWeekToggle === 'day' ? daily_stats : historicalStats?.week_period;
                 if (!data) return <div style={{textAlign:'center', color:'#666'}}>Chargement des données...</div>;
 
                 return (
@@ -1233,14 +1277,17 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
                     <div style={{ display: 'flex', gap: '15px' }}>
                       <div style={{ flex: 1, background: '#1e1e1e', borderRadius: '12px', padding: '20px', border: '1px solid #333', textAlign: 'center' }}>
                         <div style={{ color: '#aaa', fontSize: '0.75rem', textTransform: 'uppercase', marginBottom: '5px' }}>Profit Encaissé</div>
-                        <div style={{ fontSize: '1.4rem', fontWeight: 'bold', color: (data.realized_pnl ?? data.profit) >= 0 ? '#00e676' : '#ff4444' }}>
+                        <div style={{ fontSize: '1.4rem', fontWeight: 'bold', color: (data.realized_pnl ?? data.profit ?? 0) >= 0 ? '#00e676' : '#ff4444' }}>
                           {(data.realized_pnl ?? data.profit ?? 0).toLocaleString('fr-FR')} €
                         </div>
                       </div>
                       <div style={{ flex: 1, background: '#1e1e1e', borderRadius: '12px', padding: '20px', border: '1px solid #333', textAlign: 'center' }}>
                         <div style={{ color: '#aaa', fontSize: '0.75rem', textTransform: 'uppercase', marginBottom: '5px' }}>Volume Pips</div>
-                        <div style={{ fontSize: '1.4rem', fontWeight: 'bold', color: (data.daily_pips || data.pips) >= 0 ? '#00e676' : '#ff4444' }}>
-                          {(data.daily_pips || data.pips || 0).toFixed(1)} <span style={{fontSize:'1rem'}}>p</span>
+                        {/* (#61) ?? au lieu de || -- un daily_pips légitimement à 0 était traité comme
+                            falsy et basculait sur data.pips (souvent absent), affichant une couleur
+                            rouge à tort pour une valeur neutre. */}
+                        <div style={{ fontSize: '1.4rem', fontWeight: 'bold', color: (data.daily_pips ?? data.pips ?? 0) >= 0 ? '#00e676' : '#ff4444' }}>
+                          {(data.daily_pips ?? data.pips ?? 0).toFixed(1)} <span style={{fontSize:'1rem'}}>p</span>
                         </div>
                       </div>
                     </div>
@@ -1412,7 +1459,7 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
       {/* SECTION 5 : MAILBOX (#29) -- signaler un bug/suggestion, historique + réponses admin.
           Placée ici (sous Analyses & Stats, au-dessus de la ligne rouge) plutôt qu'après
           Contrôle Système, sur demande utilisateur -- seul "Contrôle Système" reste sous la ligne rouge. */}
-      <div onClick={() => { triggerHaptic('light'); setIsFeedbackOpen(!isFeedbackOpen); }} style={{ display: 'flex', justifyContent: 'flex-start', alignItems: 'center', cursor: 'pointer', marginTop: '25px', userSelect: 'none' }}>
+      <div {...a11yToggleProps(() => { triggerHaptic('light'); setIsFeedbackOpen(!isFeedbackOpen); }, isFeedbackOpen)} style={{ display: 'flex', justifyContent: 'flex-start', alignItems: 'center', cursor: 'pointer', marginTop: '25px', userSelect: 'none' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#ddd' }}>
           <MessageCircle size={20} color="#64b5f6" />
           <h2 style={{ fontSize: '1.2rem', margin: 0 }}>Signaler un bug / suggestion</h2>
@@ -1467,7 +1514,7 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
             {myFeedback.length > 0 && (
               <div style={{ marginTop: isMyFeedbackOpen ? '20px' : '8px', borderTop: isMyFeedbackOpen ? '1px solid #333' : 'none', paddingTop: isMyFeedbackOpen ? '15px' : '0px' }}>
                 <div
-                  onClick={() => { triggerHaptic('light'); setIsMyFeedbackOpen(!isMyFeedbackOpen); }}
+                  {...a11yToggleProps(() => { triggerHaptic('light'); setIsMyFeedbackOpen(!isMyFeedbackOpen); }, isMyFeedbackOpen)}
                   style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', userSelect: 'none' }}
                 >
                   <h3 style={{ margin: 0, fontSize: '0.9rem', color: '#aaa' }}>Mes signalements ({myFeedback.length})</h3>
@@ -1510,7 +1557,7 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
       </div>
 
       {/* SECTION 6 : ACTIONS CRITIQUES (reste la dernière section, sous la ligne rouge) */}
-      <div onClick={() => { triggerHaptic('heavy'); setIsDangerOpen(!isDangerOpen); }} style={{ display: 'flex', justifyContent: 'flex-start', alignItems: 'center', cursor: 'pointer', borderTop: '2px dashed #ff4444', paddingTop: '25px', marginTop: '25px', userSelect: 'none' }}>
+      <div {...a11yToggleProps(() => { triggerHaptic('heavy'); setIsDangerOpen(!isDangerOpen); }, isDangerOpen)} style={{ display: 'flex', justifyContent: 'flex-start', alignItems: 'center', cursor: 'pointer', borderTop: '2px dashed #ff4444', paddingTop: '25px', marginTop: '25px', userSelect: 'none' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#ff4444' }}>
           <AlertTriangle size={20} />
           <h2 style={{ fontSize: '1.2rem', margin: 0 }}>Contrôle Système</h2>
