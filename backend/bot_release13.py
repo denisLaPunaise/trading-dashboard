@@ -82,6 +82,18 @@ async def run_bg(func, *args, **kwargs):
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, partial(func, *args, **kwargs))
 
+# (#58) L'API MetaTrader5 n'est pas garantie thread-safe pour des accès concurrents à la
+# même connexion terminal. run_bg() envoie chaque appel sur un thread du ThreadPoolExecutor
+# par défaut sans aucune coordination : monitor_positions, execute_trade, admin_commands,
+# edit_handler et le handler de commandes Firebase peuvent tous taper l'API MT5 au même
+# instant depuis des threads différents. run_mt5() sérialise ces appels avec un sémaphore.
+MT5_SEMAPHORE = asyncio.Semaphore(1)
+
+async def run_mt5(func, *args, **kwargs):
+    """Comme run_bg(), mais sérialise l'accès à l'API MetaTrader5 (#58)."""
+    async with MT5_SEMAPHORE:
+        return await run_bg(func, *args, **kwargs)
+
 try:
     import numpy
     if DISPLAY_MODE == "dev":
@@ -227,6 +239,11 @@ PACK_LOCKED_CHANNELS = []
 # settings.json local (sinon un client peut éditer le fichier pour tout débloquer).
 # None = licence pas encore vérifiée en ligne -> on retombe sur ALLOWED_CHANNELS local.
 SERVER_PACK_CHANNELS = None
+# (#47) Nombre d'échecs consécutifs de check_license_online(silent=True) tolérés avant de
+# passer en fail-closed. Sans ça, bloquer juste les domaines Firebase (sans couper tout
+# Internet) rendait une licence révoquée valide indéfiniment.
+LICENSE_CHECK_FAIL_COUNT = 0
+LICENSE_CHECK_MAX_FAILS = 2
 ID_CANAL_PERSO = -5093508256
 CHANNEL_TP1_PCT = {}
 SABR_ZONE_MIN_DIST = {} # Mémorise la distance la plus proche atteinte par le marché
@@ -519,7 +536,7 @@ def check_license_online(silent=False):
     Les alertes (connexion / vol / expiration) sont écrites dans Firestore et relayées
     sur Telegram par le bot de licence (VPS) — aucun token Telegram n'est embarqué dans l'exe.
     """
-    global ALLOWED_CHANNELS, SERVER_PACK_CHANNELS
+    global ALLOWED_CHANNELS, SERVER_PACK_CHANNELS, LICENSE_CHECK_FAIL_COUNT
 
     if not silent:
         logger.info("🌍 Vérification de la licence en cours...")
@@ -553,11 +570,23 @@ def check_license_online(silent=False):
     # 3. Lecture de la licence dans Firestore
     lic = firebase_sync.get_license(my_key)
     if lic is None:
-        # Tolérance : ne pas tuer un bot déjà lancé sur un simple incident réseau
         if silent:
-            return True
+            # (#47) Tolère un incident réseau ponctuel, mais fail-closed après
+            # LICENSE_CHECK_MAX_FAILS échecs consécutifs -- sinon bloquer juste les domaines
+            # Firebase (sans couper tout Internet) rendait une licence révoquée valide
+            # indéfiniment tant que Firestore restait injoignable.
+            LICENSE_CHECK_FAIL_COUNT += 1
+            if LICENSE_CHECK_FAIL_COUNT <= LICENSE_CHECK_MAX_FAILS:
+                logger.warning(
+                    f"⚠️ Licence injoignable ({LICENSE_CHECK_FAIL_COUNT}/{LICENSE_CHECK_MAX_FAILS} — tolérance incident réseau).")
+                return True
+            logger.critical("⛔ Licence injoignable depuis trop longtemps — passage en fail-closed.")
+            return False
         logger.error(f"❌ Licence introuvable ou serveur injoignable : {my_key}")
         return False
+
+    # Firestore a bien répondu : on réinitialise le compteur d'échecs réseau.
+    LICENSE_CHECK_FAIL_COUNT = 0
 
     user_name       = lic.get("user", "Inconnu") or "Inconnu"
     status          = lic.get("status", "")
@@ -1688,7 +1717,7 @@ def check_daily_max_loss():
 
 async def get_last_used_lot(symbol):
     # 1. Positions en cours (ASYNC)
-    open_pos = await run_bg(mt5.positions_get, symbol=symbol)
+    open_pos = await run_mt5(mt5.positions_get, symbol=symbol)
     if open_pos and len(open_pos) > 0:
         return open_pos[-1].volume
 
@@ -1697,7 +1726,7 @@ async def get_last_used_lot(symbol):
     past = now - timedelta(days=30)
     
     # C'est ici que ça pouvait freezer :
-    deals = await run_bg(mt5.history_deals_get, past, now, group=symbol)
+    deals = await run_mt5(mt5.history_deals_get, past, now, group=symbol)
     
     if deals and len(deals) > 0:
         for deal in reversed(deals):
@@ -1708,8 +1737,8 @@ async def get_last_used_lot(symbol):
 
 async def get_safe_lot_size(symbol, signal_type, sl_price, entry_price_ref, channel_source=None, risk_override=None):
     # 1. Sélection Symbole (SYNCHRONE)
-    await run_bg(mt5.symbol_select, "EURUSD", True)
-    acc = await run_bg(mt5.account_info)
+    await run_mt5(mt5.symbol_select, "EURUSD", True)
+    acc = await run_mt5(mt5.account_info)
     if not acc: return 0.0, 0.0
 
     cap_multiplier = max(1, math.floor((acc.balance + 4000) / 10000))
@@ -1804,7 +1833,7 @@ async def close_partial(pos, pct, tp_label, pips_gained, fixed_lot=None):
         return True
         
     # 2. CALCUL EXACT DU LOT (Avec respect du volume_step du broker)
-    info_sym = await run_bg(mt5.symbol_info, pos.symbol)
+    info_sym = await run_mt5(mt5.symbol_info, pos.symbol)
     step = info_sym.volume_step if info_sym else 0.01
     
     if fixed_lot:
@@ -1844,7 +1873,7 @@ async def close_partial(pos, pct, tp_label, pips_gained, fixed_lot=None):
     }
     
     # --- UTILISATION DU WRAPPER BLOQUANT ---
-    res = await run_bg(_send_order_blocking, req)
+    res = await run_mt5(_send_order_blocking, req)
 
     if res is None:
         logger.warning(f"⚠️ Timeout MT5 sur Close Partial {tp_label} (Ticket {pos.ticket})")
@@ -1863,7 +1892,7 @@ async def close_partial(pos, pct, tp_label, pips_gained, fixed_lot=None):
         day_pct = (day_total / daily_start_balance * 100) if daily_start_balance > 0 else 0.0
         icon_day = "🟢" if day_total >= 0 else "🔴"
         
-        acc = await run_bg(mt5.account_info)
+        acc = await run_mt5(mt5.account_info)
         bal = acc.balance if acc else 0.0
         
         await send_channel_alert(f"✅️ **{tp_label} VALIDÉ (+{pips_gained:.0f} pips)**\n\n"
@@ -1978,13 +2007,13 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
             new_sl = float(price_signal)
             count = 0
             # A. Positions ouvertes
-            positions = await run_bg(mt5.positions_get, symbol="XAUUSD")
+            positions = await run_mt5(mt5.positions_get, symbol="XAUUSD")
             if positions:
                 for pos in positions:
                     if pos.magic == MAGIC_NUMBER and pos.ticket in ACTIVE_TRADE_SOURCES:
                         if "SABR" in ACTIVE_TRADE_SOURCES[pos.ticket]:
                             req = {"action": mt5.TRADE_ACTION_SLTP, "position": pos.ticket, "sl": new_sl, "tp": pos.tp}
-                            res = await run_bg(_send_order_blocking, req)
+                            res = await run_mt5(_send_order_blocking, req)
                             # (#44) res peut être None (timeout MT5) -- .retcode dessus levait une
                             # AttributeError avalée par le bare except plus bas, sans alerter l'admin.
                             if res is None:
@@ -1993,12 +2022,12 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
                                 count += 1
 
             # B. Ordres en attente
-            orders = await run_bg(mt5.orders_get, symbol="XAUUSD")
+            orders = await run_mt5(mt5.orders_get, symbol="XAUUSD")
             if orders:
                 for order in orders:
                     if order.magic == MAGIC_NUMBER:
                         req = {"action": mt5.TRADE_ACTION_MODIFY, "order": order.ticket, "sl": new_sl, "tp": order.tp}
-                        await run_bg(_send_order_blocking, req)
+                        await run_mt5(_send_order_blocking, req)
 
             if count > 0: await send_alert(f"🔄 **SL SABR MIS À JOUR**\nNouveau SL: {new_sl}\nTrades modifiés: {count}")
             return None
@@ -2049,8 +2078,8 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
     curr_price = tick.ask if action == "ACHAT" else tick.bid
 
     # On récupère les positions et ordres en cours UNE SEULE FOIS pour tous les anti-doublons
-    existing_pos = await run_bg(mt5.positions_get, symbol=symbol)
-    existing_orders = await run_bg(mt5.orders_get, symbol=symbol)
+    existing_pos = await run_mt5(mt5.positions_get, symbol=symbol)
+    existing_orders = await run_mt5(mt5.orders_get, symbol=symbol)
 
     # ==============================================================================
     # 🛡️ ANTI-DOUBLON SABR (BASÉ SUR LA DISTANCE < 100 PIPS)
@@ -2403,7 +2432,7 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
         # le moment exact de l'ordre entre comptes (anti-détection "groupe" FTMO).
         await asyncio.sleep(random.uniform(0.0, 1.5))
 
-        res = await run_bg(_send_order_blocking, req)
+        res = await run_mt5(_send_order_blocking, req)
 
         if res is None:
             logger.error("⚠️ Erreur Critique: MT5 ne répond pas.")
@@ -2452,7 +2481,7 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
             new_t = mt5.symbol_info_tick(symbol)
             req['price'] = new_t.ask if action == "ACHAT" else new_t.bid
             
-            res2 = await run_bg(_send_order_blocking, req)
+            res2 = await run_mt5(_send_order_blocking, req)
             if res2 and res2.retcode == mt5.TRADE_RETCODE_DONE:
                 ACTIVE_TRADE_SOURCES[res2.order] = channel_source
                 await run_bg(save_channel_data)
@@ -2555,7 +2584,7 @@ async def send_channel_alert(msg, source, buttons=None):
 async def check_closed_positions():
     global watched_tickets
 
-    curr = await run_bg(mt5.positions_get, group="*")
+    curr = await run_mt5(mt5.positions_get, group="*")
 
     if curr is None: curr = ()
     cur_tix = {p.ticket for p in curr if p.magic == MAGIC_NUMBER or p.ticket in MANAGED_MANUAL_TICKETS}
@@ -2563,7 +2592,7 @@ async def check_closed_positions():
     
     for t in closed:
 
-        h = await run_bg(mt5.history_deals_get, position=t)
+        h = await run_mt5(mt5.history_deals_get, position=t)
 
         if h and len(h) > 0:
             last_deal = h[-1]
@@ -2749,30 +2778,45 @@ async def safety_net_scanner():
     """Vérifie toutes les 15s si un signal a été raté pendant une coupure réseau"""
     logger.info("🕸️ Filet de sécurité (Anti-Coupure) activé.")
     await asyncio.sleep(15) # On laisse le bot démarrer tranquillement
-    
+    last_purge = time.time()
+
     while True:
         try:
+            # (#61) PROCESSED_MSG_IDS ne sert qu'à couvrir la fenêtre de rattrapage de 5 min
+            # ci-dessous -- sans purge il grossissait indéfiniment (fuite mémoire lente sur
+            # des semaines d'uptime). 1h de rétention est largement suffisant.
+            if time.time() - last_purge > 3600:
+                PROCESSED_MSG_IDS.clear()
+                last_purge = time.time()
+
             for chat_id in CHANNEL_LIST:
                 # On demande poliment à Telegram les 2 derniers messages du canal
                 messages = await client.get_messages(chat_id, limit=2)
                 
                 for msg in messages:
                     if msg.id not in PROCESSED_MSG_IDS:
-                        # On marque immédiatement le message comme "vu" pour ne pas boucler dessus
-                        PROCESSED_MSG_IDS.add(msg.id)
-                        
+                        # (#52) Le marquage "vu" est désormais fait par main_handler() lui-même,
+                        # tout en tête, de façon atomique avec le check -- pas ici avant l'appel.
+                        # Sinon, si le flux live traitait ENCORE ce même event.id au moment de ce
+                        # scan (retard réseau plutôt que perte réelle), les deux exécutions de
+                        # main_handler tournaient en parallèle sur le même signal.
+                        #
                         # On vérifie l'âge du message (on ne trade que s'il a moins de 5 minutes)
                         # msg.date.timestamp() et time.time() sont tous les deux en UTC, c'est parfait
                         age_seconds = time.time() - msg.date.timestamp()
-                        
+
                         if age_seconds < 300: # 300 secondes = 5 minutes
                             logger.warning(f"🕸️ MESSAGE RATÉ ATTRAPÉ (Coupure réseau) ! ID: {msg.id}")
-                            
-                            # Astuce Telethon : L'objet 'msg' (Message) possède les mêmes attributs 
-                            # que 'event' (NewMessage.Event). On peut donc l'envoyer directement 
+
+                            # Astuce Telethon : L'objet 'msg' (Message) possède les mêmes attributs
+                            # que 'event' (NewMessage.Event). On peut donc l'envoyer directement
                             # dans le main_handler comme si de rien n'était !
                             await main_handler(msg)
-                            
+                        else:
+                            # Trop vieux pour être rejoué : on le marque quand même comme vu pour
+                            # ne pas recalculer son âge à chaque scan de 15s.
+                            PROCESSED_MSG_IDS.add(msg.id)
+
         except Exception:
             # Si le réseau est vraiment coupé au moment du scan, on ignore silencieusement
             pass
@@ -2802,7 +2846,7 @@ async def get_historical_stats(days=30, start_date_custom=None):
     else:
         start_date = end_date - timedelta(days=days)
     
-    history = await run_bg(mt5.history_deals_get, start_date, end_date)
+    history = await run_mt5(mt5.history_deals_get, start_date, end_date)
     
     # On initialise un dictionnaire complet pour matcher la structure daily_stats
     stats = {
@@ -3015,10 +3059,10 @@ async def heartbeat_monitor():
         if now.minute == 0 and now.hour % 4 == 0 and now.hour != last_msg_hour:
             try:
                 # CORRECTION ICI : Ajout de await run_bg
-                acc = await run_bg(mt5.account_info)
+                acc = await run_mt5(mt5.account_info)
                 if acc:
                     # CORRECTION ICI : Ajout de await run_bg
-                    pos = await run_bg(mt5.positions_get, group="*")
+                    pos = await run_mt5(mt5.positions_get, group="*")
                     
                     nb_open = len([p for p in pos if p.magic == MAGIC_NUMBER or p.ticket in MANAGED_MANUAL_TICKETS]) if pos else 0
                     
@@ -3036,19 +3080,26 @@ async def heartbeat_monitor():
 async def license_watchdog():
     logger.info("👮 Monitor Licence activé (Vérification toutes les 4h).")
     while True:
-        # On attend 4 heures (14400 secondes) avant la prochaine vérif
-        await asyncio.sleep(14400) 
-        
-        logger.info("👮 Vérification périodique de la licence...")
-        # On appelle la fonction en mode silencieux (pas de print, pas de mouchard Telegram)
-        is_valid = await run_bg(check_license_online, silent=True)
-        
-        if not is_valid:
-            logger.critical("⛔ LICENCE RÉVOQUÉE OU EXPIRÉE EN COURS DE SESSION !")
-            await send_alert("🚨 **URGENT : LICENCE INVALIDE**\n\nLe bot va s'arrêter immédiatement.")
-            # On ferme proprement
-            with open("STOP_ME", "w") as f: f.write("STOP")
-            sys.exit() # Arrêt du script
+        try:
+            # On attend 4 heures (14400 secondes) avant la prochaine vérif
+            await asyncio.sleep(14400)
+
+            logger.info("👮 Vérification périodique de la licence...")
+            # On appelle la fonction en mode silencieux (pas de print, pas de mouchard Telegram)
+            is_valid = await run_bg(check_license_online, silent=True)
+
+            if not is_valid:
+                logger.critical("⛔ LICENCE RÉVOQUÉE OU EXPIRÉE EN COURS DE SESSION !")
+                await send_alert("🚨 **URGENT : LICENCE INVALIDE**\n\nLe bot va s'arrêter immédiatement.")
+                # On ferme proprement -- STOP_ME signale un arrêt VOLONTAIRE au watchdog
+                # externe (run_watchdog), pour qu'il ne relance pas le worker (#46).
+                with open("STOP_ME", "w") as f: f.write("STOP")
+                os._exit(0)
+        except Exception as e:
+            # (#47) Sans ce try/except, une exception imprévue tuait cette tâche
+            # silencieusement : plus aucune revérification de licence pour le reste de la
+            # session, sans log ni alerte.
+            logger.error(f"license_watchdog error: {e}")
 
 async def monitor_positions():
     global watched_tickets, PENDING_ORDER_TICKETS
@@ -3097,7 +3148,7 @@ async def monitor_positions():
 
             # --- B. Nettoyage intelligent des ordres (NOUVEAU) ---
             # On récupère l'heure serveur pour bloquer le spam le week-end
-            server_t = await run_bg(get_server_time_tick)
+            server_t = await run_mt5(get_server_time_tick)
             is_weekend = False
             if server_t:
                 s_dt = datetime.fromtimestamp(server_t.time, timezone.utc)
@@ -3109,18 +3160,18 @@ async def monitor_positions():
                     tag_we = f"WE_CLEAN_{s_dt.day}"
                     if tag_we not in TRADES_PROCESSED_LEVELS.get("SYS", set()):
                         if "SYS" not in TRADES_PROCESSED_LEVELS: TRADES_PROCESSED_LEVELS["SYS"] = set()
-                        all_o = await run_bg(mt5.orders_get)
+                        all_o = await run_mt5(mt5.orders_get)
                         if all_o:
                             c_del = 0
                             for ord_to_del in all_o:
                                 if ord_to_del.magic == MAGIC_NUMBER:
-                                    res = await run_bg(_send_order_blocking, {"action": mt5.TRADE_ACTION_REMOVE, "order": ord_to_del.ticket})
+                                    res = await run_mt5(_send_order_blocking, {"action": mt5.TRADE_ACTION_REMOVE, "order": ord_to_del.ticket})
                                     if res and res.retcode == mt5.TRADE_RETCODE_DONE: c_del += 1
                             if c_del > 0: await send_alert(f"🧹 **CLÔTURE MARCHÉ** : {c_del} ordres en attente purgés pour le week-end.")
                         TRADES_PROCESSED_LEVELS["SYS"].add(tag_we)
                         await run_bg(save_memory)
 
-            active_orders = await run_bg(mt5.orders_get)
+            active_orders = await run_mt5(mt5.orders_get)
             # 🛑 ANTI-SPAM : On bloque tout le nettoyage classique si on est le week-end
             if active_orders and not is_weekend:
                 sabr_pending_groups = {} # Pour grouper les trades SABR par zone
@@ -3137,7 +3188,7 @@ async def monitor_positions():
                         age_seconds = current_time_sec - o.time_setup
                         if age_seconds > 12 * 3600: # 12 heures = 43200 secondes
                             req = {"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket}
-                            res = await run_bg(_send_order_blocking, req)
+                            res = await run_mt5(_send_order_blocking, req)
                             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                                 src_clean = src.replace("CANAL ", "").replace("_", " ")
                                 await send_channel_alert(f"🗑️ **ORDRE EXPIRÉ (>12h)**\n\n"
@@ -3205,7 +3256,7 @@ async def monitor_positions():
                         count_cancelled = 0
                         for o in pending_orders:
                             req = {"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket}
-                            res = await run_bg(_send_order_blocking, req)
+                            res = await run_mt5(_send_order_blocking, req)
                             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                                 count_cancelled += 1
                                 
@@ -3219,7 +3270,7 @@ async def monitor_positions():
             
             # 3. Sécurité Drawdown
             if check_daily_max_loss():
-                pos_panic = await run_bg(mt5.positions_get)
+                pos_panic = await run_mt5(mt5.positions_get)
                 if pos_panic:
                     await send_alert("🚨 **URGENCE : DD QUOTIDIEN DÉPASSÉ !**\nFermeture d'urgence.")
                     for p in pos_panic:
@@ -3235,18 +3286,18 @@ async def monitor_positions():
                                 "type": otype, "position": p.ticket, "price": price_p, 
                                 "magic": MAGIC_NUMBER, "type_filling": mt5.ORDER_FILLING_IOC
                             }
-                            await run_bg(_send_order_blocking, req)
+                            await run_mt5(_send_order_blocking, req)
                     
-                    orders_panic = await run_bg(mt5.orders_get)
+                    orders_panic = await run_mt5(mt5.orders_get)
                     if orders_panic:
                         for o in orders_panic:
                             if o.magic == MAGIC_NUMBER:
-                                await run_bg(_send_order_blocking, {"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
+                                await run_mt5(_send_order_blocking, {"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
                 await asyncio.sleep(60)
                 continue
 
             # 4. BOUCLE PRINCIPALE
-            all_positions = await run_bg(mt5.positions_get)
+            all_positions = await run_mt5(mt5.positions_get)
             if all_positions is not None:
                 
                 sabr_groups = {} 
@@ -3332,7 +3383,7 @@ async def monitor_positions():
                                 if update_hard_sl:
                                     new_sl_price = round(be_price / pt) * pt
                                     req = {"action": mt5.TRADE_ACTION_SLTP, "symbol": sym, "position": pos.ticket, "sl": new_sl_price, "tp": pos.tp}
-                                    res = await run_bg(_send_order_blocking, req)
+                                    res = await run_mt5(_send_order_blocking, req)
                                     if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                                         await send_channel_alert(f"🛡️ **SL SÉCURISÉ BE (MDT FREE - TP1)**\n\nSymbole: {sym}\nTicket: {pos.ticket}", src_trade)
                                         processed.add("MDT_FREE_TP1_BE")
@@ -3368,7 +3419,7 @@ async def monitor_positions():
                             if update_hard_sl:
                                 new_sl_price = round(be_price / pt) * pt
                                 req = {"action": mt5.TRADE_ACTION_SLTP, "symbol": sym, "position": pos.ticket, "sl": new_sl_price, "tp": pos.tp}
-                                res = await run_bg(_send_order_blocking, req)
+                                res = await run_mt5(_send_order_blocking, req)
                                 if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                                     await send_channel_alert(f"🛡️ **SL SÉCURISÉ BE (MDT VIP - filet de sécurité 60p, aucune instruction reçue)**\n\nSymbole: {sym}\nTicket: {pos.ticket}", src_trade)
                             processed.add("VIP_BE_DONE")
@@ -3479,7 +3530,7 @@ async def monitor_positions():
                             # --- CORRECTION CRITIQUE SL ---
                             # On utilise la fonction de retry _send_order_blocking pour être SÛR que le SL bouge
                             # même si le réseau est instable
-                            res = await run_bg(_send_order_blocking, req)
+                            res = await run_mt5(_send_order_blocking, req)
 
                             if res is None:
                                 logger.warning(f"⚠️ MT5 Timeout (SL) sur ticket {pos.ticket}")
@@ -3532,7 +3583,7 @@ async def monitor_positions():
                                     new_sl = round(new_sl / pt) * pt
                                     if abs(new_sl - current_sl) > (pt / 2):
                                         req = {"action": mt5.TRADE_ACTION_SLTP, "symbol": sym, "position": p.ticket, "sl": new_sl, "tp": p.tp}
-                                        res = await run_bg(_send_order_blocking, req)
+                                        res = await run_mt5(_send_order_blocking, req)
                                         if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                                             p_open_time = (datetime.fromtimestamp(p.time) - timedelta(hours=1)).strftime('%H:%M')
                                             p_src_clean = ACTIVE_TRADE_SOURCES.get(p.ticket, "INCONNU").replace("CANAL ", "").replace("_", " ")
@@ -3542,7 +3593,7 @@ async def monitor_positions():
                                                              f"Ticket: {p.ticket}", ACTIVE_TRADE_SOURCES.get(p.ticket, ""))
 
                                 # 2. Clôture 60% du volume initial
-                                deals = await run_bg(mt5.history_deals_get, position=p.ticket)
+                                deals = await run_mt5(mt5.history_deals_get, position=p.ticket)
                                 initial_vol = deals[0].volume if (deals and len(deals) > 0) else p.volume
 
                                 vol_to_close = round(initial_vol * 0.60, 2)
@@ -3560,7 +3611,7 @@ async def monitor_positions():
                         if pips_indiv >= 150:
                             tag_150 = "SABR_150_PLUS10"
                             if tag_150 not in TRADES_PROCESSED_LEVELS[p.ticket]:
-                                deals = await run_bg(mt5.history_deals_get, position=p.ticket)
+                                deals = await run_mt5(mt5.history_deals_get, position=p.ticket)
                                 initial_vol = deals[0].volume if (deals and len(deals) > 0) else p.volume
 
                                 vol_to_close = round(initial_vol * 0.10, 2)
@@ -3670,15 +3721,15 @@ async def admin_commands(event):
 
 # --- 1. STATUS & INFO ---
     if text == "/status" or text == "/balance" or text == "/info":
-        if not await run_bg(mt5.initialize): await event.reply("❌ MT5 Off"); return
-        acc = await run_bg(mt5.account_info)
+        if not await run_mt5(mt5.initialize): await event.reply("❌ MT5 Off"); return
+        acc = await run_mt5(mt5.account_info)
         
         daily_total, daily_realized, daily_float = get_accurate_daily_stats()
         
         start_bal_theo = acc.balance - daily_realized
         daily_pct = (daily_total / start_bal_theo * 100) if start_bal_theo > 0 else 0.0
         
-        pos = await run_bg(mt5.positions_get, group="*")
+        pos = await run_mt5(mt5.positions_get, group="*")
         nb = len([p for p in pos if p.magic == MAGIC_NUMBER or p.ticket in MANAGED_MANUAL_TICKETS]) if pos else 0
         
         risk_g = round(RISK_PERCENT_GOLD * 100, 2)
@@ -3739,14 +3790,14 @@ async def admin_commands(event):
 
 # --- 2. FERMETURE TOTALE ---
     elif text == "/closeall":
-        pos_list = await run_bg(mt5.positions_get)
+        pos_list = await run_mt5(mt5.positions_get)
         c = 0
         if pos_list:
             for p in pos_list:
                 if p.magic == MAGIC_NUMBER or p.ticket in MANAGED_MANUAL_TICKETS:
                     otype = mt5.ORDER_TYPE_SELL if p.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
                     req = {"action": mt5.TRADE_ACTION_DEAL, "symbol": p.symbol, "volume": p.volume, "type": otype, "position": p.ticket, "magic": MAGIC_NUMBER, "type_filling": mt5.ORDER_FILLING_IOC}
-                    await run_bg(_send_order_blocking, req); c += 1
+                    await run_mt5(_send_order_blocking, req); c += 1
         await event.reply(f"🚨 **PANIC:** {c} trades fermés.")
 
 # --- 3. FERMETURE CIBLÉE ---
@@ -3754,14 +3805,14 @@ async def admin_commands(event):
         try:
             parts = text.split(); symbol_key = parts[1].upper()
             symbol_to_close = SYMBOL_MAPPING.get(symbol_key, symbol_key)
-            pos_list = await run_bg(mt5.positions_get)
+            pos_list = await run_mt5(mt5.positions_get)
             count = 0
             if pos_list:
                 for p in pos_list:
                     if symbol_to_close in p.symbol.upper() and (p.magic == MAGIC_NUMBER or p.ticket in MANAGED_MANUAL_TICKETS):
                         otype = mt5.ORDER_TYPE_SELL if p.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
                         req = {"action": mt5.TRADE_ACTION_DEAL, "symbol": p.symbol, "volume": p.volume, "type": otype, "position": p.ticket, "magic": MAGIC_NUMBER, "type_filling": mt5.ORDER_FILLING_IOC}
-                        await run_bg(_send_order_blocking, req); count += 1
+                        await run_mt5(_send_order_blocking, req); count += 1
             await event.reply(f"✅ **CIBLÉ :** {count} trades fermés sur {symbol_to_close}.")
         except Exception as e: await event.reply(f"❌ Erreur: {e}")
 
@@ -3871,7 +3922,7 @@ async def admin_commands(event):
     elif text.startswith("/suivi"):
         try:
             parts = text.split(); ticket_id = int(parts[1])
-            p_open = await run_bg(mt5.positions_get, ticket=ticket_id)
+            p_open = await run_mt5(mt5.positions_get, ticket=ticket_id)
             if not p_open: await event.reply("❌ Ticket introuvable."); return
             MANAGED_MANUAL_TICKETS.add(ticket_id); await run_bg(save_memory)
             ACTIVE_TRADE_SOURCES[ticket_id] = "CANAL PERSO"; await run_bg(save_channel_data)
@@ -3880,8 +3931,11 @@ async def admin_commands(event):
 
 # --- 8. ARRÊT TOTAL ---
     elif text == "/kill":
+        # STOP_ME signale un arrêt VOLONTAIRE au watchdog externe (#46) ; os._exit() (et pas
+        # sys.exit(), qui ne fait que lever SystemExit dans CETTE tâche asyncio sans jamais
+        # arrêter le process) termine réellement le worker immédiatement.
         with open("STOP_ME", "w") as f: f.write("STOP")
-        await event.reply("💀 **ARRET DU BOT...** (Adieu)"); sys.exit()
+        await event.reply("💀 **ARRET DU BOT...** (Adieu)"); os._exit(0)
 
 # --- 9. REGLAGE SL SUIVEUR ---
     elif text.startswith("/sl_suiveur"):
@@ -4075,8 +4129,8 @@ async def admin_commands(event):
 
 # --- 15. RAPPORTS ---
     elif text == "/stats":
-        if not await run_bg(mt5.initialize): await event.reply("❌ MT5 Off"); return
-        acc = await run_bg(mt5.account_info)
+        if not await run_mt5(mt5.initialize): await event.reply("❌ MT5 Off"); return
+        acc = await run_mt5(mt5.account_info)
         day_total, _, _ = get_accurate_daily_stats()
         start_bal = acc.balance - day_total # Approx
         day_pct = (day_total / start_bal * 100) if start_bal > 0 else 0.0
@@ -4198,16 +4252,30 @@ async def admin_commands(event):
 
 @client.on(events.NewMessage(chats=CHANNEL_LIST))
 async def main_handler(event):
+    # (#52) Garde de ré-entrance posée EN PREMIER, avant tout traitement (y compris le
+    # forward SABR ci-dessous) : safety_net_scanner() rejoue les messages ratés en appelant
+    # main_handler() directement avec le même event.id que le flux live. Sans ce garde tout
+    # en tête, les deux exécutions pouvaient tourner en parallèle sur le même signal et
+    # ouvrir deux fois le même trade réel (l'ancien marquage `PROCESSED_MSG_IDS.add()` plus
+    # bas ne protégeait de rien, il n'était même jamais vérifié avant écriture).
+    if event.id in PROCESSED_MSG_IDS:
+        return
+    PROCESSED_MSG_IDS.add(event.id)
+
     # --- AJOUT DEBUG ---
     log(f"👀 J'ai vu un message ! ID: {event.id}")
     log(f"Texte brut: {event.raw_text}")
 
-    PROCESSED_MSG_IDS.add(event.id)
-
     # === 📤 TRANSFERT DES MESSAGES SABR (FORWARDER) ===
     # (#5) Si le canal copie est mute, on coupe aussi la recopie des messages.
+    # (#53) Ne transfère que si le canal SABR VIP source lui-même fait partie du pack du
+    # client -- avant ce fix, un client sans SABR VIP dans son pack recevait quand même le
+    # texte intégral des signaux (zone/prix/action) via son canal SABR_COPIE, alors même que
+    # le trading dessus était bloqué : fuite d'information malgré l'isolation pack correcte
+    # côté exécution.
     copie_muted = any("SABR_COPIE" in m for m in MUTED_CHANNELS)
-    if SABR_FORWARD_ACTIVE and not copie_muted and event.chat_id in [ID_SABR_VIP, -5093508256]:
+    sabr_vip_allowed = channel_allowed("CANAL SABR_VIP")
+    if SABR_FORWARD_ACTIVE and not copie_muted and sabr_vip_allowed and event.chat_id in [ID_SABR_VIP, -5093508256]:
         try:
             global http_session
             # On envoie le message original vers ton canal de copie
@@ -4242,11 +4310,11 @@ async def main_handler(event):
 
         if target_msg_id and target_msg_id in TELEGRAM_TO_TICKET:
             for tk in TELEGRAM_TO_TICKET[target_msg_id]:
-                pos_data = await run_bg(mt5.positions_get, ticket=tk)
+                pos_data = await run_mt5(mt5.positions_get, ticket=tk)
                 if not pos_data: continue
                 pos = pos_data[0]
 
-                deals = await run_bg(mt5.history_deals_get, position=tk)
+                deals = await run_mt5(mt5.history_deals_get, position=tk)
                 initial_vol = deals[0].volume if (deals and len(deals) > 0) else pos.volume
                 vol_to_close = round(initial_vol * 0.10, 2)
                 if vol_to_close < 0.01: vol_to_close = 0.01
@@ -4298,7 +4366,7 @@ async def main_handler(event):
                 closed_count = 0
                 for tk in tickets_to_manage:
                     # --- CAS A : C'EST UN ORDRE EN ATTENTE (PENDING) ? ---
-                    orders_data = await run_bg(mt5.orders_get, ticket=tk)
+                    orders_data = await run_mt5(mt5.orders_get, ticket=tk)
                     if orders_data and len(orders_data) > 0:
                         # C'est un ordre -> ON SUPPRIME (REMOVE)
                         req = {
@@ -4306,7 +4374,7 @@ async def main_handler(event):
                             "order": tk,
                             "magic": MAGIC_NUMBER
                         }
-                        res = await run_bg(_send_order_blocking, req)
+                        res = await run_mt5(_send_order_blocking, req)
 
                         if res is None:
                             await send_alert(f"⚠️ Timeout MT5: Impossible de supprimer l'ordre #{tk}")
@@ -4321,7 +4389,7 @@ async def main_handler(event):
                         continue # On passe au ticket suivant
 
                     # --- CAS B : C'EST UNE POSITION ACTIVE ? ---
-                    pos_data = await run_bg(mt5.positions_get, ticket=tk)
+                    pos_data = await run_mt5(mt5.positions_get, ticket=tk)
                     if pos_data and len(pos_data) > 0:
                         # C'est une position -> ON FERME (CLOSE)
                         pos = pos_data[0]
@@ -4333,7 +4401,7 @@ async def main_handler(event):
                             "type": otype, "position": tk, "price": price,
                             "magic": MAGIC_NUMBER, "comment": "Bot - Stop Admin", "type_filling": mt5.ORDER_FILLING_IOC,
                         }
-                        res = await run_bg(_send_order_blocking, req)
+                        res = await run_mt5(_send_order_blocking, req)
 
                         if res is None:
                             await send_alert(f"⚠️ Timeout MT5: Impossible de fermer la position #{tk}")
@@ -4358,7 +4426,7 @@ async def main_handler(event):
                 if is_half or is_generic_partial:
                     label = "Clôture 50% (signal canal)" if is_half else "Clôture partielle 50% (signal canal, % non précisé)"
                     for tk in tickets_to_manage:
-                        pos_data = await run_bg(mt5.positions_get, ticket=tk)
+                        pos_data = await run_mt5(mt5.positions_get, ticket=tk)
                         if not pos_data: continue
                         pos = pos_data[0]
                         pt = get_cached_point(pos.symbol); div = get_pip_divisor(pos.symbol)
@@ -4372,7 +4440,7 @@ async def main_handler(event):
                 # --- (#20) Mise à BE (SL au point d'entrée) ---
                 if is_be:
                     for tk in tickets_to_manage:
-                        pos_data = await run_bg(mt5.positions_get, ticket=tk)
+                        pos_data = await run_mt5(mt5.positions_get, ticket=tk)
                         if not pos_data: continue
                         pos = pos_data[0]
                         pt = get_cached_point(pos.symbol)
@@ -4382,7 +4450,7 @@ async def main_handler(event):
                         if move_sl:
                             new_sl_price = round(be_price / pt) * pt
                             req = {"action": mt5.TRADE_ACTION_SLTP, "symbol": pos.symbol, "position": tk, "sl": new_sl_price, "tp": pos.tp}
-                            res = await run_bg(_send_order_blocking, req)
+                            res = await run_mt5(_send_order_blocking, req)
                             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                                 await send_alert(f"🛡️ **SL SÉCURISÉ AU BE** (signal canal)\n\nTicket #{tk}")
                                 action_taken = True
@@ -4605,12 +4673,12 @@ async def edit_handler(event):
         sym = find_tradable_symbol(rsym)
         if not sym: return
         
-        pos_list = await run_bg(mt5.positions_get, symbol=sym)
+        pos_list = await run_mt5(mt5.positions_get, symbol=sym)
         if pos_list:
             for p in pos_list:
                 if p.magic == MAGIC_NUMBER: tickets_to_update.append(p.ticket)
         
-        ord_list = await run_bg(mt5.orders_get, symbol=sym)
+        ord_list = await run_mt5(mt5.orders_get, symbol=sym)
         if ord_list:
             for o in ord_list:
                 if o.magic == MAGIC_NUMBER: tickets_to_update.append(o.ticket)
@@ -4620,10 +4688,10 @@ async def edit_handler(event):
     success_count = 0
     for ticket in tickets_to_update:
         is_pending = False
-        orders = await run_bg(mt5.orders_get, ticket=ticket)
+        orders = await run_mt5(mt5.orders_get, ticket=ticket)
         pos = None
         if orders and len(orders) > 0: is_pending = True
-        else: pos = await run_bg(mt5.positions_get, ticket=ticket)
+        else: pos = await run_mt5(mt5.positions_get, ticket=ticket)
 
         if not is_pending and not pos: continue
 
@@ -4645,7 +4713,7 @@ async def edit_handler(event):
         else:
             req["position"] = ticket
         
-        res = await run_bg(_send_order_blocking, req)
+        res = await run_mt5(_send_order_blocking, req)
         if res and res.retcode == mt5.TRADE_RETCODE_DONE:
             success_count += 1
             
@@ -4669,14 +4737,14 @@ async def deletion_handler(event):
             
             for tk in tickets:
                 # On vérifie si c'est un ORDRE EN ATTENTE (Pending)
-                orders = await run_bg(mt5.orders_get, ticket=tk)
+                orders = await run_mt5(mt5.orders_get, ticket=tk)
                 if orders and len(orders) > 0:
                     # C'est un ordre pending -> ON LE SUPPRIME
                     req = {
                         "action": mt5.TRADE_ACTION_REMOVE,
                         "order": tk
                     }
-                    res = await run_bg(_send_order_blocking, req)
+                    res = await run_mt5(_send_order_blocking, req)
 
                     if res is None:
                         logger.warning(f"⚠️ Timeout MT5: Echec suppression ordre #{tk} (Message supprimé)")
@@ -4735,7 +4803,7 @@ async def risk_schedule_monitor():
 async def get_current_state_for_firebase() -> dict:
     """Collecte l'état complet du bot pour le push Firebase."""
     try:
-        acc = await run_bg(mt5.account_info)
+        acc = await run_mt5(mt5.account_info)
         if not acc:
             return None
 
@@ -4743,7 +4811,7 @@ async def get_current_state_for_firebase() -> dict:
         start_bal = acc.balance - day_realized
         day_pct = (day_total / start_bal * 100) if start_bal > 0 else 0.0
 
-        pos_list = await run_bg(mt5.positions_get)
+        pos_list = await run_mt5(mt5.positions_get)
         active_trades = []
         if pos_list:
             for p in pos_list:
@@ -4764,7 +4832,7 @@ async def get_current_state_for_firebase() -> dict:
                     "managed": is_managed,
                 })
 
-        closed_trades_today = await run_bg(_get_closed_trades_today_blocking)
+        closed_trades_today = await run_mt5(_get_closed_trades_today_blocking)
 
         account = {
             "balance": acc.balance, "equity": acc.equity, "free_margin": acc.margin_free,
@@ -4796,9 +4864,16 @@ async def get_current_state_for_firebase() -> dict:
             "day_factor_6": DAY_RISK_FACTORS.get(6, 1.0),
         }
 
+        # (#53) Même filtre que /canal_stats côté Telegram : un canal retiré du pack ne doit
+        # plus apparaître dans les stats lifetime poussées au dashboard. `active_trades` reste
+        # volontairement NON filtré : ce sont des positions MT5 réellement ouvertes sur le
+        # compte du client, qu'il doit pouvoir continuer à gérer (fermer/BE) même si son pack
+        # a changé depuis l'ouverture -- les masquer casserait la gestion d'un vrai trade.
+        channels_lifetime_filtered = {ch: v for ch, v in CHANNEL_STATS.items() if channel_allowed(ch)}
+
         return firebase_sync.build_state_document(
             account, stats, settings, active_trades, closed_trades_today or [],
-            extra={"channels_lifetime": CHANNEL_STATS}
+            extra={"channels_lifetime": channels_lifetime_filtered}
         )
     except Exception as e:
         logger.error(f"Erreur collecte état Firebase : {e}")
@@ -4818,7 +4893,7 @@ async def handle_firebase_command(cmd_id: str, cmd_data: dict) -> None:
     try:
         if cmd_type == "close_trade":
             ticket = int(payload.get("ticket", 0))
-            pos = await run_bg(mt5.positions_get, ticket=ticket)
+            pos = await run_mt5(mt5.positions_get, ticket=ticket)
             if pos:
                 p = pos[0]
                 otype = mt5.ORDER_TYPE_SELL if p.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
@@ -4827,7 +4902,7 @@ async def handle_firebase_command(cmd_id: str, cmd_data: dict) -> None:
                 req = {"action": mt5.TRADE_ACTION_DEAL, "symbol": p.symbol, "volume": p.volume,
                        "type": otype, "position": ticket, "price": price_p,
                        "magic": MAGIC_NUMBER, "type_filling": mt5.ORDER_FILLING_IOC}
-                res = await run_bg(_send_order_blocking, req)
+                res = await run_mt5(_send_order_blocking, req)
                 if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                     set_status("done", {"success": True})
                 else:
@@ -4837,11 +4912,11 @@ async def handle_firebase_command(cmd_id: str, cmd_data: dict) -> None:
 
         elif cmd_type == "be_trade":
             ticket = int(payload.get("ticket", 0))
-            pos = await run_bg(mt5.positions_get, ticket=ticket)
+            pos = await run_mt5(mt5.positions_get, ticket=ticket)
             if pos:
                 p = pos[0]
                 req = {"action": mt5.TRADE_ACTION_SLTP, "position": ticket, "sl": p.price_open, "tp": p.tp}
-                res = await run_bg(_send_order_blocking, req)
+                res = await run_mt5(_send_order_blocking, req)
                 if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                     set_status("done", {"success": True})
                 else:
@@ -4850,7 +4925,7 @@ async def handle_firebase_command(cmd_id: str, cmd_data: dict) -> None:
                 set_status("error", {"success": False, "message": "Trade introuvable"})
 
         elif cmd_type == "panic":
-            pos_list = await run_bg(mt5.positions_get)
+            pos_list = await run_mt5(mt5.positions_get)
             if pos_list:
                 for p in pos_list:
                     if p.magic == MAGIC_NUMBER or p.ticket in MANAGED_MANUAL_TICKETS:
@@ -4858,7 +4933,7 @@ async def handle_firebase_command(cmd_id: str, cmd_data: dict) -> None:
                         req = {"action": mt5.TRADE_ACTION_DEAL, "symbol": p.symbol, "volume": p.volume,
                                "type": otype, "position": p.ticket, "magic": MAGIC_NUMBER,
                                "type_filling": mt5.ORDER_FILLING_IOC}
-                        await run_bg(_send_order_blocking, req)
+                        await run_mt5(_send_order_blocking, req)
             set_status("done", {"success": True})
 
         elif cmd_type == "unlock":
@@ -5000,8 +5075,11 @@ async def _firebase_push_stats_loop(user_id: str) -> None:
 
 async def mark_bot_offline_and_exit():
     await firebase_sync.mark_bot_offline(str(TELEGRAM_DESTINATION_ID))
-    import os as _os
-    _os.exit(0)
+    # (#46) STOP_ME signale un arrêt VOLONTAIRE au watchdog externe, qui sinon relance le
+    # worker automatiquement. `os.exit()` n'existe pas (AttributeError) : c'était la raison
+    # pour laquelle un kill déclenché depuis le dashboard ne stoppait jamais réellement le bot.
+    with open("STOP_ME", "w") as f: f.write("STOP")
+    os._exit(0)
 
 
 async def main():
@@ -5109,11 +5187,26 @@ def run_watchdog():
     logger.info("🛡️ Système de surveillance (Watchdog) activé.")
 
     # Nettoyage du fichier de vie au démarrage
-    if os.path.exists(WATCH_FILE): 
+    if os.path.exists(WATCH_FILE):
         try: os.remove(WATCH_FILE)
+        except: pass
+    # (#46) Nettoyage d'un STOP_ME laissé par une session précédente, pour ne pas bloquer
+    # ce nouveau démarrage volontaire du Chef.
+    if os.path.exists("STOP_ME"):
+        try: os.remove("STOP_ME")
         except: pass
 
     while True:
+        # (#46) Un STOP_ME présent ici signifie que le Worker vient de s'arrêter
+        # VOLONTAIREMENT (/kill, kill dashboard, licence révoquée) -- sans cette vérif, le
+        # Chef le relançait automatiquement quelques secondes après, rendant ces arrêts
+        # inopérants. On ne relance pas et on termine le Chef.
+        if os.path.exists("STOP_ME"):
+            logger.info("🛑 Arrêt volontaire détecté (STOP_ME) — le Chef ne relance pas le Worker.")
+            try: os.remove("STOP_ME")
+            except: pass
+            break
+
         # On prépare la commande pour lancer l'Ouvrier (soi-même avec l'argument --worker)
         if getattr(sys, 'frozen', False):
             # Cas .exe (PyInstaller)
@@ -5123,7 +5216,7 @@ def run_watchdog():
             cmd = [sys.executable, sys.argv[0], "--worker"]
 
         logger.info("🚀 Démarrage du Worker (Le Bot)...")
-        
+
         # On lance le bot dans une fenêtre séparée ou en arrière-plan
         # creationflags=subprocess.CREATE_NEW_CONSOLE permet d'avoir une fenêtre dédiée (optionnel)
         process = subprocess.Popen(cmd)
@@ -5131,10 +5224,11 @@ def run_watchdog():
         while True:
             time.sleep(5) # Le Chef dort 5 secondes
 
-            # A. Vérifier si l'ouvrier a crashé tout seul (Erreur code)
+            # A. Vérifier si l'ouvrier s'est arrêté (crash OU arrêt volontaire, cf. STOP_ME
+            # vérifié au sommet de la boucle externe)
             if process.poll() is not None:
-                logger.warning("⚠️ Le Worker s'est arrêté (Crash). Redémarrage immédiat...")
-                break # On sort de la boucle pour relancer
+                logger.warning("⚠️ Le Worker s'est arrêté. Nouvelle itération du Chef...")
+                break # On sort de la boucle pour relancer (ou s'arrêter si STOP_ME présent)
 
             # B. Vérifier le Freeze (Le fichier alive.txt est-il vieux ?)
             if os.path.exists(WATCH_FILE):
