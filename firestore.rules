@@ -9,6 +9,22 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/licenses/$(request.auth.uid)).data.telegram_id == userId;
     }
 
+    // (#57) Le dashboard s'authentifie avec uid == telegram_id (jamais la clé de licence) :
+    // licenseOwns() ne peut donc jamais s'appliquer à sa PROPRE session, et rien ne
+    // revérifiait le statut de la licence pour l'accès dashboard lui-même -- un client banni
+    // gardait un accès dashboard tant que son compte Firebase Auth n'était pas explicitement
+    // désactivé. license_key est poussé par le bot dans users/{userId} (donc écrit UNIQUEMENT
+    // quand SA PROPRE licence est active, cf. licenseOwns ci-dessus, et l'écriture de ce
+    // document est désormais réservée au bot, cf. plus bas) -- on relit cette licence pour
+    // vérifier qu'elle est TOUJOURS active au moment précis de la commande.
+    function licenseActiveForUser(userId) {
+      let userDoc = get(/databases/$(database)/documents/users/$(userId));
+      let licKey = userDoc.data.license_key;
+      return licKey is string
+        && exists(/databases/$(database)/documents/licenses/$(licKey))
+        && get(/databases/$(database)/documents/licenses/$(licKey)).data.status == 'ACTIVE';
+    }
+
     // ── Licences ───────────────────────────────────────────────────────────
     match /licenses/{licenseKey} {
       // Le bot lit sa propre licence
@@ -33,9 +49,15 @@ service cloud.firestore {
 
     // ── Données utilisateur ────────────────────────────────────────────────
     match /users/{userId} {
-      // Dashboard (uid == telegram_id) OU bot (licence active liée à ce user)
-      allow read, write: if request.auth != null
+      // (#57) Lecture : dashboard (ses propres données) OU bot. Écriture : bot UNIQUEMENT --
+      // ce document est entièrement poussé par le bot (build_state_document) ; le dashboard ne
+      // l'écrit jamais directement (il passe par commands/, cf. plus bas). Une écriture libre
+      // et sans restriction de champ n'avait donc aucun usage légitime côté client et
+      // permettait de falsifier ses propres données affichées (pack débloqué, solde, etc.) via
+      // un appel Firestore direct (devtools/REST), en contournant totalement l'UI.
+      allow read: if request.auth != null
         && (request.auth.uid == userId || licenseOwns(userId));
+      allow write: if request.auth != null && licenseOwns(userId);
 
       // Sous-doc privé (bot_token) : bot UNIQUEMENT, jamais le dashboard
       match /private/{document=**} {
@@ -48,6 +70,15 @@ service cloud.firestore {
       // commande "set_allowed_channels" (réservée au bot de licence via l'Admin SDK) et de
       // s'auto-attribuer un pack complet sans payer. update/delete restent réservés au bot
       // (licenseOwns) : le dashboard ne fait que créer une commande puis lire son statut.
+      // (#54) toggle_mute/toggle_drawdown/toggle_sl_suiveur/toggle_soft_sl manquaient : ces 4
+      // boutons du dashboard créaient une commande refusée par cette règle (permission-denied
+      // silencieux), alors que l'UI avait déjà basculé l'état visuellement -- fausse
+      // impression qu'une protection de sécurité (ex: Max Drawdown) avait changé d'état.
+      // (#57) La branche dashboard exige désormais licenseActiveForUser(userId), SAUF pour
+      // request_stats (lecture fréquente et bénigne, pas la peine de payer 3 lectures
+      // Firestore supplémentaires par appel) : un client dont la licence est bannie/expirée ne
+      // peut plus déposer de commande d'action (panic/kill/close_trade/...) via le dashboard,
+      // même si son compte Telegram reste actif.
       match /commands/{cmdId} {
         allow read: if request.auth != null
           && (request.auth.uid == userId || licenseOwns(userId));
@@ -57,7 +88,9 @@ service cloud.firestore {
             || (
               request.auth.uid == userId
               && request.resource.data.type in
-                 ['request_stats', 'update_setting', 'close_trade', 'be_trade', 'suivre', 'panic', 'kill', 'unlock']
+                 ['request_stats', 'update_setting', 'close_trade', 'be_trade', 'suivre', 'panic',
+                  'kill', 'unlock', 'toggle_mute', 'toggle_drawdown', 'toggle_sl_suiveur', 'toggle_soft_sl']
+              && (request.resource.data.type == 'request_stats' || licenseActiveForUser(userId))
             )
           );
         allow update, delete: if request.auth != null && licenseOwns(userId);

@@ -4873,7 +4873,12 @@ async def get_current_state_for_firebase() -> dict:
 
         return firebase_sync.build_state_document(
             account, stats, settings, active_trades, closed_trades_today or [],
-            extra={"channels_lifetime": channels_lifetime_filtered}
+            # (#57) license_key n'est écrit ici QUE quand ce push a lieu, c'est-à-dire quand ce
+            # bot tourne avec une licence active -- firestore.rules s'en sert pour vérifier,
+            # via un get() sur licenses/{license_key}, que la licence est toujours ACTIVE avant
+            # d'autoriser le dashboard à créer une commande (panic/kill/close_trade/...),
+            # indépendamment de l'identité Telegram du client qui reste valide même banni.
+            extra={"channels_lifetime": channels_lifetime_filtered, "license_key": USER_LICENSE_KEY}
         )
     except Exception as e:
         logger.error(f"Erreur collecte état Firebase : {e}")
