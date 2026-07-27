@@ -3,7 +3,7 @@
 ===============================================================
 
 Ce dossier contient :
-  - Kairos_V14.0.0.exe   -> le programme
+  - Kairos_V15.0.0.exe   -> le programme
   - settings.json        -> ta configuration (déjà pré-remplie avec ta clé)
   - INSTALLATION.txt     -> ce guide
 
@@ -50,7 +50,7 @@ Sauvegarde le fichier settings.json.
 ÉTAPE 4 — Premier lancement
 ---------------------------------------------------------------
 1. Assure-toi que MetaTrader 5 est ouvert et connecté à ton compte.
-2. Double-clique sur Kairos_V14.0.0.exe.
+2. Double-clique sur Kairos_V15.0.0.exe.
 3. Au tout premier lancement, Telethon (la librairie Telegram) va
    te demander dans la console :
      - ton numéro de téléphone (avec l'indicatif, ex: +33612345678)
