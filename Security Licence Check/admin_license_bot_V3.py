@@ -1614,6 +1614,11 @@ async def feedback_relay():
     print("📬 Relais de la mailbox feedback activé.")
     seen = set()
     type_icons = {"bug": "🐛", "suggestion": "💡", "autre": "💬"}
+    # (#62) Contrairement à security_events_relay (déjà en backoff 5s/1h), cette boucle
+    # retentait toutes les 20s sans relâche même en cas de 429 (quota Firestore dépassé) --
+    # martelait l'API inutilement ~4300 fois/jour sur un quota déjà épuisé. Backoff
+    # exponentiel plafonné à 1h, réinitialisé au premier succès.
+    consecutive_failures = 0
     while True:
         try:
             def _fetch():
@@ -1647,9 +1652,14 @@ async def feedback_relay():
                     lambda _id=doc_id, _tk=ticket_num: _fb_db.collection("feedback").document(_id).update(
                         {"relayed": True, "ticket": _tk})
                 )
+            consecutive_failures = 0
         except Exception as e:
             print(f"⚠️ feedback_relay : {e}")
-        await asyncio.sleep(20)
+            consecutive_failures += 1
+        if consecutive_failures > 0:
+            await asyncio.sleep(min(20 * (2 ** consecutive_failures), 3600))
+        else:
+            await asyncio.sleep(20)
 
 
 async def main():
