@@ -3,10 +3,11 @@ import io
 import json
 import os
 import re
+import secrets
+import threading
 import zipfile
 import gspread
 import requests
-import uuid
 from datetime import datetime, timedelta
 from oauth2client.service_account import ServiceAccountCredentials
 from telethon import TelegramClient, events
@@ -66,7 +67,7 @@ def fb_create_firebase_user(key, force=False):
     Retourne (email, password, already_existed)."""
     if not FIREBASE_ENABLED:
         return None, None, False
-    import secrets, string
+    import string
     alphabet = string.ascii_letters + string.digits + "!@#$%"
     password = "".join(secrets.choice(alphabet) for _ in range(20))
     email = f"{key.lower()}@ftmobot.com"
@@ -78,11 +79,13 @@ def fb_create_firebase_user(key, force=False):
             fb_auth.update_user(key, email=email, password=password, disabled=False)
         except fb_auth.UserNotFoundError:
             fb_auth.create_user(uid=key, email=email, password=password)
-        # Stocke email/password dans Firestore pour référence admin
+        # (#56) On ne stocke QUE l'email pour référence -- le mot de passe n'est écrit nulle
+        # part ailleurs que l'unique message Telegram/settings.json de délivrance : le stocker
+        # une 3e fois en clair dans Firestore n'a aucun usage (rien ne relit ce champ, cf.
+        # /fbcreate qui refuse de le régénérer sans force) et n'est qu'un risque supplémentaire.
         if _fb_db:
             _fb_db.collection("licenses").document(key).set(
-                {"firebase_email": email, "firebase_password": password},
-                merge=True
+                {"firebase_email": email}, merge=True
             )
         return email, password, False
     except Exception as e:
@@ -195,14 +198,24 @@ if not hasattr(asyncio, 'to_thread'):
 API_ID = 0
 API_HASH = ""
 SECURITY_BOT_TOKEN = ""
+ADMIN_IDS = set()
 try:
     with open("license_secrets.json", "r", encoding="utf-8") as _sf:
         _secrets = json.load(_sf)
     API_ID = int(_secrets.get("API_ID", 0))
     API_HASH = _secrets.get("API_HASH", "")
     SECURITY_BOT_TOKEN = _secrets.get("SECURITY_BOT_TOKEN", "")
+    # (#48) Liste blanche des Telegram user_id autorisés à exécuter des commandes admin.
+    # Avant ce fix, seul le CANAL était vérifié (SECURITY_CHANNEL_ID/FEEDBACK_CHANNEL_ID) --
+    # n'importe quel membre de ces canaux pouvait exécuter /ban, /del, /gen, /fbcreate force,
+    # etc. Récupère ton ID numérique via @userinfobot sur Telegram, ex: "ADMIN_IDS": [123456789].
+    ADMIN_IDS = set(int(x) for x in _secrets.get("ADMIN_IDS", []))
 except Exception as _e:
-    print(f"ATTENTION: license_secrets.json introuvable ou invalide ({_e}). Cree-le avec API_ID + API_HASH + SECURITY_BOT_TOKEN.")
+    print(f"ATTENTION: license_secrets.json introuvable ou invalide ({_e}). Cree-le avec API_ID + API_HASH + SECURITY_BOT_TOKEN + ADMIN_IDS.")
+
+if not ADMIN_IDS:
+    print("⚠️ ADMIN_IDS vide dans license_secrets.json : par sécurité, AUCUNE commande admin "
+          "ne sera acceptée tant que tu n'y as pas ajouté ton ID Telegram (@userinfobot).")
 
 # Le nom EXACT de ton Google Sheet (celui affiché en haut de la page)
 SHEET_NAME = "FTMO_BOT_LICENSES" # <--- METS LE VRAI NOM ICI
@@ -402,6 +415,67 @@ def sheet_safe(value):
     return s
 
 
+# (#51) Sérialise toutes les opérations d'écriture Sheet (find -> update_cell/delete_rows).
+# ban_license/unban_license/update_license_time/reset_hwid/set_expired/update_sheet_pack
+# font tous un sheet.find(key) puis, après un aller-retour réseau, un sheet.update_cell()
+# sur cell.row -- sans lock, une suppression concurrente (/del) décale les lignes et une
+# autre commande déjà en vol écrit sur la mauvaise ligne (capturée avant la suppression).
+SHEET_WRITE_LOCK = threading.Lock()
+
+
+async def sheet_write(func, *args, **kwargs):
+    """Dispatch une fonction d'écriture Sheet sur un thread, sous SHEET_WRITE_LOCK."""
+    def _locked():
+        with SHEET_WRITE_LOCK:
+            return func(*args, **kwargs)
+    return await asyncio.to_thread(_locked)
+
+
+# ==========================================
+# 🕵️ HISTORIQUE HWID PAR CLÉ (#50)
+# ==========================================
+# Fichier local simple (pas besoin de Firestore ici, c'est un journal admin) : garde une
+# trace persistante des connexions/conflits/resets par clé, pour pouvoir répondre à "cette
+# clé a-t-elle tourné sur plusieurs machines dans le temps ?" -- avant ce fix, seule la
+# DERNIÈRE valeur HWID était connue (Sheet/Firestore), la preuve d'un partage disparaissait
+# dès la connexion suivante.
+HWID_HISTORY_PATH = "hwid_history.json"
+HWID_HISTORY_LOCK = threading.Lock()
+
+
+def _load_hwid_history():
+    try:
+        with open(HWID_HISTORY_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def record_hwid_event(key, event_type, detail=""):
+    """Ajoute un événement à l'historique de la clé (connection/theft/reset/ban/unban)."""
+    try:
+        with HWID_HISTORY_LOCK:
+            history = _load_hwid_history()
+            history.setdefault(key, []).append({
+                "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "type": event_type,
+                "detail": detail,
+            })
+            # On garde les 50 derniers événements par clé (fichier local, pas la peine de
+            # conserver un historique illimité)
+            history[key] = history[key][-50:]
+            with open(HWID_HISTORY_PATH, "w", encoding="utf-8") as f:
+                json.dump(history, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"⚠️ record_hwid_event error: {e}")
+
+
+def get_hwid_history(key, limit=15):
+    history = _load_hwid_history()
+    events = history.get(key, [])
+    return events[-limit:]
+
+
 # ==========================================
 # 🔌 CONNEXION GOOGLE SHEET
 # ==========================================
@@ -438,26 +512,38 @@ def update_sheet(license_key, pc_id):
                     if datetime.now() > exp_date:
                         # On récupère le statut actuel pour ne pas écrire pour rien
                         current_status = sheet.cell(cell.row, COL_STATUS).value
-                        
+
                         # Si le statut est encore ACTIF, on le passe en EXPIRED
                         if current_status == "ACTIVE":
                              sheet.update_cell(cell.row, COL_STATUS, "EXPIRED")
-                             print(f"⌛ Clé {license_key} temps écoulé -> EXPIRED")
-                        
+                             # (#59) Manquait : contrairement à set_expired() (déclenché par le
+                             # worker via "SIGNAL EXPIRATION"), cette détection passive (au
+                             # moment d'une connexion) ne synchronisait QUE la Sheet -- si le
+                             # worker proactif est en retard/en panne, licenses/{key}.status
+                             # restait "ACTIVE" en Firestore et le compte Firebase/dashboard du
+                             # client restait pleinement fonctionnel malgré l'expiration.
+                             current_user = sheet.cell(cell.row, COL_USER).value or ""
+                             fb_sync_license(license_key, current_user, "EXPIRED")
+                             fb_disable_firebase_user(license_key)
+                             fb_disable_dashboard(license_key)
+                             print(f"⌛ Clé {license_key} temps écoulé -> EXPIRED (Sheet + Firestore + Firebase)")
+
                         return "EXPIRED"
                 except: pass # Si format date invalide, on ignore
 
             if not current_hwid or current_hwid == "":
                 sheet.update_cell(cell.row, COL_HWID, sheet_safe(pc_id))
                 fb_sync_license(license_key, sheet.cell(cell.row, COL_USER).value or "", sheet.cell(cell.row, COL_STATUS).value or "ACTIVE", hwid=pc_id)
+                record_hwid_event(license_key, "connection", f"1ere inscription : {pc_id}")
                 print(f"💾 SUCCÈS : HWID {pc_id} enregistré pour {license_key}")
                 return "NEW_REGISTER"
-            
+
             elif current_hwid == pc_id:
                 print("ℹ️ Déjà enregistré (Même PC).")
                 return "SAME"
-            
+
             else:
+                record_hwid_event(license_key, "theft", f"attendu={current_hwid} recu={pc_id}")
                 print(f"⚠️ CONFLIT ID !")
                 return "CONFLICT"
         else:
@@ -593,6 +679,18 @@ def unban_license(key):
         return True, "Licence débannie (ACTIVE)."
     except Exception as e: return False, str(e)
 
+def get_license_status(key):
+    """Retourne le statut brut (ACTIVE/BANNED/EXPIRED) d'une clé, ou None si introuvable."""
+    try:
+        sheet = get_sheet()
+        cell = sheet.find(key)
+        if not cell:
+            return None
+        return sheet.cell(cell.row, COL_STATUS).value or ""
+    except Exception:
+        return None
+
+
 def get_license_info(key):
     try:
         sheet = get_sheet()
@@ -671,6 +769,33 @@ def update_license_time(key, value, force=False):
 
     except Exception as e: return False, str(e)
 
+def push_version_to_all(new_ver):
+    """(#51, #61) Migre tous les clients ACTIFS vers new_ver (Sheet + Firestore), en une seule
+    fonction dispatchée sous SHEET_WRITE_LOCK -- avant, chaque update_cell() partait
+    individuellement via asyncio.to_thread sans lock, et une erreur en cours de boucle
+    (quota/timeout Sheets) perdait le compteur de progression : l'admin ne savait jamais
+    combien de clients avaient réellement basculé avant l'échec. Retourne (count, errors)."""
+    sheet = get_sheet()
+    all_rows = sheet.get_all_values()
+    count = 0
+    errors = []
+    for i, row in enumerate(all_rows[1:], start=2):
+        if len(row) > 2 and row[2] == "ACTIVE":
+            key = row[1] if len(row) > 1 else ""
+            user = row[0] if len(row) > 0 else ""
+            try:
+                sheet.update_cell(i, COL_VER, new_ver)
+                # (#33) Le bot client ne lit ver_min QUE depuis Firestore (jamais la Sheet) --
+                # sans cette ligne, la Sheet affichait la nouvelle version mais aucun client
+                # n'était réellement forcé de mettre à jour.
+                if key:
+                    fb_sync_license(key, user, "ACTIVE", new_ver)
+                count += 1
+            except Exception as e:
+                errors.append(f"{key or f'ligne {i}'}: {e}")
+    return count, errors
+
+
 def set_expired(key):
     """Force le statut EXPIRED pour une clé donnée"""
     try:
@@ -708,6 +833,13 @@ async def main_handler(event):
     msg = event.raw_text.strip()
     if msg.startswith("/"):
         audit_log(event.sender_id, msg)
+        # (#48) Avant ce fix, seul le CANAL était vérifié (décorateur ci-dessus) -- n'importe
+        # quel membre de SECURITY_CHANNEL_ID/FEEDBACK_CHANNEL_ID pouvait exécuter TOUTES les
+        # commandes admin. Ne bloque QUE les commandes ("/..."), jamais les messages
+        # automatiques du bot lui-même (CONNEXION RÉUSSIE, SIGNAL EXPIRATION, plus bas).
+        if event.sender_id not in ADMIN_IDS:
+            print(f"⛔ Commande refusée (sender_id {event.sender_id} non autorisé) : {msg}")
+            return
 
     # --- 1. DETECTION CONNEXION AUTOMATIQUE ---
     if "CONNEXION RÉUSSIE" in msg:
@@ -724,12 +856,19 @@ async def main_handler(event):
                 print(f"🔍 Traitement : {licence} | ID: {hwid}")
 
                 # Appel ASYNC bloquant pour ne pas figer le bot
-                result = await asyncio.to_thread(update_sheet, licence, hwid)
+                result = await sheet_write(update_sheet, licence, hwid)
 
                 if result == "NEW_REGISTER":
-                    await event.reply(f"🔒 **LICENCE VERROUILLÉE**\nAppareil lié.")
+                    await event.reply(f"🔒 **LICENCE VERROUILLÉE**\nAppareil lié.\n🔑 Clé : `{licence}`")
                 elif result == "CONFLICT":
-                    await event.reply(f"🚨 **ALERTE VOL**\nID non reconnu !")
+                    # (#50) Message enrichi -- avant, ni la clé ni le HWID n'étaient mentionnés,
+                    # obligeant à remonter l'historique du canal pour identifier de quelle clé
+                    # il s'agissait.
+                    await event.reply(
+                        f"🚨 **ALERTE VOL**\nID non reconnu !\n"
+                        f"🔑 Clé : `{licence}`\n💻 Nouveau PC ID : `{hwid}`\n\n"
+                        f"`/history {licence}` pour voir l'historique de cette clé."
+                    )
                 elif result == "EXPIRED":
                     await event.reply(f"⛔ **LICENCE EXPIRÉE**\nAccès refusé.")
                 elif result == "NOT_FOUND":
@@ -771,12 +910,13 @@ async def main_handler(event):
             pack_txt = ("🛠️ DEV (tous canaux + illimitée)" if is_dev
                         else (", ".join(c.replace("CANAL ", "") for c in allowed) if allowed else "TOUS les canaux"))
 
-            # Génération d'une clé propre (FTMO-XXXX-XXXX)
-            unique_id = str(uuid.uuid4()).split('-')[1].upper() + str(uuid.uuid4()).split('-')[2].upper()
-            new_key = f"FTMO-{unique_id}"
+            # (#61) secrets.token_hex (déjà utilisé pour les mots de passe Firebase) au lieu de
+            # concaténer des fragments d'UUIDv4 -- le format UUIDv4 impose un nibble de version
+            # fixe dans un des groupes utilisés, réduisant l'entropie réelle de 32 à 28 bits.
+            new_key = f"FTMO-{secrets.token_hex(4).upper()}"
 
             await event.reply("⏳ Création de la licence et du package client...")
-            success, info, fb_email, fb_password = await asyncio.to_thread(add_license_row, user, new_key, days, allowed)
+            success, info, fb_email, fb_password = await sheet_write(add_license_row, user, new_key, days, allowed)
 
             if success:
                 # Génération du ZIP
@@ -838,7 +978,7 @@ async def main_handler(event):
             # (#26) Sheet (colonne G) + Firestore licenses/{key} = source de vérité, lue par
             # le bot client à CHAQUE check de licence -- s'applique dans tous les cas, même
             # si le client n'a jamais lié son dashboard.
-            sheet_ok = await asyncio.to_thread(update_sheet_pack, key, allowed)
+            sheet_ok = await sheet_write(update_sheet_pack, key, allowed)
             if not sheet_ok:
                 await event.reply("❌ Échec de l'écriture dans la Sheet/Firestore.")
                 return
@@ -963,7 +1103,7 @@ async def main_handler(event):
                 return
             
             days = parts[3] if len(parts) > 3 else None
-            success, info, fb_email, fb_password = await asyncio.to_thread(add_license_row, parts[1], parts[2], days)
+            success, info, fb_email, fb_password = await sheet_write(add_license_row, parts[1], parts[2], days)
 
             if success:
                 reply = f"✅ Ajouté: {info}"
@@ -972,18 +1112,41 @@ async def main_handler(event):
                 await event.reply(reply)
             else:
                 await event.reply(f"❌ {info}")
-        except: pass
+        except Exception as e:
+            # (#61) Le bare `except: pass` masquait toute erreur Google Sheets (quota/timeout)
+            # -- l'admin ne voyait alors RIEN, pas même un message d'erreur.
+            await event.reply(f"❌ Crash `/add` : {e}")
 
     # C. Info Licence (/info Key)
     elif msg.lower().startswith("/info"):
+        parts = msg.split()
+        if len(parts) < 2:
+            await event.reply("❌ Usage: `/info Key`")
+            return
         try:
-            parts = msg.split()
-            if len(parts) < 2: await event.reply("❌ Usage: `/info Key`"); return
-            
             success, info = await asyncio.to_thread(get_license_info, parts[1])
             if success: await event.reply(info)
             else: await event.reply(f"❌ {info}")
-        except: pass
+        except Exception as e:
+            await event.reply(f"❌ Crash `/info` : {e}")
+
+    # C-ter. (#50) Historique HWID d'une clé (connexions/conflits/resets/bans)
+    elif msg.lower().startswith("/history"):
+        parts = msg.split()
+        if len(parts) < 2:
+            await event.reply("❌ Usage: `/history Clé`")
+            return
+        key = parts[1]
+        events = await asyncio.to_thread(get_hwid_history, key)
+        if not events:
+            await event.reply(f"ℹ️ Aucun historique enregistré pour `{key}` (ou clé jamais vue depuis ce fix).")
+            return
+        icons = {"connection": "🔌", "theft": "🚨", "reset": "🔄", "ban": "🚫", "unban": "✅"}
+        lines = [f"📜 **HISTORIQUE** `{key}` ({len(events)} derniers événements)\n"]
+        for e in events:
+            icon = icons.get(e["type"], "•")
+            lines.append(f"{icon} {e['ts']} — {e['type']} : {e['detail']}")
+        await event.reply("\n".join(lines))
 
     # C-bis. Provisionner un compte Firebase pour une clé EXISTANTE (/fbcreate Key)
     elif msg.lower().startswith("/fbcreate"):
@@ -999,6 +1162,15 @@ async def main_handler(event):
             if not found:
                 await event.reply(f"❌ Clé `{key}` introuvable dans la Sheet. Crée-la d'abord (`/gen` ou `/add`).")
                 return
+            # (#59) force=True réactivait (disabled=False) un compte Firebase désactivé sans
+            # jamais vérifier que la licence n'était pas BANNED -- un admin régénérant un mot
+            # de passe perdu pouvait réactiver sans s'en rendre compte le compte d'une licence
+            # bannie, contrairement à /time et /unban qui ont déjà cette garde.
+            if force:
+                status = await asyncio.to_thread(get_license_status, key)
+                if status == "BANNED":
+                    await event.reply(f"⛔ `{key}` est actuellement BANNIE. `/unban {key}` d'abord si c'est volontaire.")
+                    return
             await event.reply("⏳ Création du compte Firebase...")
             fb_email, fb_password, already_existed = await asyncio.to_thread(fb_create_firebase_user, key, force)
             if already_existed:
@@ -1036,12 +1208,35 @@ async def main_handler(event):
 
     # E. Reset, Del, Ban (Classiques)
     elif msg.lower().startswith("/reset"):
+        parts = msg.split()
+        if len(parts) < 2:
+            await event.reply("❌ Usage: `/reset Clé` (ou `/reset Clé force` pour ignorer la limite de fréquence)")
+            return
+        key = parts[1]
+        force = len(parts) > 2 and parts[2].lower() == "force"
         try:
-            key = msg.split()[1]
-            success, res = await asyncio.to_thread(reset_hwid, key)
-            if success: await event.reply(f"🔄 Reset OK pour `{key}`")
-            else: await event.reply(f"❌ {res}")
-        except: await event.reply("❌ Usage: `/reset Key`")
+            # (#50) Limite de fréquence : un changement de machine légitime est rare -- une
+            # succession rapide de /reset sur la même clé est un signal d'abus (partage de
+            # licence en train d'être couvert) qui méritait d'être détecté, pas juste exécuté
+            # silencieusement à chaque demande.
+            if not force:
+                recent_resets = [e for e in get_hwid_history(key) if e["type"] == "reset"]
+                if recent_resets:
+                    last_ts = datetime.strptime(recent_resets[-1]["ts"], "%Y-%m-%d %H:%M:%S")
+                    if datetime.now() - last_ts < timedelta(hours=1):
+                        await event.reply(
+                            f"⚠️ `{key}` a déjà été reset il y a moins d'1h ({recent_resets[-1]['ts']}).\n"
+                            f"`/reset {key} force` pour forcer quand même."
+                        )
+                        return
+            success, res = await sheet_write(reset_hwid, key)
+            if success:
+                record_hwid_event(key, "reset", "reset manuel par admin")
+                await event.reply(f"🔄 Reset OK pour `{key}`")
+            else:
+                await event.reply(f"❌ {res}")
+        except Exception as e:
+            await event.reply(f"❌ Crash `/reset` : {e}")
 
     elif msg.lower().startswith("/del"):
         try:
@@ -1054,7 +1249,7 @@ async def main_handler(event):
             if len(parts) < 3 or parts[2].lower() != "confirm":
                 await event.reply(f"⚠️ Tape `/del {key} confirm` pour confirmer la suppression DÉFINITIVE.")
                 return
-            success, res = await asyncio.to_thread(delete_license_row, key)
+            success, res = await sheet_write(delete_license_row, key)
             if success: await event.reply(f"🗑️ Supprimé: `{key}`")
             else: await event.reply(f"❌ {res}")
         except Exception as e:
@@ -1072,8 +1267,9 @@ async def main_handler(event):
             if len(parts) < 3 or parts[2].lower() != "confirm":
                 await event.reply(f"⚠️ Tape `/ban {key} confirm` pour confirmer le bannissement.")
                 return
-            success, res = await asyncio.to_thread(ban_license, key)
+            success, res = await sheet_write(ban_license, key)
             if success:
+                record_hwid_event(key, "ban", f"banni manuellement par {event.sender_id}")
                 await event.reply(f"🚫 Banni: `{key}`")
             else:
                 await event.reply(f"❌ {res}")
@@ -1088,8 +1284,9 @@ async def main_handler(event):
                 await event.reply("❌ Usage: `/unban Clé`")
                 return
             key = parts[1]
-            success, res = await asyncio.to_thread(unban_license, key)
+            success, res = await sheet_write(unban_license, key)
             if success:
+                record_hwid_event(key, "unban", f"débanni manuellement par {event.sender_id}")
                 await event.reply(f"✅ `{key}` : {res}")
             else:
                 await event.reply(f"❌ {res}")
@@ -1110,7 +1307,7 @@ async def main_handler(event):
             force = len(parts) > 3 and parts[3].lower() == "force"
 
             await event.reply("⏳ Mise à jour...")
-            success, res = await asyncio.to_thread(update_license_time, key, value, force)
+            success, res = await sheet_write(update_license_time, key, value, force)
             
             if success:
                 await event.reply(f"✅ **MODIFIÉ & RÉACTIVÉ**\n\n🔑 Clé: `{key}`\n📅 Nouvelle fin: **{res}**\n🟢 Statut: ACTIVE")
@@ -1127,7 +1324,7 @@ async def main_handler(event):
             if key_match:
                 key_to_kill = key_match.group(1).strip()
                 # On demande au sheet de mettre à jour
-                ok = await asyncio.to_thread(set_expired, key_to_kill)
+                ok = await sheet_write(set_expired, key_to_kill)
                 if ok:
                     print(f"💀 Clé {key_to_kill} marquée comme EXPIRED (Signal reçu).")
                 else:
@@ -1148,7 +1345,7 @@ async def main_handler(event):
             new_ver = parts[1]
             await event.reply("⏳ Mise à jour de la config...")
             
-            success = await asyncio.to_thread(set_default_version, new_ver)
+            success = await sheet_write(set_default_version, new_ver)
             
             if success:
                 await event.reply(f"✅ **VERSION PAR DÉFAUT MISE À JOUR**\n\nNouvelle valeur: **{new_ver}**\nLes prochaines clés `/gen` auront cette version.")
@@ -1182,8 +1379,12 @@ async def main_handler(event):
 
     # J. Recherche intelligente
     elif msg.lower().startswith("/search"):
+        parts = msg.split()
+        if len(parts) < 2:
+            await event.reply("❌ Usage: `/search Pierre`")
+            return
         try:
-            query = msg.split()[1].lower()
+            query = parts[1].lower()
             sheet = await asyncio.to_thread(get_sheet)
             # On cherche dans tout le fichier
             found_cells = await asyncio.to_thread(sheet.findall, re.compile(f"(?i){query}"))
@@ -1208,7 +1409,8 @@ async def main_handler(event):
                     break
             
             await event.reply(msg_res)
-        except: await event.reply("❌ Usage: `/search Pierre`")
+        except Exception as e:
+            await event.reply(f"❌ Crash `/search` : {e}")
 
     # K. Mise à jour de version massive
     elif msg.lower().startswith("/push_ver"):
@@ -1225,30 +1427,16 @@ async def main_handler(event):
                 return
             await event.reply(f"⚠️ **ATTENTION** : Je vais passer tous les clients ACTIFS en version **{new_ver}**.\nCela peut prendre du temps...")
 
-            sheet = await asyncio.to_thread(get_sheet)
-            all_rows = await asyncio.to_thread(sheet.get_all_values)
+            count, errors = await sheet_write(push_version_to_all, new_ver)
 
-            count = 0
-            
-            # On parcourt (sauf entete)
-            for i, row in enumerate(all_rows[1:], start=2):
-                # Si le client est ACTIVE (Col C = index 2)
-                if len(row) > 2 and row[2] == "ACTIVE":
-                    # On prépare la mise à jour de la colonne D (Version = index 3, donc Col 4)
-                    # Gspread update_cell est lent, on note juste les changements
-                    # Pour faire simple ici on boucle (lent mais sûr)
-                    await asyncio.to_thread(sheet.update_cell, i, COL_VER, new_ver)
-                    # (#33) Le bot client ne lit ver_min QUE depuis Firestore (jamais la Sheet) --
-                    # sans cette ligne, la Sheet affichait la nouvelle version mais aucun client
-                    # n'était réellement forcé de mettre à jour.
-                    key = row[1] if len(row) > 1 else ""
-                    user = row[0] if len(row) > 0 else ""
-                    if key:
-                        await asyncio.to_thread(fb_sync_license, key, user, "ACTIVE", new_ver)
-                    count += 1
-                    
-            await event.reply(f"✅ **MIGRATION TERMINÉE**\n\n🔄 {count} clients mis à jour vers la v{new_ver}.")
-            
+            reply = f"✅ **MIGRATION TERMINÉE**\n\n🔄 {count} clients mis à jour vers la v{new_ver}."
+            if errors:
+                shown = errors[:10]
+                reply += f"\n\n⚠️ {len(errors)} échec(s) :\n" + "\n".join(shown)
+                if len(errors) > 10:
+                    reply += f"\n… (+{len(errors) - 10} autres)"
+            await event.reply(reply)
+
         except Exception as e: await event.reply(f"❌ Erreur: {e}")
 
     # L. Aide
@@ -1270,9 +1458,10 @@ async def main_handler(event):
                           "⚠️ SABR_COPIE jamais dans un pack normal (à mettre à la main, sauf dev)\n\n\n"
                           "🔧 **GESTION**\n\n"
                           "`/info Clé` : Voir détails (PC, Date...)\n"
+                          "`/history Clé` : Historique HWID (connexions/conflits/resets/bans)\n"
                           "`/fbcreate Clé` : Créer compte Firebase (clé existante, sans effet si déjà provisionné)\n"
-                          "`/fbcreate Clé force` : Régénère le mot de passe d'un compte existant (⚠️ casse le settings.json déjà distribué)\n"
-                          "`/reset Clé` : Changer de PC\n"
+                          "`/fbcreate Clé force` : Régénère le mot de passe d'un compte existant (⚠️ casse le settings.json déjà distribué, refusé si BANNED)\n"
+                          "`/reset Clé` : Changer de PC (refusé si un reset a eu lieu il y a moins d'1h, sauf `/reset Clé force`)\n"
                           "`/ban Clé confirm` : Bloquer accès (confirmation requise)\n"
                           "`/unban Clé` : Réactive sans toucher à la date (contrairement à /time)\n"
                           "`/del Clé confirm` : Supprimer ligne (⚠️ définitif, confirmation requise)\n"
@@ -1320,19 +1509,26 @@ async def security_events_relay():
                     continue
                 seen.add(doc_id)
                 msg = data.get("message", "Événement sécurité")
+                event_type = data.get("type", "")
+                license_key = data.get("license_key")
+                # (#50) La clé et le HWID attendu manquaient dans le message relayé -- l'admin
+                # devait remonter l'historique du canal pour identifier de quelle clé il
+                # s'agissait à chaque alerte.
                 details = []
-                if data.get("user"):    details.append(f"👤 {data['user']}")
-                if data.get("ip"):       details.append(f"🌐 IP : {data['ip']}")
-                if data.get("pc_id"):    details.append(f"💻 PC : {data['pc_id']}")
-                if data.get("got_hwid"): details.append(f"💻 Machine : {data['got_hwid']}")
+                if license_key:               details.append(f"🔑 Clé : {license_key}")
+                if data.get("user"):          details.append(f"👤 {data['user']}")
+                if data.get("ip"):            details.append(f"🌐 IP : {data['ip']}")
+                if data.get("pc_id"):         details.append(f"💻 PC : {data['pc_id']}")
+                if data.get("expected_hwid"): details.append(f"💾 HWID attendu : {data['expected_hwid']}")
+                if data.get("got_hwid"):      details.append(f"💻 Machine : {data['got_hwid']}")
                 full = msg + ("\n" + "\n".join(details) if details else "")
 
                 # (#27) Le HWID n'est écrit qu'en Firestore par le bot client (jamais dans la
                 # Sheet) -- on le recopie ici pour garder un visuel à jour. Seulement sur un
                 # "connection" (licence acceptée sur cette machine) : un "theft" est un refus,
                 # le HWID enregistré n'a pas changé, y toucher afficherait la mauvaise machine.
-                if data.get("type") == "connection" and data.get("license_key") and data.get("pc_id"):
-                    def _sync_hwid_sheet(_key=data["license_key"], _pc=data["pc_id"]):
+                if event_type == "connection" and license_key and data.get("pc_id"):
+                    def _sync_hwid_sheet(_key=license_key, _pc=data["pc_id"]):
                         try:
                             sheet = get_sheet()
                             cell = sheet.find(_key)
@@ -1340,7 +1536,29 @@ async def security_events_relay():
                                 sheet.update_cell(cell.row, COL_HWID, sheet_safe(_pc))
                         except Exception as e:
                             print(f"⚠️ sync HWID Sheet: {e}")
-                    await asyncio.to_thread(_sync_hwid_sheet)
+                    await sheet_write(_sync_hwid_sheet)
+                    record_hwid_event(license_key, "connection", f"pc_id={data['pc_id']}")
+
+                # (#50) Un conflit HWID ("theft") n'était jusqu'ici que NOTIFIÉ, sans aucune
+                # action -- un partage de licence pouvait continuer indéfiniment tant que
+                # l'admin ne remarquait pas l'alerte et ne tapait pas /ban lui-même. On bannit
+                # désormais la licence automatiquement ; si c'est un changement de machine
+                # légitime (pas un partage), l'admin lève le ban en un message (/unban +
+                # /reset) au lieu de devoir agir vite pour COUVRIR un vrai partage en cours.
+                if event_type == "theft" and license_key:
+                    record_hwid_event(
+                        license_key, "theft",
+                        f"attendu={data.get('expected_hwid')} recu={data.get('got_hwid')}")
+                    try:
+                        ban_ok, _ban_res = await sheet_write(ban_license, license_key)
+                    except Exception as e:
+                        ban_ok = False
+                        print(f"⚠️ auto-ban échoué pour {license_key}: {e}")
+                    if ban_ok:
+                        record_hwid_event(license_key, "ban", "auto-ban sur conflit HWID")
+                        full += (f"\n\n🚫 Licence bannie AUTOMATIQUEMENT.\n"
+                                 f"Si c'est un changement de machine légitime (pas un partage) : "
+                                 f"`/unban {license_key}` puis `/reset {license_key}`.")
                 try:
                     def _send(_t=full):
                         requests.post(
