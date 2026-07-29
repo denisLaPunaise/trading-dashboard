@@ -66,9 +66,22 @@ def client_status(msg):
 def resize_console_window():
     """Force une taille de fenêtre console raisonnable au démarrage (l'exe s'ouvrait sinon
     maximisé/plein écran par défaut) -- 100x30 laisse le logo bien cadré tout en restant
-    assez large pour les logs de trading (alertes, diagnostics) qui suivent sans wrap moche."""
+    assez large pour les logs de trading (alertes, diagnostics) qui suivent sans wrap moche.
+    `mode con` seul ne suffit pas : il redimensionne le buffer de caractères mais ne sort PAS
+    une fenêtre de son état "maximisé" (ex: si Windows Terminal est le terminal par défaut,
+    ou si Windows a mémorisé un état maximisé pour cette fenêtre). On force donc en plus
+    explicitement l'état "restauré" (non maximisé) au niveau Win32 avant de redimensionner."""
     if os.name != 'nt':
         return
+    try:
+        import ctypes
+        SW_RESTORE = 9
+        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+        if hwnd:
+            ctypes.windll.user32.ShowWindow(hwnd, SW_RESTORE)
+            ctypes.windll.user32.MoveWindow(hwnd, 80, 80, 950, 600, True)
+    except Exception:
+        pass
     try:
         os.system('mode con: cols=100 lines=30')
     except Exception:
