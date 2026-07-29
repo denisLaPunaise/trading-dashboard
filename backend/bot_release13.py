@@ -63,6 +63,17 @@ def client_status(msg):
         print(msg)
 
 
+def resize_console_window():
+    """Force une taille de fenêtre console raisonnable au démarrage (l'exe s'ouvrait sinon
+    maximisé/plein écran par défaut) -- 100x30 laisse le logo bien cadré tout en restant
+    assez large pour les logs de trading (alertes, diagnostics) qui suivent sans wrap moche."""
+    if os.name != 'nt':
+        return
+    try:
+        os.system('mode con: cols=100 lines=30')
+    except Exception:
+        pass
+
 def print_kairos_logo():
     W = 45
     def _l(txt=""):
@@ -217,15 +228,17 @@ FIXED_LOT_SABR_FREE = 0.06         # Lot TOTAL par défaut pour SABR Free (OR un
 FIXED_LOT_SABR_VIP = 0.06          # Lot TOTAL par défaut pour SABR VIP (OR uniquement)
 # (#3) SABR hors-or : sizing par risque % (basé sur le SL du signal), réglable au dashboard.
 RISK_PERCENT_SABR_OTHER = 0.006    # 0.6% par défaut pour les paires SABR autres que l'or
-# False = répartition manuelle (SABR_ZONE_PCT1/PCT2 ci-dessous, 45%/35%/20% par défaut,
+# False = répartition manuelle (SABR_ZONE_PCT1/2/3 ci-dessous, 45%/35%/20% par défaut,
 # gros lot proche du marché) ; True = répartition égale sur les 3 ordres de la zone.
 # Togglable au dashboard (sous "Lots SABR").
 SABR_ZONE_EQUAL_SPLIT = False
-# Répartition manuelle réglable au dashboard : % de l'ordre 1 (proche/gros lot) et de
-# l'ordre 2 (milieu). L'ordre 3 (loin/petit lot) prend toujours le reliquat (1 - PCT1 - PCT2)
-# -- jamais stocké directement, pour garantir que la somme fasse toujours 100%.
+# Répartition manuelle réglable au dashboard : % des ordres 1 (proche/gros lot), 2 (milieu)
+# et 3 (loin/petit lot). Les 3 valeurs sont normalisées à l'usage (divisées par leur somme)
+# pour toujours donner des proportions valides, même si l'utilisateur ne les a pas saisies
+# pour qu'elles totalisent exactement 100%.
 SABR_ZONE_PCT1 = 0.45
 SABR_ZONE_PCT2 = 0.35
+SABR_ZONE_PCT3 = 0.20
 
 MAX_DAILY_DRAWDOWN = 0.040         # Drawdown max journalier (4%)
 DRAWDOWN_ACTIVE = True             # (#8) Disjoncteur drawdown ON/OFF (désactivable au dashboard)
@@ -1124,6 +1137,7 @@ def save_settings():
                 "SABR_ZONE_EQUAL_SPLIT": SABR_ZONE_EQUAL_SPLIT,
                 "SABR_ZONE_PCT1": SABR_ZONE_PCT1,
                 "SABR_ZONE_PCT2": SABR_ZONE_PCT2,
+                "SABR_ZONE_PCT3": SABR_ZONE_PCT3,
                 "RISK_PERCENT_SPACE": RISK_PERCENT_SPACE,
                 "RISK_PERCENT_LIGUE": RISK_PERCENT_LIGUE,
                 "RISK_PERCENT_PERSO": RISK_PERCENT_PERSO,
@@ -1164,7 +1178,7 @@ FIREBASE_PASSWORD = ""
 
 def load_settings():
     """Charge les réglages au démarrage"""
-    global RISK_PERCENT_GOLD, SABR_FORWARD_ACTIVE, RISK_PERCENT_OTHER, RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE, MAX_DAILY_DRAWDOWN, DRAWDOWN_ACTIVE, TRAILING_STOP_PIPS, RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO, SOFT_SL_PERCENT, MUTED_CHANNELS, ALLOWED_CHANNELS, CHANNEL_TP1_PCT, TELEGRAM_DESTINATION_ID, ADMIN_ID, RISK_PERCENT_INDICES, PRIME_HOURS, TIME_OFF_PEAK_FACTOR, DAY_RISK_FACTORS, FIXED_LOT_SABR_FREE, FIXED_LOT_SABR_VIP, RISK_PERCENT_SABR_OTHER, SABR_ZONE_EQUAL_SPLIT, SABR_ZONE_PCT1, SABR_ZONE_PCT2, SL_SUIVEUR_ACTIVE, SOFT_SL_ACTIVE, FIREBASE_EMAIL, FIREBASE_PASSWORD, SERVER_PACK_CHANNELS
+    global RISK_PERCENT_GOLD, SABR_FORWARD_ACTIVE, RISK_PERCENT_OTHER, RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE, MAX_DAILY_DRAWDOWN, DRAWDOWN_ACTIVE, TRAILING_STOP_PIPS, RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO, SOFT_SL_PERCENT, MUTED_CHANNELS, ALLOWED_CHANNELS, CHANNEL_TP1_PCT, TELEGRAM_DESTINATION_ID, ADMIN_ID, RISK_PERCENT_INDICES, PRIME_HOURS, TIME_OFF_PEAK_FACTOR, DAY_RISK_FACTORS, FIXED_LOT_SABR_FREE, FIXED_LOT_SABR_VIP, RISK_PERCENT_SABR_OTHER, SABR_ZONE_EQUAL_SPLIT, SABR_ZONE_PCT1, SABR_ZONE_PCT2, SABR_ZONE_PCT3, SL_SUIVEUR_ACTIVE, SOFT_SL_ACTIVE, FIREBASE_EMAIL, FIREBASE_PASSWORD, SERVER_PACK_CHANNELS
 
     if os.path.exists(SETTINGS_FILENAME):
         try:
@@ -1186,6 +1200,7 @@ def load_settings():
                 if "SABR_ZONE_EQUAL_SPLIT" in data: SABR_ZONE_EQUAL_SPLIT = data["SABR_ZONE_EQUAL_SPLIT"]
                 if "SABR_ZONE_PCT1" in data: SABR_ZONE_PCT1 = data["SABR_ZONE_PCT1"]
                 if "SABR_ZONE_PCT2" in data: SABR_ZONE_PCT2 = data["SABR_ZONE_PCT2"]
+                if "SABR_ZONE_PCT3" in data: SABR_ZONE_PCT3 = data["SABR_ZONE_PCT3"]
                 if "RISK_PERCENT_SPACE" in data: RISK_PERCENT_SPACE = data["RISK_PERCENT_SPACE"]
                 if "RISK_PERCENT_LIGUE" in data: RISK_PERCENT_LIGUE = data["RISK_PERCENT_LIGUE"]
                 if "RISK_PERCENT_PERSO" in data: RISK_PERCENT_PERSO = data["RISK_PERCENT_PERSO"]
@@ -2309,10 +2324,18 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
                     lot2 = round(units[1] * min_step_zone, 2)
                     lot3 = round(units[2] * min_step_zone, 2)
                 else:
-                    # Sécurité : on clampe pour garantir 3 pourcentages valides et positifs
-                    # (>= 1% chacun) même si un réglage dashboard mal saisi a été sauvegardé.
-                    pct1 = max(0.01, min(0.98, SABR_ZONE_PCT1))
-                    pct2 = max(0.01, min(0.98 - pct1, SABR_ZONE_PCT2))
+                    # Répartition MANUELLE : les 3 % réglés au dashboard sont normalisés
+                    # (divisés par leur somme) pour toujours donner des proportions valides
+                    # sommant à 100%, même si l'utilisateur ne les a pas saisis pile à 100
+                    # (ex: 50/30/25 -> 45.5%/27.3%/22.7%). Repli sur 45/35/20 si tout est à 0.
+                    raw1 = max(0.0, SABR_ZONE_PCT1)
+                    raw2 = max(0.0, SABR_ZONE_PCT2)
+                    raw3 = max(0.0, SABR_ZONE_PCT3)
+                    total_pct = raw1 + raw2 + raw3
+                    if total_pct <= 0:
+                        raw1, raw2, raw3, total_pct = 0.45, 0.35, 0.20, 1.0
+                    pct1 = raw1 / total_pct
+                    pct2 = raw2 / total_pct
                     lot1 = round(total_vol * pct1, 2)
                     lot2 = round(total_vol * pct2, 2)
                     lot3 = round(total_vol - lot1 - lot2, 2)
@@ -3079,7 +3102,7 @@ async def api_update_planning(data: PlanningUpdate):
 async def api_update_setting(data: SettingUpdate):
     global RISK_PERCENT_GOLD, RISK_PERCENT_INDICES, RISK_PERCENT_OTHER
     global RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE, RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO
-    global FIXED_LOT_SABR_VIP, FIXED_LOT_SABR_FREE, RISK_PERCENT_SABR_OTHER, SABR_ZONE_EQUAL_SPLIT, SABR_ZONE_PCT1, SABR_ZONE_PCT2
+    global FIXED_LOT_SABR_VIP, FIXED_LOT_SABR_FREE, RISK_PERCENT_SABR_OTHER, SABR_ZONE_EQUAL_SPLIT, SABR_ZONE_PCT1, SABR_ZONE_PCT2, SABR_ZONE_PCT3
     global MAX_DAILY_DRAWDOWN, TRAILING_STOP_PIPS, SOFT_SL_PERCENT
     global PRIME_HOURS, TIME_OFF_PEAK_FACTOR
 
@@ -3096,7 +3119,7 @@ async def api_update_setting(data: SettingUpdate):
     }
     if k in CHANNEL_SETTING_KEYS and not channel_allowed(CHANNEL_SETTING_KEYS[k]):
         return {"status": "error", "message": f"{k} : canal hors de ton pack."}
-    if k in ("risk_sabr_other", "sabr_zone_equal_split", "sabr_zone_pct1", "sabr_zone_pct2") and not (
+    if k in ("risk_sabr_other", "sabr_zone_equal_split", "sabr_zone_pct1", "sabr_zone_pct2", "sabr_zone_pct3") and not (
         channel_allowed("CANAL SABR_VIP") or channel_allowed("CANAL SABR_FREE") or channel_allowed("CANAL SABR_COPIE")
     ):
         return {"status": "error", "message": f"{k} : SABR hors de ton pack."}
@@ -3113,8 +3136,9 @@ async def api_update_setting(data: SettingUpdate):
     elif k == "sabr_lot_free": FIXED_LOT_SABR_FREE = float(v)
     elif k == "risk_sabr_other": RISK_PERCENT_SABR_OTHER = float(v)
     elif k == "sabr_zone_equal_split": SABR_ZONE_EQUAL_SPLIT = bool(v)
-    elif k == "sabr_zone_pct1": SABR_ZONE_PCT1 = max(0.01, min(0.98, float(v)))
-    elif k == "sabr_zone_pct2": SABR_ZONE_PCT2 = max(0.01, min(0.98, float(v)))
+    elif k == "sabr_zone_pct1": SABR_ZONE_PCT1 = max(0.0, float(v))
+    elif k == "sabr_zone_pct2": SABR_ZONE_PCT2 = max(0.0, float(v))
+    elif k == "sabr_zone_pct3": SABR_ZONE_PCT3 = max(0.0, float(v))
     elif k == "max_dd": MAX_DAILY_DRAWDOWN = float(v)
     elif k == "sl_suiveur": TRAILING_STOP_PIPS = int(float(v))
     elif k == "sl_sell": SOFT_SL_PERCENT = float(v)
@@ -4939,7 +4963,7 @@ async def get_current_state_for_firebase() -> dict:
             "sabr_lot_vip": FIXED_LOT_SABR_VIP, "sabr_lot_free": FIXED_LOT_SABR_FREE,
             "risk_sabr_other": RISK_PERCENT_SABR_OTHER,
             "sabr_zone_equal_split": SABR_ZONE_EQUAL_SPLIT,
-            "sabr_zone_pct1": SABR_ZONE_PCT1, "sabr_zone_pct2": SABR_ZONE_PCT2,
+            "sabr_zone_pct1": SABR_ZONE_PCT1, "sabr_zone_pct2": SABR_ZONE_PCT2, "sabr_zone_pct3": SABR_ZONE_PCT3,
             "sabr_anti_doublon": SABR_ANTI_DOUBLON_ACTIVE,
             "sabr_forward": SABR_FORWARD_ACTIVE, "max_dd": MAX_DAILY_DRAWDOWN,
             "drawdown_active": DRAWDOWN_ACTIVE,
@@ -5273,6 +5297,7 @@ async def run_bot_safe():
 # 🐶 LA LOGIQUE DU WATCHDOG (Le Chef)
 # ==========================================
 def run_watchdog():
+    resize_console_window()
     # 🧹 Nettoie la console Windows au tout démarrage
     os.system('cls' if os.name == 'nt' else 'clear')
     
@@ -5357,6 +5382,7 @@ if __name__ == '__main__':
     if "--worker" in sys.argv:
         # 👷 JE SUIS L'OUVRIER (LE BOT)
         # Je fais le travail normal
+        resize_console_window()
         os.system('cls' if os.name == 'nt' else 'clear')
         print_kairos_logo()
 
