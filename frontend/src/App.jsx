@@ -1044,6 +1044,77 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
                 );
               })}
             </div>
+
+            {/* (#pips) Répartition des lots sur la zone SABR : manuelle (% réglables) vs égale */}
+            {(isChannelVisible('CANAL SABR_VIP') || isChannelVisible('CANAL SABR_FREE')) && (() => {
+              const pct1 = settings.sabr_zone_pct1 ?? 0.45;
+              const pct2 = settings.sabr_zone_pct2 ?? 0.35;
+              const pct3 = Math.max(0, 1 - pct1 - pct2);
+              return (
+                <div style={{ marginTop: '15px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+                    <span style={{ fontSize: '0.85rem', color: '#aaa' }}>Répartition Lots Zone SABR</span>
+                    <div style={{ display: 'flex', background: '#121212', padding: '4px', borderRadius: '10px', border: '1px solid #333' }}>
+                      <button
+                        onClick={() => updateSetting('sabr_zone_equal_split', false, { debounce: false })}
+                        style={{
+                          padding: '6px 16px', borderRadius: '8px', border: 'none', cursor: 'pointer',
+                          fontWeight: 'bold', fontSize: '0.75rem', transition: '0.2s',
+                          background: !settings.sabr_zone_equal_split ? '#333' : 'transparent',
+                          color: !settings.sabr_zone_equal_split ? '#00e676' : '#666',
+                        }}
+                      >
+                        Manuel
+                      </button>
+                      <button
+                        onClick={() => updateSetting('sabr_zone_equal_split', true, { debounce: false })}
+                        style={{
+                          padding: '6px 16px', borderRadius: '8px', border: 'none', cursor: 'pointer',
+                          fontWeight: 'bold', fontSize: '0.75rem', transition: '0.2s',
+                          background: settings.sabr_zone_equal_split ? '#333' : 'transparent',
+                          color: settings.sabr_zone_equal_split ? '#00e676' : '#666',
+                        }}
+                      >
+                        Égale
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Champs éditables : uniquement pertinents en mode Manuel (grisés sinon) */}
+                  <div style={{ display: 'flex', gap: '10px', marginTop: '10px', flexWrap: 'wrap', opacity: settings.sabr_zone_equal_split ? 0.4 : 1 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: '#2a2a2a', padding: '8px 10px', borderRadius: '8px' }}>
+                      <span style={{ fontSize: '0.75rem', color: '#888' }}>Ordre 1 (proche)</span>
+                      <input
+                        type="number" min="1" max="98" step="1"
+                        value={Math.round(pct1 * 100)}
+                        disabled={settings.sabr_zone_equal_split}
+                        onChange={(e) => updateSetting('sabr_zone_pct1', parseFloat(e.target.value) / 100, { debounce: false })}
+                        style={{ background: '#121212', border: '1px solid #444', color: '#fff', padding: '5px', width: '55px', borderRadius: '4px', textAlign: 'center' }}
+                      />
+                      <span style={{ fontSize: '0.75rem', color: '#666' }}>%</span>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: '#2a2a2a', padding: '8px 10px', borderRadius: '8px' }}>
+                      <span style={{ fontSize: '0.75rem', color: '#888' }}>Ordre 2 (milieu)</span>
+                      <input
+                        type="number" min="1" max="98" step="1"
+                        value={Math.round(pct2 * 100)}
+                        disabled={settings.sabr_zone_equal_split}
+                        onChange={(e) => updateSetting('sabr_zone_pct2', parseFloat(e.target.value) / 100, { debounce: false })}
+                        style={{ background: '#121212', border: '1px solid #444', color: '#fff', padding: '5px', width: '55px', borderRadius: '4px', textAlign: 'center' }}
+                      />
+                      <span style={{ fontSize: '0.75rem', color: '#666' }}>%</span>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: '#2a2a2a', padding: '8px 10px', borderRadius: '8px' }}>
+                      <span style={{ fontSize: '0.75rem', color: '#888' }}>Ordre 3 (loin)</span>
+                      <span style={{ fontSize: '0.85rem', fontWeight: 'bold', color: '#00e676', width: '55px', textAlign: 'center' }}>{Math.round(pct3 * 100)}%</span>
+                    </div>
+                  </div>
+                  <div style={{ fontSize: '0.7rem', color: '#555', marginTop: '6px' }}>
+                    L'ordre 3 prend automatiquement le reliquat (100% - Ordre 1 - Ordre 2).
+                  </div>
+                </div>
+              );
+            })()}
           </div>
 
           {/* BLOC B : GESTION DU RISQUE (H) & JOURS */}

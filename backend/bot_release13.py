@@ -217,6 +217,15 @@ FIXED_LOT_SABR_FREE = 0.06         # Lot TOTAL par défaut pour SABR Free (OR un
 FIXED_LOT_SABR_VIP = 0.06          # Lot TOTAL par défaut pour SABR VIP (OR uniquement)
 # (#3) SABR hors-or : sizing par risque % (basé sur le SL du signal), réglable au dashboard.
 RISK_PERCENT_SABR_OTHER = 0.006    # 0.6% par défaut pour les paires SABR autres que l'or
+# False = répartition manuelle (SABR_ZONE_PCT1/PCT2 ci-dessous, 45%/35%/20% par défaut,
+# gros lot proche du marché) ; True = répartition égale sur les 3 ordres de la zone.
+# Togglable au dashboard (sous "Lots SABR").
+SABR_ZONE_EQUAL_SPLIT = False
+# Répartition manuelle réglable au dashboard : % de l'ordre 1 (proche/gros lot) et de
+# l'ordre 2 (milieu). L'ordre 3 (loin/petit lot) prend toujours le reliquat (1 - PCT1 - PCT2)
+# -- jamais stocké directement, pour garantir que la somme fasse toujours 100%.
+SABR_ZONE_PCT1 = 0.45
+SABR_ZONE_PCT2 = 0.35
 
 MAX_DAILY_DRAWDOWN = 0.040         # Drawdown max journalier (4%)
 DRAWDOWN_ACTIVE = True             # (#8) Disjoncteur drawdown ON/OFF (désactivable au dashboard)
@@ -1112,6 +1121,9 @@ def save_settings():
                 "FIXED_LOT_SABR_FREE": FIXED_LOT_SABR_FREE,
                 "FIXED_LOT_SABR_VIP": FIXED_LOT_SABR_VIP,
                 "RISK_PERCENT_SABR_OTHER": RISK_PERCENT_SABR_OTHER,
+                "SABR_ZONE_EQUAL_SPLIT": SABR_ZONE_EQUAL_SPLIT,
+                "SABR_ZONE_PCT1": SABR_ZONE_PCT1,
+                "SABR_ZONE_PCT2": SABR_ZONE_PCT2,
                 "RISK_PERCENT_SPACE": RISK_PERCENT_SPACE,
                 "RISK_PERCENT_LIGUE": RISK_PERCENT_LIGUE,
                 "RISK_PERCENT_PERSO": RISK_PERCENT_PERSO,
@@ -1152,7 +1164,7 @@ FIREBASE_PASSWORD = ""
 
 def load_settings():
     """Charge les réglages au démarrage"""
-    global RISK_PERCENT_GOLD, SABR_FORWARD_ACTIVE, RISK_PERCENT_OTHER, RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE, MAX_DAILY_DRAWDOWN, DRAWDOWN_ACTIVE, TRAILING_STOP_PIPS, RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO, SOFT_SL_PERCENT, MUTED_CHANNELS, ALLOWED_CHANNELS, CHANNEL_TP1_PCT, TELEGRAM_DESTINATION_ID, ADMIN_ID, RISK_PERCENT_INDICES, PRIME_HOURS, TIME_OFF_PEAK_FACTOR, DAY_RISK_FACTORS, FIXED_LOT_SABR_FREE, FIXED_LOT_SABR_VIP, RISK_PERCENT_SABR_OTHER, SL_SUIVEUR_ACTIVE, SOFT_SL_ACTIVE, FIREBASE_EMAIL, FIREBASE_PASSWORD, SERVER_PACK_CHANNELS
+    global RISK_PERCENT_GOLD, SABR_FORWARD_ACTIVE, RISK_PERCENT_OTHER, RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE, MAX_DAILY_DRAWDOWN, DRAWDOWN_ACTIVE, TRAILING_STOP_PIPS, RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO, SOFT_SL_PERCENT, MUTED_CHANNELS, ALLOWED_CHANNELS, CHANNEL_TP1_PCT, TELEGRAM_DESTINATION_ID, ADMIN_ID, RISK_PERCENT_INDICES, PRIME_HOURS, TIME_OFF_PEAK_FACTOR, DAY_RISK_FACTORS, FIXED_LOT_SABR_FREE, FIXED_LOT_SABR_VIP, RISK_PERCENT_SABR_OTHER, SABR_ZONE_EQUAL_SPLIT, SABR_ZONE_PCT1, SABR_ZONE_PCT2, SL_SUIVEUR_ACTIVE, SOFT_SL_ACTIVE, FIREBASE_EMAIL, FIREBASE_PASSWORD, SERVER_PACK_CHANNELS
 
     if os.path.exists(SETTINGS_FILENAME):
         try:
@@ -1171,6 +1183,9 @@ def load_settings():
                 if "FIXED_LOT_SABR_FREE" in data: FIXED_LOT_SABR_FREE = data["FIXED_LOT_SABR_FREE"]
                 if "FIXED_LOT_SABR_VIP" in data: FIXED_LOT_SABR_VIP = data["FIXED_LOT_SABR_VIP"]
                 if "RISK_PERCENT_SABR_OTHER" in data: RISK_PERCENT_SABR_OTHER = data["RISK_PERCENT_SABR_OTHER"]
+                if "SABR_ZONE_EQUAL_SPLIT" in data: SABR_ZONE_EQUAL_SPLIT = data["SABR_ZONE_EQUAL_SPLIT"]
+                if "SABR_ZONE_PCT1" in data: SABR_ZONE_PCT1 = data["SABR_ZONE_PCT1"]
+                if "SABR_ZONE_PCT2" in data: SABR_ZONE_PCT2 = data["SABR_ZONE_PCT2"]
                 if "RISK_PERCENT_SPACE" in data: RISK_PERCENT_SPACE = data["RISK_PERCENT_SPACE"]
                 if "RISK_PERCENT_LIGUE" in data: RISK_PERCENT_LIGUE = data["RISK_PERCENT_LIGUE"]
                 if "RISK_PERCENT_PERSO" in data: RISK_PERCENT_PERSO = data["RISK_PERCENT_PERSO"]
@@ -2273,7 +2288,7 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
                 dist_sl = 100 * pt * (div/10)
                 sl_val = p2 - dist_sl if action == "ACHAT" else p2 + dist_sl
 
-            # --- NOUVELLE RÉPARTITION : 45% - 35% - 20% ---
+            # --- RÉPARTITION : MANUELLE (% réglables au dashboard) OU ÉGALE (toggle) ---
             # (#27) Si le lot total ne permet pas de financer les 3 ordres à au moins
             # le pas minimum du broker chacun, on ne finance QUE les premiers ordres
             # (début > milieu > fin, par priorité) plutôt que de forcer chaque montant
@@ -2283,12 +2298,27 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
             n_slots = round(total_vol / min_step_zone)
 
             if n_slots >= 3:
-                lot1 = round(total_vol * 0.45, 2)
-                lot2 = round(total_vol * 0.35, 2)
-                lot3 = round(total_vol - lot1 - lot2, 2)
-                if lot1 < min_step_zone: lot1 = min_step_zone
-                if lot2 < min_step_zone: lot2 = min_step_zone
-                if lot3 < min_step_zone: lot3 = min_step_zone
+                if SABR_ZONE_EQUAL_SPLIT:
+                    # Répartition ÉGALE (ou la plus proche possible si le nombre de pas
+                    # minimum du broker n'est pas un multiple de 3 -- les unités en trop
+                    # vont sur les premiers ordres, début > milieu > fin).
+                    n_units = int(n_slots)
+                    base_units, remainder_units = divmod(n_units, 3)
+                    units = [base_units + (1 if i < remainder_units else 0) for i in range(3)]
+                    lot1 = round(units[0] * min_step_zone, 2)
+                    lot2 = round(units[1] * min_step_zone, 2)
+                    lot3 = round(units[2] * min_step_zone, 2)
+                else:
+                    # Sécurité : on clampe pour garantir 3 pourcentages valides et positifs
+                    # (>= 1% chacun) même si un réglage dashboard mal saisi a été sauvegardé.
+                    pct1 = max(0.01, min(0.98, SABR_ZONE_PCT1))
+                    pct2 = max(0.01, min(0.98 - pct1, SABR_ZONE_PCT2))
+                    lot1 = round(total_vol * pct1, 2)
+                    lot2 = round(total_vol * pct2, 2)
+                    lot3 = round(total_vol - lot1 - lot2, 2)
+                    if lot1 < min_step_zone: lot1 = min_step_zone
+                    if lot2 < min_step_zone: lot2 = min_step_zone
+                    if lot3 < min_step_zone: lot3 = min_step_zone
             elif n_slots == 2:
                 lot1 = min_step_zone
                 lot2 = round(total_vol - lot1, 2)
@@ -2604,9 +2634,18 @@ async def check_closed_positions():
             sym = exit.symbol
             pt = get_cached_point(sym)
             div = get_pip_divisor(sym)
-            
-            if entry.type == mt5.DEAL_TYPE_BUY: pips = ((exit.price - entry.price) / pt) / div
-            else: pips = ((entry.price - exit.price) / pt) / div
+
+            # (#pips) Prix de sortie moyen PONDÉRÉ par le volume de chaque clôture (TP1/TP2/
+            # trailing/final), pas juste le prix du DERNIER deal. Sinon un trade qui a sécurisé
+            # 60%+ du volume à +100/+150 pips sur les partiels puis fini le reliquat (souvent le
+            # step minimum) en BE/légèrement négatif affichait des pips proches de 0 ou négatifs
+            # alors que le profit € réel était largement positif (partiels non reflétés).
+            out_deals = [d for d in h if d.entry in (mt5.DEAL_ENTRY_OUT, mt5.DEAL_ENTRY_OUT_BY)]
+            total_close_vol = sum(d.volume for d in out_deals)
+            weighted_exit_price = (sum(d.price * d.volume for d in out_deals) / total_close_vol) if total_close_vol > 0 else exit.price
+
+            if entry.type == mt5.DEAL_TYPE_BUY: pips = ((weighted_exit_price - entry.price) / pt) / div
+            else: pips = ((entry.price - weighted_exit_price) / pt) / div
 
             daily_stats["weekly_pips"] += pips
             daily_stats["daily_pips"] += pips
@@ -2857,33 +2896,71 @@ async def get_historical_stats(days=30, start_date_custom=None):
     
     if not history: return stats
 
-    wins = 0
-    losses = 0
-
+    # (#pips) Regroupement par POSITION : un trade avec clôtures partielles (TP1/TP2/
+    # trailing/final) génère PLUSIEURS deals de sortie. Les compter un par un gonflait
+    # total_trades et faussait le winrate (une tranche partielle en gain ne dit rien du
+    # résultat net du trade entier, et inversement) -- même famille de bug que les pips
+    # de check_closed_positions/_get_closed_trades_today_blocking, "pips" n'était par
+    # ailleurs jamais rempli ici (toujours 0 côté dashboard, onglets Semaine/Global).
+    positions = {}
+    entry_by_pos = {}
     for deal in history:
-        if deal.entry in [mt5.DEAL_ENTRY_OUT, mt5.DEAL_ENTRY_OUT_BY]:
-            comment = deal.comment.upper()
-            profit = deal.profit + deal.commission + deal.swap
-            stats["profit"] += profit
-            stats["total_trades"] += 1
-            
-            if profit > 0: wins += 1
-            else: losses += 1
-            
-            # --- On déduit les TPs/SLs via les commentaires de MT5 ---
-            if "TP1" in comment: stats["tp1_reached"] += 1
-            elif "TP2" in comment: stats["tp2_reached"] += 1
-            elif "TP3" in comment: stats["tp3_reached"] += 1
-            elif "TP4" in comment: stats["tp4_reached"] += 1
-            
-            if "TP FINAL" in comment or "TAKE PROFIT" in comment or deal.reason == 5:
-                stats["tp_final"] += 1
+        if deal.entry == mt5.DEAL_ENTRY_IN:
+            entry_by_pos.setdefault(deal.position_id, deal)
+        elif deal.entry in (mt5.DEAL_ENTRY_OUT, mt5.DEAL_ENTRY_OUT_BY):
+            p = positions.setdefault(deal.position_id, {
+                "profit": 0.0, "weighted_price_sum": 0.0, "closed_volume": 0.0,
+                "last_deal": deal, "comment": "",
+            })
+            p["profit"] += deal.profit + deal.commission + deal.swap
+            p["weighted_price_sum"] += deal.price * deal.volume
+            p["closed_volume"] += deal.volume
+            p["comment"] += " " + deal.comment.upper()
+            if deal.time >= p["last_deal"].time:
+                p["last_deal"] = deal
 
-            if "BE" in comment: stats["sl_be"] += 1
-            elif "PALIER 20" in comment: stats["sl_30"] += 1
-            elif "PALIER 80" in comment: stats["sl_80"] += 1
-            elif "PALIER 140" in comment: stats["sl_130"] += 1
-            elif deal.reason == 4: stats["sl_full"] += 1
+    wins = 0
+    for pos_id, p in positions.items():
+        entry_deal = entry_by_pos.get(pos_id)
+        if entry_deal is None:
+            # Position ouverte avant le début de la période demandée -> on va chercher
+            # son vrai deal d'entrée (hors filtre de date).
+            full_hist = await run_mt5(mt5.history_deals_get, position=pos_id)
+            if not full_hist or len(full_hist) == 0: continue
+            entry_deal = full_hist[0]
+
+        pt = get_cached_point(entry_deal.symbol)
+        div = get_pip_divisor(entry_deal.symbol)
+        weighted_exit = (p["weighted_price_sum"] / p["closed_volume"]) if p["closed_volume"] > 0 else entry_deal.price
+        if entry_deal.type == mt5.DEAL_TYPE_BUY:
+            pips = ((weighted_exit - entry_deal.price) / pt) / div
+        else:
+            pips = ((entry_deal.price - weighted_exit) / pt) / div
+
+        stats["profit"] += p["profit"]
+        stats["pips"] += pips
+        stats["total_trades"] += 1
+        if p["profit"] > 0: wins += 1
+
+        comment = p["comment"]
+        if "TP1" in comment: stats["tp1_reached"] += 1
+        if "TP2" in comment: stats["tp2_reached"] += 1
+        if "TP3" in comment: stats["tp3_reached"] += 1
+        if "TP4" in comment: stats["tp4_reached"] += 1
+
+        last = p["last_deal"]
+        is_mt5_tp = (last.reason == 5)
+        is_mt5_sl = (last.reason == 4)
+        if is_mt5_tp or (p["profit"] > 0 and pips >= TP4_PIPS):
+            stats["tp_final"] += 1
+        elif (is_mt5_sl or pips < 10) and pips > -10:
+            stats["sl_be"] += 1
+        elif is_mt5_sl or pips <= -20:
+            stats["sl_full"] += 1
+        elif pips >= 10:
+            if pips > 135: stats["sl_130"] += 1
+            elif pips > 80: stats["sl_80"] += 1
+            else: stats["sl_30"] += 1
 
     stats["winrate"] = round((wins / stats["total_trades"] * 100), 1) if stats["total_trades"] > 0 else 0
     return stats
@@ -2924,19 +3001,24 @@ def _get_closed_trades_today_blocking():
                         "type": trade_type,
                         "initial_volume": entry_deal.volume,
                         "closed_volume": 0.0,
+                        "weighted_price_sum": 0.0,
                         "open_price": entry_deal.price,
                         "open_time": entry_deal.time,
-                        "close_price": d.price, # Sera mis à jour avec la dernière sortie
+                        "close_price": d.price, # Sera mis à jour avec la dernière sortie (affichage uniquement)
                         "profit": 0.0,
                         "last_time": d.time
                     }
-                
+
                 # On cumule les profits et les volumes fermés
                 prof = d.profit + d.commission + d.swap
                 grouped_trades[pos_id]["profit"] += prof
                 grouped_trades[pos_id]["closed_volume"] += d.volume
-                
-                # On garde le prix de clôture le plus récent
+                # (#pips) Pondéré par volume -- sert au calcul des pips (voir plus bas), pour ne
+                # pas ignorer les clôtures partielles (TP1/TP2/trailing) faites à un meilleur prix
+                # que la dernière tranche fermée.
+                grouped_trades[pos_id]["weighted_price_sum"] += d.price * d.volume
+
+                # On garde le prix de clôture le plus récent (uniquement pour l'affichage "close_price")
                 if d.time > grouped_trades[pos_id]["last_time"]:
                     grouped_trades[pos_id]["close_price"] = d.price
                     grouped_trades[pos_id]["last_time"] = d.time
@@ -2947,11 +3029,14 @@ def _get_closed_trades_today_blocking():
         pt = get_cached_point(t["symbol"])
         div = get_pip_divisor(t["symbol"])
         
-        # Calcul des pips (du point d'entrée jusqu'au dernier point de sortie)
+        # Calcul des pips : prix de sortie moyen PONDÉRÉ par volume (pas juste la dernière
+        # tranche fermée), sinon un trade sécurisé à +100/+150p sur des partiels puis fini en
+        # BE sur le reliquat affichait des pips proches de 0 alors que le profit € était positif.
+        weighted_close_price = (t["weighted_price_sum"] / t["closed_volume"]) if t["closed_volume"] > 0 else t["close_price"]
         if t["type"] == "BUY":
-            pips = ((t["close_price"] - t["open_price"]) / pt) / div
+            pips = ((weighted_close_price - t["open_price"]) / pt) / div
         else:
-            pips = ((t["open_price"] - t["close_price"]) / pt) / div
+            pips = ((t["open_price"] - weighted_close_price) / pt) / div
             
         # Formatage du volume (ex: "0.04/0.08" ou "0.08")
         vol_closed = round(t["closed_volume"], 2)
@@ -2994,7 +3079,7 @@ async def api_update_planning(data: PlanningUpdate):
 async def api_update_setting(data: SettingUpdate):
     global RISK_PERCENT_GOLD, RISK_PERCENT_INDICES, RISK_PERCENT_OTHER
     global RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE, RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO
-    global FIXED_LOT_SABR_VIP, FIXED_LOT_SABR_FREE, RISK_PERCENT_SABR_OTHER
+    global FIXED_LOT_SABR_VIP, FIXED_LOT_SABR_FREE, RISK_PERCENT_SABR_OTHER, SABR_ZONE_EQUAL_SPLIT, SABR_ZONE_PCT1, SABR_ZONE_PCT2
     global MAX_DAILY_DRAWDOWN, TRAILING_STOP_PIPS, SOFT_SL_PERCENT
     global PRIME_HOURS, TIME_OFF_PEAK_FACTOR
 
@@ -3011,10 +3096,10 @@ async def api_update_setting(data: SettingUpdate):
     }
     if k in CHANNEL_SETTING_KEYS and not channel_allowed(CHANNEL_SETTING_KEYS[k]):
         return {"status": "error", "message": f"{k} : canal hors de ton pack."}
-    if k == "risk_sabr_other" and not (
+    if k in ("risk_sabr_other", "sabr_zone_equal_split", "sabr_zone_pct1", "sabr_zone_pct2") and not (
         channel_allowed("CANAL SABR_VIP") or channel_allowed("CANAL SABR_FREE") or channel_allowed("CANAL SABR_COPIE")
     ):
-        return {"status": "error", "message": "risk_sabr_other : SABR hors de ton pack."}
+        return {"status": "error", "message": f"{k} : SABR hors de ton pack."}
 
     if k == "risk_gold": RISK_PERCENT_GOLD = float(v)
     elif k == "risk_indices": RISK_PERCENT_INDICES = float(v)
@@ -3027,6 +3112,9 @@ async def api_update_setting(data: SettingUpdate):
     elif k == "sabr_lot_vip": FIXED_LOT_SABR_VIP = float(v)
     elif k == "sabr_lot_free": FIXED_LOT_SABR_FREE = float(v)
     elif k == "risk_sabr_other": RISK_PERCENT_SABR_OTHER = float(v)
+    elif k == "sabr_zone_equal_split": SABR_ZONE_EQUAL_SPLIT = bool(v)
+    elif k == "sabr_zone_pct1": SABR_ZONE_PCT1 = max(0.01, min(0.98, float(v)))
+    elif k == "sabr_zone_pct2": SABR_ZONE_PCT2 = max(0.01, min(0.98, float(v)))
     elif k == "max_dd": MAX_DAILY_DRAWDOWN = float(v)
     elif k == "sl_suiveur": TRAILING_STOP_PIPS = int(float(v))
     elif k == "sl_sell": SOFT_SL_PERCENT = float(v)
@@ -4850,6 +4938,8 @@ async def get_current_state_for_firebase() -> dict:
             "risk_perso": RISK_PERCENT_PERSO or 0,
             "sabr_lot_vip": FIXED_LOT_SABR_VIP, "sabr_lot_free": FIXED_LOT_SABR_FREE,
             "risk_sabr_other": RISK_PERCENT_SABR_OTHER,
+            "sabr_zone_equal_split": SABR_ZONE_EQUAL_SPLIT,
+            "sabr_zone_pct1": SABR_ZONE_PCT1, "sabr_zone_pct2": SABR_ZONE_PCT2,
             "sabr_anti_doublon": SABR_ANTI_DOUBLON_ACTIVE,
             "sabr_forward": SABR_FORWARD_ACTIVE, "max_dd": MAX_DAILY_DRAWDOWN,
             "drawdown_active": DRAWDOWN_ACTIVE,
