@@ -1077,27 +1077,41 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
               )}
             </div>
 
-            {/* Mode Manuel : les 3 ordres se déroulent sur la même ligne, tous réglables */}
-            {(isChannelVisible('CANAL SABR_VIP') || isChannelVisible('CANAL SABR_FREE')) && !settings.sabr_zone_equal_split && (
-              <div style={{ display: 'flex', gap: '10px', marginTop: '15px', flexWrap: 'wrap' }}>
-                {[
-                  { label: 'Ordre 1 (proche)', key: 'sabr_zone_pct1', fallback: 0.45 },
-                  { label: 'Ordre 2 (milieu)', key: 'sabr_zone_pct2', fallback: 0.35 },
-                  { label: 'Ordre 3 (loin)', key: 'sabr_zone_pct3', fallback: 0.20 }
-                ].map((item) => (
-                  <div key={item.key} style={{ display: 'flex', alignItems: 'center', gap: '6px', background: '#2a2a2a', padding: '8px 10px', borderRadius: '8px' }}>
-                    <span style={{ fontSize: '0.75rem', color: '#888' }}>{item.label}</span>
+            {/* Mode Manuel : les 3 ordres tiennent sur la même ligne (cellules flex:1, pas de
+                wrap) -- Ordre 3 reprend le calcul auto du reliquat (1 - Ordre 1 - Ordre 2) */}
+            {(isChannelVisible('CANAL SABR_VIP') || isChannelVisible('CANAL SABR_FREE')) && !settings.sabr_zone_equal_split && (() => {
+              const pct1 = settings.sabr_zone_pct1 ?? 0.45;
+              const pct2 = settings.sabr_zone_pct2 ?? 0.35;
+              const pct3 = Math.max(0, 1 - pct1 - pct2);
+              return (
+                <div style={{ display: 'flex', gap: '8px', marginTop: '15px' }}>
+                  <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', background: '#2a2a2a', padding: '8px 4px', borderRadius: '8px' }}>
+                    <span style={{ fontSize: '0.7rem', color: '#888' }}>O1</span>
                     <input
-                      type="number" min="0" max="100" step="1"
-                      value={Math.round((settings[item.key] ?? item.fallback) * 100)}
-                      onChange={(e) => updateSetting(item.key, parseFloat(e.target.value) / 100, { debounce: false })}
-                      style={{ background: '#121212', border: '1px solid #444', color: '#fff', padding: '5px', width: '55px', borderRadius: '4px', textAlign: 'center' }}
+                      type="number" min="1" max="98" step="1"
+                      value={Math.round(pct1 * 100)}
+                      onChange={(e) => updateSetting('sabr_zone_pct1', parseFloat(e.target.value) / 100, { debounce: false })}
+                      style={{ background: '#121212', border: '1px solid #444', color: '#fff', padding: '4px', width: '40px', borderRadius: '4px', textAlign: 'center' }}
                     />
-                    <span style={{ fontSize: '0.75rem', color: '#666' }}>%</span>
+                    <span style={{ fontSize: '0.7rem', color: '#666' }}>%</span>
                   </div>
-                ))}
-              </div>
-            )}
+                  <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', background: '#2a2a2a', padding: '8px 4px', borderRadius: '8px' }}>
+                    <span style={{ fontSize: '0.7rem', color: '#888' }}>O2</span>
+                    <input
+                      type="number" min="1" max="98" step="1"
+                      value={Math.round(pct2 * 100)}
+                      onChange={(e) => updateSetting('sabr_zone_pct2', parseFloat(e.target.value) / 100, { debounce: false })}
+                      style={{ background: '#121212', border: '1px solid #444', color: '#fff', padding: '4px', width: '40px', borderRadius: '4px', textAlign: 'center' }}
+                    />
+                    <span style={{ fontSize: '0.7rem', color: '#666' }}>%</span>
+                  </div>
+                  <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', background: '#2a2a2a', padding: '8px 4px', borderRadius: '8px' }}>
+                    <span style={{ fontSize: '0.7rem', color: '#888' }}>O3</span>
+                    <span style={{ fontSize: '0.8rem', fontWeight: 'bold', color: '#00e676' }}>{Math.round(pct3 * 100)}%</span>
+                  </div>
+                </div>
+              );
+            })()}
           </div>
 
           {/* BLOC B : GESTION DU RISQUE (H) & JOURS */}
