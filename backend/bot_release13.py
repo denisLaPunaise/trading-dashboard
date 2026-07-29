@@ -65,16 +65,22 @@ def client_status(msg):
 
 def resize_console_window():
     """Force une taille de fenêtre console compacte au démarrage (l'exe s'ouvrait sinon
-    maximisé/plein écran par défaut) -- 52x8 est calé sur le bandeau final affiché en mode
-    client une fois le bot prêt ("SYSTÈME OPÉRATIONNEL ET SÉCURISÉ", cf. client_status()
-    dans run_bot_safe) : bordure "═"*50 (donc 50 colonnes + marge) sur 5 lignes (ligne
-    vide + bordure + 2 lignes de texte + bordure) + un peu d'air. `mode con` seul ne
-    suffit pas : il redimensionne le buffer de caractères mais ne sort PAS une fenêtre de
-    son état "maximisé" (ex: si Windows Terminal est le terminal par défaut, ou si
-    Windows a mémorisé un état maximisé pour cette fenêtre). On force donc en plus
-    l'état "restauré" (non maximisé) au niveau Win32 -- c'est LUI, pas mode con, qui gère
-    la taille finale : un MoveWindow en pixels avant aurait été écrasé par le mode con
-    qui suit."""
+    maximisé/plein écran par défaut). Hauteur calée sur la séquence COMPLÈTE affichée au
+    lancement en mode client (déjà appairé), sans qu'aucune ligne ne défile hors champ :
+      - print_kairos_logo()                                    : 9 lignes
+      - "Licence validée — bienvenue ..." (check_license_online) : 1 ligne
+      - "MetaTrader 5 connecté (compte ...)"                     : 1 ligne
+      - "Interface Telegram chargée."                            : 1 ligne
+      - bandeau final "SYSTÈME OPÉRATIONNEL..." (cf. client_status() dans main())
+        : 5 lignes (ligne vide + bordure "═"*50 + 2 lignes de texte + bordure)
+      = 17 lignes -> 20 lignes de marge. Largeur (58) laisse un peu d'air à la ligne
+      "Licence validée" dont le nom du client peut dépasser les 50 de la bordure.
+    `mode con` seul ne suffit pas : il redimensionne le buffer de caractères mais ne sort
+    PAS une fenêtre de son état "maximisé" (ex: si Windows Terminal est le terminal par
+    défaut, ou si Windows a mémorisé un état maximisé pour cette fenêtre). On force donc
+    en plus l'état "restauré" (non maximisé) au niveau Win32 -- c'est LUI, pas mode con,
+    qui gère la taille finale : un MoveWindow en pixels avant aurait été écrasé par le
+    mode con qui suit."""
     if os.name != 'nt':
         return
     try:
@@ -86,7 +92,7 @@ def resize_console_window():
     except Exception:
         pass
     try:
-        os.system('mode con: cols=52 lines=8')
+        os.system('mode con: cols=58 lines=20')
     except Exception:
         pass
 
