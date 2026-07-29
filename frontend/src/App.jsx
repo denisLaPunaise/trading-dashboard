@@ -559,13 +559,17 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
   // contre un NaN si account.balance était transitoirement absent (?? ne rattrape que
   // null/undefined, pas NaN). On garde les deux opérandes ici, à la source.
   const balanceMinuit = (account.balance ?? 0) - (daily_stats.realized_pnl ?? 0);
-  // Détection du mode Panic (réel du backend ou via le bouton de test)
-  const isPanicMode = settings.security_triggered;
+  // Verrou Drawdown : persistant côté backend une fois déclenché (#DD), ne se lève plus
+  // tout seul en relevant juste le Max DD -- il faut ensuite un déverrouillage manuel.
+  const isLocked = !!settings.security_triggered;
   // 2. ENSUITE on calcule le risque en utilisant la balance
   const ddLimit = balanceMinuit * settings.max_dd;
   const currentLoss = daily_stats.total_pnl < 0 ? Math.abs(daily_stats.total_pnl) : 0;
   const riskPercent = (currentLoss / ddLimit) * 100;
   const isNearDD = riskPercent >= 80;
+  // (#DD) Jaune : verrouillé mais plus au-dessus du seuil critique (Max DD relevé) --
+  // il ne manque plus que le déverrouillage manuel pour repasser à la normale.
+  const isDDPendingUnlock = isLocked && !isNearDD;
 
   const currentHour = new Date().getHours();
   const pyDay = (new Date().getDay() + 6) % 7; 
@@ -580,6 +584,8 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
       
       {/* VIGNETTE D'ALERTE DANGER (ÉTAPE 3) */}
       {isNearDD && <div className="vignette-alert" />}
+      {/* (#DD) Jaune : verrou DD actif mais Max DD déjà relevé -- il manque juste le déverrouillage manuel */}
+      {isDDPendingUnlock && <div className="vignette-alert" style={{ boxShadow: 'inset 0 0 35px rgba(255, 193, 7, 0.9)' }} />}
       
       {/* INJECTION DES ANIMATIONS CSS POUR LA MODAL */}
       <style>{`
@@ -692,7 +698,7 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
       )}
 
       {/* OVERLAY LOCKDOWN PANIC (ÉTAPE 4) */}
-      {isPanicMode && (
+      {isLocked && (
         <div className="lockdown-overlay">
           <div className="lockdown-stamp">
             <AlertTriangle size={60} style={{ display: 'block', margin: '0 auto 10px' }} />
@@ -705,7 +711,11 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
       {/* HEADER AVEC STATUT "ACTIF" */}
       <header style={{ borderBottom: '1px solid #333', paddingBottom: '15px', marginBottom: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h1 style={{ fontSize: '1.5rem', margin: 0, display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <Activity size={24} color="#00e676" /> Dashboard {settings.security_triggered && <span style={{color: '#ff4444', fontSize:'0.9rem'}}>(SÉCURITÉ DD)</span>}
+          <Activity size={24} color="#00e676" /> Dashboard {isLocked && (
+            isDDPendingUnlock
+              ? <span style={{color: '#ffc107', fontSize:'0.9rem'}}>(DD -- DÉVERROUILLAGE REQUIS)</span>
+              : <span style={{color: '#ff4444', fontSize:'0.9rem'}}>(SÉCURITÉ DD)</span>
+          )}
         </h1>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#aaa', fontSize: '0.9rem' }}>
           <span style={{
@@ -848,7 +858,7 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
                 alignItems: 'center',
 
                 overflow: 'hidden',
-                animation: isPanicMode ? `cascadeClose 1.2s ease-in-out forwards ${2 + (index * 0.2)}s` : trade.isClosing ? (trade.profit >= 0 ? 'slideOutGain 0.5s forwards' : 'slideOutLoss 0.5s forwards') : 'fadeIn 0.3s ease-out'
+                animation: isLocked ? `cascadeClose 1.2s ease-in-out forwards ${2 + (index * 0.2)}s` : trade.isClosing ? (trade.profit >= 0 ? 'slideOutGain 0.5s forwards' : 'slideOutLoss 0.5s forwards') : 'fadeIn 0.3s ease-out'
               }}>
                 
                 {/* --- COLONNE 1 : SYMBOLE ET PRIX --- */}

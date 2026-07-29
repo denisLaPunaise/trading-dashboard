@@ -1741,16 +1741,25 @@ async def update_daily_stats():
         save_state_and_stats(current_trade_day, daily_start_balance)
 
 def check_daily_max_loss():
+    """Retourne True si la perte du jour dépasse la limite ACTUELLE (recalculée à chaque
+    appel avec le MAX_DAILY_DRAWDOWN courant). Effet de bord : passe security_triggered à
+    True au moment où la limite est franchie -- ce verrou est ensuite persistant (ne
+    redescend JAMAIS tout seul, même si on relève le Max DD et que cette fonction se remet
+    à retourner False) : seul un déverrouillage manuel explicite (bouton dashboard/commande
+    Telegram) peut le lever, et ce déverrouillage lui-même refuse tant que cette fonction
+    retourne encore True. Avant ce correctif, security_triggered n'était jamais mis à True
+    nulle part -- augmenter le Max DD suffisait donc, seul, à réactiver le trading."""
+    global security_triggered
     # (#8) Disjoncteur désactivé -> on ne bloque rien (ni nouveaux trades ni close d'urgence)
     if not DRAWDOWN_ACTIVE:
         return False
 
     # On récupère le vrai P&L calculé depuis l'historique serveur
     current_daily_pnl, _, _ = get_accurate_daily_stats()
-    
+
     acc = mt5.account_info()
     if not acc: return False
-    
+
     # (#11) Limite basée sur la balance de MINUIT (base FTMO correcte), pas la balance
     # courante : sinon un gain en journée relève la limite au-delà de 4% du départ.
     # Fallback sur acc.balance si la référence de minuit n'est pas encore initialisée.
@@ -1759,8 +1768,9 @@ def check_daily_max_loss():
     
     # Si on est en perte de plus de X (ex: -400€)
     if current_daily_pnl <= -limit_amount:
+        security_triggered = True
         return True
-        
+
     return False
 
 async def get_last_used_lot(symbol):
@@ -2084,8 +2094,13 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
             return None
 
     # 1. Vérification Drawdown (Disjoncteur)
-    if check_daily_max_loss(): 
-        await send_alert("⛔ STOP: Limite perte atteinte.")
+    # (#DD) On appelle check_daily_max_loss() pour mettre à jour security_triggered si une
+    # nouvelle limite vient d'être franchie, mais le blocage lui-même se base sur le verrou
+    # PERSISTANT (security_triggered), pas sur son retour direct -- sinon relever le Max DD
+    # suffirait à lui seul à réautoriser les trades, sans déverrouillage manuel explicite.
+    check_daily_max_loss()
+    if security_triggered:
+        await send_alert("⛔ STOP: Sécurité Drawdown active -- augmente le Max DD puis déverrouille manuellement pour reprendre.")
         return None
 
     # --- 🕒 NOUVEAU : CALCUL DU RISQUE DYNAMIQUE (DÉBUT) ---
@@ -3390,7 +3405,13 @@ async def monitor_positions():
                         if key_dist in SABR_ZONE_MIN_DIST: del SABR_ZONE_MIN_DIST[key_dist]
             
             # 3. Sécurité Drawdown
-            if check_daily_max_loss():
+            # (#DD) Même logique que le gate de nouveau trade : check_daily_max_loss() met à
+            # jour security_triggered, mais c'est ce verrou PERSISTANT qui décide si on reste
+            # en pause -- une fois déclenché, relever le Max DD ne suffit plus à lui seul à
+            # sortir de cette boucle (pos_panic sera de toute façon vide après la 1ère
+            # fermeture, donc pas de ré-envoi d'alerte/ordres inutiles).
+            check_daily_max_loss()
+            if security_triggered:
                 pos_panic = await run_mt5(mt5.positions_get)
                 if pos_panic:
                     await send_alert("🚨 **URGENCE : DD QUOTIDIEN DÉPASSÉ !**\nFermeture d'urgence.")
@@ -4036,8 +4057,14 @@ async def admin_commands(event):
 
 # --- 6. DÉVERROUILLAGE SÉCURITÉ ---
     elif text == "/unlock":
-        security_triggered = False
-        await event.reply("🔓 **SÉCURITÉ DÉVERROUILLÉE**")
+        # (#DD) Refuse le déverrouillage si la perte du jour dépasse ENCORE le Max DD actuel
+        # -- il faut d'abord relever le seuil, sinon on ne ferait que ré-autoriser une
+        # seconde puis re-déclencher la fermeture d'urgence au cycle suivant.
+        if check_daily_max_loss():
+            await event.reply("⛔ Augmente d'abord le **Max DD** -- la perte du jour dépasse toujours la limite actuelle.")
+        else:
+            security_triggered = False
+            await event.reply("🔓 **SÉCURITÉ DÉVERROUILLÉE**")
 
 # --- 7. SUIVI MANUEL ---
     elif text.startswith("/suivi"):
@@ -5066,8 +5093,14 @@ async def handle_firebase_command(cmd_id: str, cmd_data: dict) -> None:
 
         elif cmd_type == "unlock":
             global security_triggered
-            security_triggered = False
-            set_status("done", {"success": True})
+            # (#DD) Refuse le déverrouillage si la perte du jour dépasse ENCORE le Max DD
+            # actuel -- il faut d'abord relever le seuil (dashboard), sinon on ne ferait que
+            # ré-autoriser une seconde puis re-déclencher la fermeture d'urgence juste après.
+            if check_daily_max_loss():
+                set_status("error", {"success": False, "message": "Augmente d'abord le Max DD -- la perte du jour dépasse toujours la limite actuelle."})
+            else:
+                security_triggered = False
+                set_status("done", {"success": True})
 
         elif cmd_type == "suivre":
             ticket = int(payload.get("ticket", 0))
