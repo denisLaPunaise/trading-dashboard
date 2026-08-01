@@ -828,9 +828,17 @@ def audit_log(sender_id, text):
         print(f"⚠️ audit_log: {e}")
 
 
-@client_tg.on(events.NewMessage(chats=[SECURITY_CHANNEL_ID, FEEDBACK_CHANNEL_ID], incoming=True))  # (#29) /vu depuis le canal feedback ; (#42) incoming=True -- évite que le bot retraite ses propres réponses
+@client_tg.on(events.NewMessage(chats=[SECURITY_CHANNEL_ID, FEEDBACK_CHANNEL_ID]))  # (#29) /vu depuis le canal feedback
 async def main_handler(event):
     msg = event.raw_text.strip()
+    # (#42) client_tg est le compte PERSONNEL de l'admin (pas un bot séparé) -- un `incoming=True`
+    # sur le décorateur bloquait donc AUSSI les vraies commandes tapées par l'admin depuis ce même
+    # compte (elles sont "sortantes" de son point de vue), pas seulement les réponses automatiques
+    # du bot (event.reply plus bas). Le bot n'envoie lui-même jamais de message commençant par "/",
+    # donc un message sortant qui commence par "/" est forcément tapé par un humain : on ne
+    # court-circuite que le reste (messages automatiques du bot rejoués en boucle).
+    if event.out and not msg.startswith("/"):
+        return
     if msg.startswith("/"):
         audit_log(event.sender_id, msg)
         # (#48) Avant ce fix, seul le CANAL était vérifié (décorateur ci-dessus) -- n'importe
