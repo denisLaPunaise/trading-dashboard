@@ -2622,6 +2622,29 @@ def channel_allowed(source):
         return True
 
 
+def pack_uses_risk_engine():
+    """(#pack) True si le pack du client contient au moins un canal NON-SABR.
+
+    Les canaux SABR n'utilisent NI les risques % globaux (or/indices/devises), NI le
+    planning heure/jour, NI le SL suiveur :
+      - lot SABR or = lot fixe (FIXED_LOT_SABR_*), hors-or = RISK_PERCENT_SABR_OTHER qui
+        court-circuite les % globaux (risk_override dans get_safe_lot_size) ;
+      - le multiplicateur heure/jour n'est appliqué que dans la branche "lot auto"
+        (lot == 0.0), or SABR passe toujours un volume forcé ;
+      - les positions SABR sont déviées vers sabr_groups AVANT le bloc SL suiveur.
+    Ces trois réglages sont donc purement décoratifs pour un pack 100% SABR : on les
+    masque (dashboard + /info) pour ne pas laisser croire qu'ils agissent sur les trades.
+    Pack vide = "tous les canaux" -> True (on affiche tout, rétro-compatible)."""
+    try:
+        if not ALLOWED_CHANNELS:
+            return True
+        if ALLOWED_CHANNELS == ["NONE"]:
+            return False
+        return any(not _channel_base_token(c).startswith("SABR") for c in ALLOWED_CHANNELS)
+    except Exception:
+        return True
+
+
 def recompute_pack_lock():
     """(#25) Recalcule PACK_LOCKED_CHANNELS = les canaux de ALL_PACK_CHANNELS absents du
     pack courant. Appelée au chargement des settings et à chaque mise à jour à chaud du
@@ -3878,15 +3901,24 @@ async def admin_commands(event):
         risk_o = round(RISK_PERCENT_OTHER * 100, 2)
         risk_i = round(RISK_PERCENT_INDICES * 100, 2)
 
+        # (#pack) Un canal hors du pack du client ne doit plus apparaître DU TOUT (avant : ligne
+        # affichée avec un "🔇", ce qui exposait l'existence de canaux non payés). Un canal du
+        # pack simplement mis en sourdine garde lui sa ligne, avec le 🔇 -- c'est une info utile.
         def fmt_ch(val, ch_name, is_lot=False):
-            # (#43) masque aussi les canaux verrouillés par pack, pas seulement mutés --
-            # cohérent avec /help qui filtre déjà via channel_allowed().
-            if ch_name in MUTED_CHANNELS or not channel_allowed(ch_name):
+            if ch_name in MUTED_CHANNELS:
                 return "🔇"
             if is_lot:
                 return f"{val} lot"
             return f"{val*100:.2f}%" if val else "Auto"
-        
+
+        def line_if_allowed(*pairs):
+            """Construit 'A: x | B: y' en ne gardant que les canaux du pack. '' si aucun."""
+            kept = [f"{label}: **{fmt_ch(val, ch, is_lot)}**"
+                    for label, val, ch, is_lot in pairs if channel_allowed(ch)]
+            return (" | ".join(kept) + "\n") if kept else ""
+
+        show_risk_engine = pack_uses_risk_engine()
+
         secu_state = "🔴 ACTIVÉE (STOP)" if security_triggered else "🟢 VEILLE (OK)"
         icon_day = "🟢" if daily_total >= 0 else "🔴"
         
@@ -3908,6 +3940,26 @@ async def admin_commands(event):
         # Le ":g" permet d'afficher "1" au lieu de "1.0", mais garde "0.5" tel quel !
         risk_days_str = ", ".join([f"{days_abbr[k]}:{v:g}" for k, v in sorted(DAY_RISK_FACTORS.items())])
 
+        # (#pack) SL suiveur, % globaux (or/indices/devises) et planning heure/jour ne
+        # s'appliquent JAMAIS aux canaux SABR (lots fixes / risk_override / positions déviées
+        # avant le bloc trailing) -- on les masque pour un pack 100% SABR, cf.
+        # pack_uses_risk_engine().
+        sl_block = f"**SL Suiveur: {sl_info}** (Vente: {soft_txt})\n" if show_risk_engine else ""
+        globals_block = f"Or: **{risk_g}%** | Indices: **{risk_i}%** | Autre: **{risk_o}%**\n" if show_risk_engine else ""
+        planning_block = f"\n{time_status}\n\n📅 Jours : **{risk_days_str}**" if show_risk_engine else ""
+        doublon_block = f"**Anti-Doublon SABR:** {doublon_state}\n" if (
+            channel_allowed("CANAL SABR_VIP") or channel_allowed("CANAL SABR_FREE")) else ""
+
+        channels_block = (
+            line_if_allowed(("MDT VIP", RISK_PERCENT_MDT_VIP, "CANAL MDT_VIP", False),
+                            ("MDT Free", RISK_PERCENT_MDT_FREE, "CANAL MDT_FREE", False))
+            + line_if_allowed(("SABR VIP", FIXED_LOT_SABR_VIP, "CANAL SABR_VIP", True),
+                              ("SABR Free", FIXED_LOT_SABR_FREE, "CANAL SABR_FREE", True))
+            + line_if_allowed(("Space", RISK_PERCENT_SPACE, "CANAL SPACE", False),
+                              ("Ligue", RISK_PERCENT_LIGUE, "CANAL LIGUE", False),
+                              ("Perso", RISK_PERCENT_PERSO, "CANAL PERSO", False))
+        )
+
         await event.reply(f"👀 **INFOS COMPTE**\n\n"
                           f"🌙 Balance 00h: {daily_start_balance:.2f}€\n"
                           f"💰 Balance: {acc.balance:.2f}€\n"
@@ -3919,16 +3971,12 @@ async def admin_commands(event):
                           f"\n"
                           f"Trades Actifs: {nb}\n"
                           f"Sécurité DD: {secu_state}\n"
-                          f"**SL Suiveur: {sl_info}** (Vente: {soft_txt})\n"
-                          f"**Anti-Doublon SABR:** {doublon_state}\n"
+                          f"{sl_block}"
+                          f"{doublon_block}"
                           f"\n"
-                          f"Or: **{risk_g}%** | Indices: **{risk_i}%** | Autre: **{risk_o}%**\n"
-                          f"MDT VIP: **{fmt_ch(RISK_PERCENT_MDT_VIP, 'CANAL MDT_VIP')}** | MDT Free: **{fmt_ch(RISK_PERCENT_MDT_FREE, 'CANAL MDT_FREE')}**\n"
-                          f"SABR VIP: **{fmt_ch(FIXED_LOT_SABR_VIP, 'CANAL SABR_VIP', True)}** | SABR Free: **{fmt_ch(FIXED_LOT_SABR_FREE, 'CANAL SABR_FREE', True)}**\n"
-                          f"Space: **{fmt_ch(RISK_PERCENT_SPACE, 'CANAL SPACE')}** | Ligue: **{fmt_ch(RISK_PERCENT_LIGUE, 'CANAL LIGUE')}** | Perso: **{fmt_ch(RISK_PERCENT_PERSO, 'CANAL PERSO')}**"
-                          f"\n\n"
-                          f"{time_status}\n\n"
-                          f"📅 Jours : **{risk_days_str}**")
+                          f"{globals_block}"
+                          f"{channels_block}"
+                          f"{planning_block}")
 
 # --- 2. FERMETURE TOTALE ---
     elif text == "/closeall":
@@ -5006,6 +5054,9 @@ async def get_current_state_for_firebase() -> dict:
             "sl_suiveur": TRAILING_STOP_PIPS, "sl_sell": SOFT_SL_PERCENT,
             "sl_suiveur_active": SL_SUIVEUR_ACTIVE, "soft_sl_active": SOFT_SL_ACTIVE,
             "muted_channels": MUTED_CHANNELS, "allowed_channels": ALLOWED_CHANNELS,
+            # (#pack) False = pack 100% SABR -> le dashboard masque les % globaux
+            # (or/indices/devises) et le planning heure/jour, sans effet sur SABR.
+            "uses_risk_engine": pack_uses_risk_engine(),
             "security_triggered": security_triggered,
             "time_off_peak": TIME_OFF_PEAK_FACTOR, "prime_hours": PRIME_HOURS,
             "day_factor_0": DAY_RISK_FACTORS.get(0, 1.0), "day_factor_1": DAY_RISK_FACTORS.get(1, 1.0),

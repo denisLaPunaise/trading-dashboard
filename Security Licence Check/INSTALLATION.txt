@@ -49,18 +49,36 @@ Sauvegarde le fichier settings.json.
 ---------------------------------------------------------------
 ÉTAPE 4 — Premier lancement
 ---------------------------------------------------------------
+IMPORTANT : décompresse d'abord TOUT le ZIP dans un dossier de ton
+choix (ex: C:\Kairos). Les 3 fichiers doivent rester ENSEMBLE dans
+le même dossier — ne lance pas l'exe directement depuis le ZIP.
+
 1. Assure-toi que MetaTrader 5 est ouvert et connecté à ton compte.
 2. Double-clique sur Kairos_V15.0.0.exe.
-3. Au tout premier lancement, Telethon (la librairie Telegram) va
+
+3. ⚠️ WINDOWS VA AFFICHER UN AVERTISSEMENT — C'EST NORMAL.
+   Un écran bleu "Windows a protégé votre ordinateur" apparaît, avec
+   "Éditeur inconnu". C'est le comportement standard de Windows pour
+   tout programme récent qui n'a pas de certificat de signature
+   (payant) — ce n'est PAS un virus.
+   -> Clique sur "Informations complémentaires"
+   -> puis sur le bouton "Exécuter quand même"
+
+4. Windows demande ensuite l'autorisation administrateur : clique OUI.
+   (Le bot en a besoin pour synchroniser l'heure système, ce qui évite
+   les décalages avec le serveur du broker.)
+
+5. Au tout premier lancement, Telethon (la librairie Telegram) va
    te demander dans la console :
      - ton numéro de téléphone (avec l'indicatif, ex: +33612345678)
      - le code à 5 chiffres reçu sur ton app Telegram
    (Le code s'affiche pendant que tu le tapes, c'est normal.)
-4. Une fois connecté, le programme t'affiche un code PIN et te
+6. Une fois connecté, le programme t'affiche un code PIN et te
    demande d'ouvrir ton bot sur Telegram et de lui envoyer :
      /start <ton_code_PIN>
-5. C'est fait : le bot est appairé et se met en surveillance des
-   signaux.
+7. C'est fait : le bot est appairé et se met en surveillance des
+   signaux. Laisse la fenêtre ouverte : si tu la fermes, le bot
+   s'arrête et ne suit plus tes trades.
 
 ---------------------------------------------------------------
 BESOIN D'AIDE ?

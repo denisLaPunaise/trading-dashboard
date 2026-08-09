@@ -553,6 +553,16 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
     if (!base) return true;
     return allowedChannels.some((c) => channelBaseToken(c) === base);
   };
+  // (#pack) Pack 100% SABR -> les % globaux (or/indices/devises) et le planning heure/jour
+  // n'ont aucun effet sur les trades (lots fixes / risk_override dédié / multiplicateur
+  // appliqué uniquement à la branche "lot auto"). Le backend tranche via
+  // pack_uses_risk_engine() ; on retombe sur un calcul local si le champ est absent
+  // (ancien exe client pas encore mis à jour).
+  const usesRiskEngine = settings.uses_risk_engine !== undefined
+    ? settings.uses_risk_engine
+    : (!allowedChannels.length
+        || (allowedChannels.length === 1 && allowedChannels[0] === 'NONE')
+        || allowedChannels.some((c) => !channelBaseToken(c).startsWith('SABR')));
 
   // 1. On déclare d'abord la balance
   // (#61) Valeur DÉRIVÉE (pas un champ direct) -- ?? seul au point d'affichage ne protège pas
@@ -1010,15 +1020,17 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
 
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '20px' }}>
               {[
-                { label: 'Or (Global)', key: 'risk_gold', color: '#ffd700' },
-                { label: 'Indices (Global)', key: 'risk_indices', color: '#4da8da' },
-                { label: 'Devises (Global)', key: 'risk_other', color: '#ff8a65' },
+                // (#pack) riskEngineOnly : réglages sans aucun effet sur un pack 100% SABR
+                { label: 'Or (Global)', key: 'risk_gold', color: '#ffd700', riskEngineOnly: true },
+                { label: 'Indices (Global)', key: 'risk_indices', color: '#4da8da', riskEngineOnly: true },
+                { label: 'Devises (Global)', key: 'risk_other', color: '#ff8a65', riskEngineOnly: true },
                 { label: 'MDT VIP', key: 'risk_mdt_vip', color: '#a5d6a7', channel: 'CANAL MDT_VIP' },
                 { label: 'MDT Free', key: 'risk_mdt_free', color: '#81c784', channel: 'CANAL MDT_FREE' },
                 { label: 'Space', key: 'risk_space', color: '#ce93d8', channel: 'CANAL SPACE' },
                 { label: 'Ligue', key: 'risk_ligue', color: '#ffb74d', channel: 'CANAL LIGUE' },
                 { label: 'Perso', key: 'risk_perso', color: '#90caf9', channel: 'CANAL PERSO' }
-              ].filter((item) => !item.channel || isChannelVisible(item.channel)).map((item) => (
+              ].filter((item) => (!item.channel || isChannelVisible(item.channel))
+                                 && (!item.riskEngineOnly || usesRiskEngine)).map((item) => (
                 <div key={item.key}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.9rem', marginBottom: '5px' }}>
                     <span>{item.label}</span>
@@ -1124,7 +1136,11 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
             })()}
           </div>
 
-          {/* BLOC B : GESTION DU RISQUE (H) & JOURS */}
+          {/* BLOC B : GESTION DU RISQUE (H) & JOURS
+              (#pack) Masqué pour un pack 100% SABR : le multiplicateur heure/jour n'est
+              appliqué que dans la branche "lot auto" du backend, jamais aux trades SABR
+              (volume toujours forcé) -- l'afficher laissait croire qu'il agissait. */}
+          {usesRiskEngine && (
           <div style={{ background: '#1e1e1e', border: '1px solid #333', borderRadius: '12px', padding: '20px' }}>
             <h3 style={{ margin: '0 0 20px 0', fontSize: '1rem', color: '#aaa', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -1242,6 +1258,7 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
               )}
             </div>
           </div>
+          )}
 
           {/* BLOC C & D : SECURITE ET MUTE */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '20px' }}>
