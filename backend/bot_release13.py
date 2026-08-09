@@ -5370,7 +5370,15 @@ def run_watchdog():
             break
 
         # On prépare la commande pour lancer l'Ouvrier (soi-même avec l'argument --worker)
-        if getattr(sys, 'frozen', False):
+        # (#nuitka) sys.frozen est une convention PyInstaller -- Nuitka ne le définit pas, il a
+        # sa propre variable __compiled__. Mais sous Nuitka (mode standalone), sys.executable
+        # pointe vers un "python.exe" FICTIF qui n'existe pas réellement sur le disque -- c'est
+        # sys.argv[0] qui contient le vrai chemin de l'exe compilé (confirmé par test : sans ce
+        # cas séparé, subprocess.Popen plantait avec FileNotFoundError [WinError 2]).
+        if globals().get("__compiled__"):
+            # Cas .exe (Nuitka)
+            cmd = [sys.argv[0], "--worker"]
+        elif getattr(sys, 'frozen', False):
             # Cas .exe (PyInstaller)
             cmd = [sys.executable, "--worker"]
         else:
