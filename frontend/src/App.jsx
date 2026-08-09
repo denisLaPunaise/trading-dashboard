@@ -564,6 +564,23 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
         || (allowedChannels.length === 1 && allowedChannels[0] === 'NONE')
         || allowedChannels.some((c) => !channelBaseToken(c).startsWith('SABR')));
 
+  // Curseurs de risque % réellement affichables pour ce pack. Sur un pack 100% SABR la
+  // liste est VIDE (les 3 globaux sont riskEngineOnly, les autres sont filtrés par canal) :
+  // on masque alors tout l'en-tête "Gestion du Risque (%)" + son verrou, et la section
+  // Lots SABR perd son trait de séparation, sinon il restait un bloc titre vide.
+  const riskSliders = [
+    { label: 'Or (Global)', key: 'risk_gold', color: '#ffd700', riskEngineOnly: true },
+    { label: 'Indices (Global)', key: 'risk_indices', color: '#4da8da', riskEngineOnly: true },
+    { label: 'Devises (Global)', key: 'risk_other', color: '#ff8a65', riskEngineOnly: true },
+    { label: 'MDT VIP', key: 'risk_mdt_vip', color: '#a5d6a7', channel: 'CANAL MDT_VIP' },
+    { label: 'MDT Free', key: 'risk_mdt_free', color: '#81c784', channel: 'CANAL MDT_FREE' },
+    { label: 'Space', key: 'risk_space', color: '#ce93d8', channel: 'CANAL SPACE' },
+    { label: 'Ligue', key: 'risk_ligue', color: '#ffb74d', channel: 'CANAL LIGUE' },
+    { label: 'Perso', key: 'risk_perso', color: '#90caf9', channel: 'CANAL PERSO' },
+  ].filter((item) => (!item.channel || isChannelVisible(item.channel))
+                     && (!item.riskEngineOnly || usesRiskEngine));
+  const hasRiskSliders = riskSliders.length > 0;
+
   // 1. On déclare d'abord la balance
   // (#61) Valeur DÉRIVÉE (pas un champ direct) -- ?? seul au point d'affichage ne protège pas
   // contre un NaN si account.balance était transitoirement absent (?? ne rattrape que
@@ -1001,6 +1018,7 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
           
           {/* BLOC A : RISQUES & SABR */}
           <div style={{ background: '#1e1e1e', border: '1px solid #333', borderRadius: '12px', padding: '20px' }}>
+            {hasRiskSliders && (
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '0 0 15px 0' }}>
               <h3 style={{ margin: 0, fontSize: '1rem', color: '#aaa' }}>Gestion du Risque (%)</h3>
               {/* (#15) Verrou anti-modif accidentelle des sliders en scrollant sur mobile */}
@@ -1017,20 +1035,10 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
                 {risksLocked ? 'Verrouillé' : 'Déverrouillé'}
               </button>
             </div>
+            )}
 
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '20px' }}>
-              {[
-                // (#pack) riskEngineOnly : réglages sans aucun effet sur un pack 100% SABR
-                { label: 'Or (Global)', key: 'risk_gold', color: '#ffd700', riskEngineOnly: true },
-                { label: 'Indices (Global)', key: 'risk_indices', color: '#4da8da', riskEngineOnly: true },
-                { label: 'Devises (Global)', key: 'risk_other', color: '#ff8a65', riskEngineOnly: true },
-                { label: 'MDT VIP', key: 'risk_mdt_vip', color: '#a5d6a7', channel: 'CANAL MDT_VIP' },
-                { label: 'MDT Free', key: 'risk_mdt_free', color: '#81c784', channel: 'CANAL MDT_FREE' },
-                { label: 'Space', key: 'risk_space', color: '#ce93d8', channel: 'CANAL SPACE' },
-                { label: 'Ligue', key: 'risk_ligue', color: '#ffb74d', channel: 'CANAL LIGUE' },
-                { label: 'Perso', key: 'risk_perso', color: '#90caf9', channel: 'CANAL PERSO' }
-              ].filter((item) => (!item.channel || isChannelVisible(item.channel))
-                                 && (!item.riskEngineOnly || usesRiskEngine)).map((item) => (
+              {riskSliders.map((item) => (
                 <div key={item.key}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.9rem', marginBottom: '5px' }}>
                     <span>{item.label}</span>
@@ -1045,8 +1053,13 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
               ))}
             </div>
 
-            {/* LOTS & RISQUE SABR (#15 : réaligné en grille, mini-descriptions retirées) */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '15px', marginTop: '20px', borderTop: '1px solid #333', paddingTop: '15px' }}>
+            {/* LOTS & RISQUE SABR (#15 : réaligné en grille, mini-descriptions retirées)
+                Le trait de séparation + l'espace au-dessus n'ont de sens que s'il y a
+                réellement des curseurs de risque avant (pack non-SABR). */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '15px',
+                          marginTop: hasRiskSliders ? '20px' : 0,
+                          borderTop: hasRiskSliders ? '1px solid #333' : 'none',
+                          paddingTop: hasRiskSliders ? '15px' : 0 }}>
               {[
                 { label: 'Lots SABR VIP (lot)', key: 'sabr_lot_vip', channel: 'CANAL SABR_VIP', step: '0.01' },
                 { label: 'Lots SABR Free (lot)', key: 'sabr_lot_free', channel: 'CANAL SABR_FREE', step: '0.01' },
@@ -1268,13 +1281,17 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
               <h3 style={{ margin: '0 0 15px 0', fontSize: '1rem', color: '#aaa' }}>Sécurité & MM</h3>
               {/* (#14) Chaque ligne : label | champ valeur | toggle ON/OFF */}
               {[
+                // Max Drawdown reste toujours visible : il agit au niveau du COMPTE, donc
+                // aussi sur les trades SABR. (#pack) SL Suiveur / Soft SL en revanche ne
+                // touchent jamais SABR (positions déviées avant le bloc trailing) -> masqués
+                // pour un pack 100% SABR, comme dans /info.
                 { label: 'Max Drawdown (%)', key: 'max_dd', val: settings.max_dd * 100, step: '1', mult: 100,
                   toggleKey: 'drawdown_active', toggleFn: toggleDrawdown, warn: true },
                 { label: 'SL Suiveur (pips)', key: 'sl_suiveur', val: settings.sl_suiveur, step: '1', mult: 1,
-                  toggleKey: 'sl_suiveur_active', toggleFn: toggleSlSuiveur },
+                  toggleKey: 'sl_suiveur_active', toggleFn: toggleSlSuiveur, riskEngineOnly: true },
                 { label: 'Soft SL Vente (%)', key: 'sl_sell', val: settings.sl_sell * 100, step: '1', mult: 100,
-                  toggleKey: 'soft_sl_active', toggleFn: toggleSoftSl }
-              ].map((item) => {
+                  toggleKey: 'soft_sl_active', toggleFn: toggleSoftSl, riskEngineOnly: true }
+              ].filter((item) => !item.riskEngineOnly || usesRiskEngine).map((item) => {
                 const active = settings[item.toggleKey] !== false;
                 return (
                   <div key={item.key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', background: item.warn && !active ? '#3a1f1f' : '#2a2a2a', padding: '10px', borderRadius: '8px', border: item.warn && !active ? '1px solid #ff4444' : '1px solid transparent' }}>
