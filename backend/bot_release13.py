@@ -497,6 +497,35 @@ http_session = None
 client = TelegramClient('ftmo_bot_session', API_ID, API_HASH)
 bot_user = TelegramClient('bot_session', API_ID, API_HASH)
 
+# URL du dashboard web (une seule source : bouton du message d'appairage + bouton de menu
+# permanent configuré au démarrage, cf. setup_bot_menu_button).
+DASHBOARD_URL = "https://trading-dashboard-three-beige.vercel.app"
+
+
+def setup_bot_menu_button():
+    """Configure le bouton de menu permanent du bot client (celui à côté du champ de saisie).
+
+    Ce réglage appartient au BOT, pas au code : il devait être fait à la main dans BotFather
+    pour chaque bot, donc aucun client ne l'avait jamais (chacun crée le sien via /newbot).
+    On le pose nous-mêmes au démarrage via l'API Bot -- un bot a le droit de configurer son
+    propre menu. Sans chat_id, c'est le bouton par défaut pour toutes les conversations.
+    Purement cosmétique : un échec (réseau, token invalide) ne doit jamais bloquer le bot."""
+    if not BOT_TOKEN:
+        return
+    try:
+        r = requests.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/setChatMenuButton",
+            json={"menu_button": {"type": "web_app", "text": "Dashboard",
+                                  "web_app": {"url": DASHBOARD_URL}}},
+            timeout=10,
+        )
+        if r.ok and r.json().get("ok"):
+            logger.info("✔️ Bouton Dashboard configuré sur le bot Telegram.")
+        else:
+            logger.warning(f"⚠️ Bouton Dashboard non configuré : {r.text[:200]}")
+    except Exception as e:
+        logger.warning(f"⚠️ Bouton Dashboard non configuré : {e}")
+
 # Structure Stats (On garde les anciennes clés pour compatibilité CSV)
 DEFAULT_STATS = {
     "total_trades": 0,
@@ -3806,9 +3835,7 @@ async def pairing_handler(event):
     
     raw = event.raw_text.strip()
 
-    web_app_url = "https://trading-dashboard-three-beige.vercel.app"
-
-    btn_webapp = KeyboardButtonWebView(text="☀️ Ouvrir le Dashboard", url=web_app_url)
+    btn_webapp = KeyboardButtonWebView(text="☀️ Ouvrir le Dashboard", url=DASHBOARD_URL)
     
     # CAS 1 : Si le bot attend son maître (ID = 0)
     if TELEGRAM_DESTINATION_ID == 0:
@@ -5340,6 +5367,10 @@ async def main():
     await bot_user.start(bot_token=BOT_TOKEN)
     logger.info("✔️ Interface interactive Telegram chargée.")
     client_status("✔️ Interface Telegram chargée.")
+
+    # Bouton "Dashboard" permanent du bot -- posé à chaque démarrage (idempotent), donc les
+    # clients déjà appairés l'obtiennent aussi, sans manipulation de leur part.
+    await run_bg(setup_bot_menu_button)
 
     load_memory()
     load_settings()
