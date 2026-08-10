@@ -506,6 +506,10 @@ function App() {
     sendInstantToggle('toggle_soft_sl', {}, 'soft_sl_active', !(dashboardData?.settings?.soft_sl_active !== false));
   };
 
+  const toggleSabrDoublon = () => {
+    sendInstantToggle('toggle_sabr_doublon', {}, 'sabr_anti_doublon', !(dashboardData?.settings?.sabr_anti_doublon !== false));
+  };
+
   // --- RENDU ---
   if (error) return <div style={{ color: '#ff4444', textAlign: 'center', padding: '50px', background: '#121212', minHeight: '100vh', boxSizing: 'border-box', overflowX: 'hidden' }}>{error}</div>
 
@@ -1290,8 +1294,15 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
                 { label: 'SL Suiveur (pips)', key: 'sl_suiveur', val: settings.sl_suiveur, step: '1', mult: 1,
                   toggleKey: 'sl_suiveur_active', toggleFn: toggleSlSuiveur, riskEngineOnly: true },
                 { label: 'Soft SL Vente (%)', key: 'sl_sell', val: settings.sl_sell * 100, step: '1', mult: 100,
-                  toggleKey: 'soft_sl_active', toggleFn: toggleSoftSl, riskEngineOnly: true }
-              ].filter((item) => !item.riskEngineOnly || usesRiskEngine).map((item) => {
+                  toggleKey: 'soft_sl_active', toggleFn: toggleSoftSl, riskEngineOnly: true },
+                // (#pack) Anti-Doublon SABR : son état était déjà affiché dans /info et poussé
+                // au dashboard, mais sans aucun moyen de le changer ailleurs qu'en tapant
+                // /doublon_sabr. Pas de valeur numérique -> ligne en ON/OFF seul (noValue).
+                { label: 'Anti-Doublon SABR', key: 'sabr_anti_doublon', noValue: true,
+                  toggleKey: 'sabr_anti_doublon', toggleFn: toggleSabrDoublon, sabrOnly: true }
+              ].filter((item) => (!item.riskEngineOnly || usesRiskEngine)
+                                 && (!item.sabrOnly || isChannelVisible('CANAL SABR_VIP')
+                                     || isChannelVisible('CANAL SABR_FREE'))).map((item) => {
                 const active = settings[item.toggleKey] !== false;
                 return (
                   <div key={item.key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', background: item.warn && !active ? '#3a1f1f' : '#2a2a2a', padding: '10px', borderRadius: '8px', border: item.warn && !active ? '1px solid #ff4444' : '1px solid transparent' }}>
@@ -1299,7 +1310,9 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
                       {item.label}
                       {item.warn && !active && <span style={{ color: '#ff6b6b', fontSize: '0.7rem', display: 'block' }}>⚠️ Protection désactivée</span>}
                     </span>
-                    <input type="number" step={item.step} value={item.val} onChange={(e) => updateSetting(item.key, parseFloat(e.target.value) / item.mult, { debounce: false })} style={{ background: '#121212', border: '1px solid #444', color: '#fff', padding: '5px', width: '60px', borderRadius: '4px', textAlign: 'center', marginRight: '8px' }} />
+                    {!item.noValue && (
+                      <input type="number" step={item.step} value={item.val} onChange={(e) => updateSetting(item.key, parseFloat(e.target.value) / item.mult, { debounce: false })} style={{ background: '#121212', border: '1px solid #444', color: '#fff', padding: '5px', width: '60px', borderRadius: '4px', textAlign: 'center', marginRight: '8px' }} />
+                    )}
                     <button onClick={item.toggleFn} style={{ padding: '6px 14px', borderRadius: '20px', border: 'none', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'bold', background: active ? '#00c853' : '#ff4444', color: '#fff', minWidth: '70px' }}>
                       {active ? 'ON 🟢' : 'OFF 🔴'}
                     </button>

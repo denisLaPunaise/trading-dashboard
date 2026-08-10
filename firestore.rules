@@ -89,7 +89,8 @@ service cloud.firestore {
               request.auth.uid == userId
               && request.resource.data.type in
                  ['request_stats', 'update_setting', 'close_trade', 'be_trade', 'suivre', 'panic',
-                  'kill', 'unlock', 'toggle_mute', 'toggle_drawdown', 'toggle_sl_suiveur', 'toggle_soft_sl']
+                  'kill', 'unlock', 'toggle_mute', 'toggle_drawdown', 'toggle_sl_suiveur', 'toggle_soft_sl',
+                  'toggle_sabr_doublon']
               && (request.resource.data.type == 'request_stats' || licenseActiveForUser(userId))
             )
           );

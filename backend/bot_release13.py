@@ -4400,8 +4400,9 @@ async def admin_commands(event):
 
 # --- 17. AIDE ---
     elif text == "/help":
+        show_risk_engine = pack_uses_risk_engine()
         # (#25) Section RISQUES filtrée par pack : chaque ligne liée à un canal précis
-        # n'apparaît que si ce canal fait partie du pack du client (None = toujours affichée).
+        # n'apparaît que si ce canal fait partie du pack du client.
         risk_lines = [
             (None, "`/risk_gold 0.6`"),
             (None, "`/risk_other 0.6`"),
@@ -4415,7 +4416,35 @@ async def admin_commands(event):
             ("CANAL LIGUE", "`/risk_ligue 1.0`"),
             ("CANAL PERSO", "`/risk_perso 1.0`"),
         ]
-        risk_txt = "\n".join(line for ch, line in risk_lines if ch is None or channel_allowed(ch))
+        # (#pack) Les lignes "globales" (None) ne sont plus inconditionnelles : les risques %
+        # par classe d'actif ne servent qu'au moteur de risque, inutilisé par un pack SABR
+        # (lots fixes / RISK_PERCENT_SABR_OTHER), cf. pack_uses_risk_engine().
+        risk_txt = "\n".join(
+            line for ch, line in risk_lines
+            if (channel_allowed(ch) if ch else show_risk_engine)
+        )
+
+        has_sabr = (channel_allowed("CANAL SABR_VIP") or channel_allowed("CANAL SABR_FREE")
+                    or channel_allowed("CANAL SABR_COPIE"))
+
+        # (#pack) Chaque ligne n'est listée que si elle a un effet réel pour ce client :
+        # afficher une commande inopérante (ex: SL suiveur sur un pack SABR) donne l'illusion
+        # d'un réglage disponible et génère des questions au support.
+        gestion_lines = [
+            (True,             "`/max_dd 4` : Max Drawdown 4%"),
+            (show_risk_engine, "`/sl_suiveur 85` : Trailing Pips (ou '0' pour paliers)"),
+            (show_risk_engine, "`/sl_sell 30` : % Vente Soft SL"),
+            (True,             "`/sell_lot VIP 50` : % Vente TP1 (Tous canaux)"),
+            (has_sabr,         "`/reactivate 1 50` : Relancer signal SABR (ID: 1, 50%)"),
+            (has_sabr,         "`/doublon_sabr on/off` : Anti-Doublon SABR"),
+            (channel_allowed("CANAL SABR_COPIE"), "`/forward_sabr on/off` : Transfert msg SABR"),
+            (show_risk_engine, "`/risk_heure 8-10 11-16 0.5` : Diviseur horaire"),
+            (show_risk_engine, "`/risk_day vendredi 0.33` : Diviseur journalier"),
+            (True,             "`/mute VIP` | `/unmute VIP` : Ignorer canal"),
+        ]
+        gestion_txt = "\n".join(line for cond, line in gestion_lines if cond)
+
+        risk_block = f"**⚙️ RISQUES (0.5 = 0.5%) :**\n\n{risk_txt}\n\n\n" if risk_txt else ""
 
         msg = (f"**🤖 MENU COMMANDES v{VERSION_BOT}**\n\n\n"
                "**📌 GÉNÉRALES :**\n\n"
@@ -4427,19 +4456,9 @@ async def admin_commands(event):
                "`/kill` : Stop Bot (Urgence)\n"
                "`/closeall` : Fermer TOUT\n"
                "`/close XAUUSD` : Fermer par paire\n\n\n"
-               "**⚙️ RISQUES (0.5 = 0.5%) :**\n\n"
-               f"{risk_txt}\n\n\n"
+               f"{risk_block}"
                "**🛠️ GESTION & PARAMÈTRES :**\n\n"
-               "`/max_dd 4` : Max Drawdown 4%\n"
-               "`/sl_suiveur 85` : Trailing Pips (ou '0' pour paliers)\n"
-               "`/sl_sell 30` : % Vente Soft SL\n"
-               "`/sell_lot VIP 50` : % Vente TP1 (Tous canaux)\n"
-               "`/reactivate 1 50` : Relancer signal SABR (ID: 1, 50%)\n"
-               "`/doublon_sabr on/off` : Anti-Doublon SABR\n"
-               "`/forward_sabr on/off` : Transfert msg SABR\n"
-               "`/risk_heure 8-10 11-16 0.5` : Diviseur horaire\n"
-               "`/risk_day vendredi 0.33` : Diviseur journalier\n"
-               "`/mute VIP` | `/unmute VIP` : Ignorer canal")
+               f"{gestion_txt}")
         await event.reply(msg)
 
 # ==========================================
@@ -5193,6 +5212,19 @@ async def handle_firebase_command(cmd_id: str, cmd_data: dict) -> None:
             await run_bg(save_settings)
             await send_alert(f"📉 Soft SL Vente : {'🟢 ACTIVÉ' if SOFT_SL_ACTIVE else '🔴 DÉSACTIVÉ'}")
             set_status("done", {"success": True})
+
+        elif cmd_type == "toggle_sabr_doublon":
+            # (#pack) Équivalent dashboard de /doublon_sabr -- l'état était déjà poussé au
+            # dashboard (et affiché dans /info) mais sans aucun moyen de le changer là-bas.
+            global SABR_ANTI_DOUBLON_ACTIVE
+            if not (channel_allowed("CANAL SABR_VIP") or channel_allowed("CANAL SABR_FREE")
+                    or channel_allowed("CANAL SABR_COPIE")):
+                set_status("error", {"success": False, "message": "SABR hors de ton pack."})
+            else:
+                SABR_ANTI_DOUBLON_ACTIVE = not SABR_ANTI_DOUBLON_ACTIVE
+                await run_bg(save_settings)
+                await send_alert(f"🛡️ Anti-Doublon SABR : {'🟢 ACTIVÉ' if SABR_ANTI_DOUBLON_ACTIVE else '🔴 DÉSACTIVÉ'}")
+                set_status("done", {"success": True})
 
         elif cmd_type == "set_allowed_channels":
             # (#7) Met à jour à distance le pack du client (canaux visibles).

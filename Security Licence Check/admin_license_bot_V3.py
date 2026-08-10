@@ -1531,6 +1531,15 @@ async def security_events_relay():
                 if data.get("got_hwid"):      details.append(f"💻 Machine : {data['got_hwid']}")
                 full = msg + ("\n" + "\n".join(details) if details else "")
 
+                # Notification console : jusqu'ici les événements n'étaient visibles QUE dans
+                # le canal Telegram, donc invisibles quand on surveille le VPS directement.
+                _icon = {"connection": "🟢 CONNEXION", "theft": "🚨 CONFLIT HWID",
+                         "expiry": "⌛ EXPIRATION"}.get(event_type, f"ℹ️ {event_type or 'EVENT'}")
+                _now = datetime.now().strftime("%H:%M:%S")
+                print(f"\n[{_now}] {_icon}")
+                for _d in details:
+                    print(f"    {_d}")
+
                 # (#27) Le HWID n'est écrit qu'en Firestore par le bot client (jamais dans la
                 # Sheet) -- on le recopie ici pour garder un visuel à jour. Seulement sur un
                 # "connection" (licence acceptée sur cette machine) : un "theft" est un refus,
