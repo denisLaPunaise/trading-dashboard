@@ -191,6 +191,8 @@ function App() {
   const [statsTab, setStatsTab] = useState('jour'); // 'jour', 'canal', 'global'
   const [historicalStats, setHistoricalStats] = useState(null);
   const [globalPeriod, setGlobalPeriod] = useState('30'); // 👈 NOUVEAU : 30 jours par défaut
+  // (#stats) Période propre à l'onglet "Par Canal", indépendante de celle de l'onglet Global
+  const [channelPeriod, setChannelPeriod] = useState('30');
   const [dayWeekToggle, setDayWeekToggle] = useState('day'); // 'day' ou 'week'
   const [isLoadingStats, setIsLoadingStats] = useState(false);
   const requestedPeriods = useRef(new Set());
@@ -207,9 +209,14 @@ function App() {
     // le même champ (global_period), donc "Cette Semaine" affichait en fait la période
     // sélectionnée côté Global (30 jours par défaut), pas un vrai 7 jours.
     const weekPeriod = dashboardData.global_period_7 || null;
-    setHistoricalStats({ channels_lifetime: channels || {}, global_period: period || null, week_period: weekPeriod });
+    // (#stats) Stats par canal sur la période choisie dans l'onglet Par Canal. Absent tant
+    // que l'exe du client n'a pas été mis à jour -> l'onglet retombe alors sur le cumul
+    // lifetime, comme avant.
+    const channelsPeriod = dashboardData[`channels_period_${channelPeriod}`] || null;
+    setHistoricalStats({ channels_lifetime: channels || {}, global_period: period || null,
+                         week_period: weekPeriod, channels_period: channelsPeriod });
     if (period) setIsLoadingStats(false);
-  }, [dashboardData, globalPeriod]);
+  }, [dashboardData, globalPeriod, channelPeriod]);
 
   // Déclenche une requête au bot quand la période (Global) ou la vue Semaine change (sans alert, sans doublon)
   useEffect(() => {
@@ -219,12 +226,18 @@ function App() {
     // suivre le sélecteur de l'onglet Global.
     const wantWeek = statsTab === 'jour' && dayWeekToggle === 'week';
     const wantGlobal = statsTab === 'global';
-    if (!wantWeek && !wantGlobal) return;
-    const period = wantWeek ? '7' : globalPeriod;
-    const periodKey = `global_period_${period}`;
+    // (#stats) L'onglet Par Canal a sa propre période -- même commande request_stats, qui
+    // pousse désormais aussi channels_period_<days> en plus de global_period_<days>.
+    const wantChannel = statsTab === 'canal';
+    if (!wantWeek && !wantGlobal && !wantChannel) return;
+    const period = wantWeek ? '7' : (wantChannel ? channelPeriod : globalPeriod);
+    const periodKey = wantChannel ? `channels_period_${period}` : `global_period_${period}`;
     if (dashboardData?.[periodKey]) return; // données déjà en cache
-    if (requestedPeriods.current.has(period)) return; // requête déjà envoyée
-    requestedPeriods.current.add(period);
+    // Clé de dédoublonnage préfixée : une même durée peut être demandée pour deux onglets
+    // qui lisent des champs différents (global_period_X vs channels_period_X).
+    const reqKey = wantChannel ? `chan_${period}` : period;
+    if (requestedPeriods.current.has(reqKey)) return; // requête déjà envoyée
+    requestedPeriods.current.add(reqKey);
     setIsLoadingStats(true);
     // (#41) cancelled/unsub/timer permettent au cleanup du useEffect de couper le listener et
     // le setTimeout de secours immédiatement au démontage, au lieu de les laisser vivre jusqu'à
@@ -254,7 +267,7 @@ function App() {
       if (timer) clearTimeout(timer);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps -- dashboardData lu volontairement sans redéclencher la requête (cf. commentaire ci-dessus)
-  }, [isStatsOpen, statsTab, dayWeekToggle, globalPeriod, userId]);
+  }, [isStatsOpen, statsTab, dayWeekToggle, globalPeriod, channelPeriod, userId]);
 
   // Authentification Firebase + abonnement temps réel Firestore
   useEffect(() => {
@@ -1459,10 +1472,47 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
           )}
 
           {/* 2. VUE PAR CANAL (Les vraies données) */}
-          {statsTab === 'canal' && (
+          {statsTab === 'canal' && (() => {
+            // (#stats) channels_period vient du CSV détaillé (filtré par date) ; s'il est
+            // absent (exe client pas encore à jour) on retombe sur le cumul lifetime, et le
+            // sélecteur de période est alors masqué pour ne rien promettre qu'on ne tient pas.
+            const periodData = historicalStats?.channels_period;
+            const hasPeriod = periodData !== undefined && periodData !== null;
+            const channelData = hasPeriod ? periodData : (historicalStats?.channels_lifetime || {});
+            return (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
-              {historicalStats?.channels_lifetime && Object.keys(historicalStats.channels_lifetime).length > 0 ? (
-                Object.entries(historicalStats.channels_lifetime)
+
+              {hasPeriod && (
+                <div style={{ display: 'flex', gap: '5px', background: '#1e1e1e', padding: '5px', borderRadius: '8px', border: '1px solid #333' }}>
+                  {[
+                    { id: '14', label: '14j' }, { id: '30', label: '1M' }, { id: '90', label: '3M' },
+                    { id: '180', label: '6M' }, { id: '365', label: '1 An' }, { id: 'all', label: 'Max' }
+                  ].map(p => (
+                    <button
+                      key={p.id}
+                      onClick={() => setChannelPeriod(p.id)}
+                      style={{
+                        flex: 1, padding: '8px 5px', borderRadius: '6px', border: 'none', cursor: 'pointer',
+                        fontSize: '0.75rem', fontWeight: 'bold',
+                        background: channelPeriod === p.id ? '#00e676' : 'transparent',
+                        color: channelPeriod === p.id ? '#000' : '#888',
+                        transition: '0.2s'
+                      }}
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {isLoadingStats && (
+                <div style={{ textAlign: 'center', padding: '12px', color: '#00e676', fontSize: '0.82rem', background: 'rgba(0,230,118,0.05)', borderRadius: '8px', border: '1px solid rgba(0,230,118,0.2)' }}>
+                  ⏳ Calcul en cours...
+                </div>
+              )}
+
+              {Object.keys(channelData).length > 0 ? (
+                Object.entries(channelData)
                 .filter(([name]) => isChannelVisible(name)) // (#7) pack du client
                 .sort((a, b) => (b[1].profit ?? 0) - (a[1].profit ?? 0)) // Tri par profit décroissant
                 .map(([name, data]) => {
@@ -1498,10 +1548,13 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
                   </div>
                 )})
               ) : (
-                <div style={{ textAlign: 'center', color: '#666', padding: '40px', background: '#1e1e1e', borderRadius: '12px' }}>Aucun trade enregistré par canal.</div>
+                <div style={{ textAlign: 'center', color: '#666', padding: '40px', background: '#1e1e1e', borderRadius: '12px' }}>
+                  {hasPeriod ? 'Aucun trade sur cette période.' : 'Aucun trade enregistré par canal.'}
+                </div>
               )}
             </div>
-          )}
+            );
+          })()}
 
           {/* 3. VUE GLOBALE (Période Dynamique) */}
           {statsTab === 'global' && (

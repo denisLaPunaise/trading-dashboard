@@ -205,8 +205,12 @@ ID_SABR_VIP = -1003684008703
 ID_SABR_FREE = -1003639045748
 ID_CANAL_SABR_COPIE = -1003738415220
 
+# Canaux MDT (nommés explicitement : servent au journal de debug MDT ci-dessous)
+ID_MDT_VIP = -1002139883659
+ID_MDT_FREE = -1001890808461
+
 # ⚠️ LISTE DES CANAUX SOURCES (MDT_VIP, MDT_FREE, PERSO, SPACE, LIGUE, SABR_FREE, SABR_VIP, SABR_COPIE)
-CHANNEL_LIST = [-1002139883659, -1001890808461, -5093508256, -1002684710444, -1001753570693, -1003639045748, ID_SABR_VIP, ID_CANAL_SABR_COPIE]
+CHANNEL_LIST = [ID_MDT_VIP, ID_MDT_FREE, -5093508256, -1002684710444, -1001753570693, -1003639045748, ID_SABR_VIP, ID_CANAL_SABR_COPIE]
 
 # Ton Groupe de Logs
 ADMIN_ID = 0 #-1003692316672
@@ -1427,6 +1431,43 @@ def log_trade_detail(ticket, symbol, source, direction, open_time, close_time, d
             logger.info(f"📝 Trade #{ticket} archivé dans {DETAILED_HISTORY_FILE}")
     except Exception as e: logger.error(f"⚠️ Erreur CSV Detailed: {e}")
 
+def get_channel_stats_period(days=30, start_date_custom=None):
+    """Stats par canal SUR UNE PÉRIODE, reconstruites depuis trades_detailed.csv.
+
+    CHANNEL_STATS (poussé sous 'channels_lifetime') est un compteur cumulatif depuis
+    toujours : impossible d'en extraire une période. Le CSV détaillé, lui, garde une ligne
+    par trade clôturé avec sa Source et sa Close Time -- c'est la seule source qui permet
+    de filtrer par date, d'où cette lecture de fichier plutôt qu'un calcul en mémoire.
+
+    Retourne {canal: {count, profit, pips}} -- même forme que channels_lifetime, pour que
+    le dashboard puisse afficher les deux avec le même composant."""
+    out = {}
+    if not os.path.exists(DETAILED_HISTORY_FILE):
+        return out
+    cutoff = start_date_custom if start_date_custom else (datetime.now() - timedelta(days=days))
+    try:
+        with open(DETAILED_HISTORY_FILE, "r", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                try:
+                    closed_at = datetime.strptime(row.get("Close Time", ""), "%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    continue  # ligne corrompue / en-tête d'un ancien format -> on ignore
+                if closed_at < cutoff:
+                    continue
+                src = (row.get("Source") or "").strip()
+                if not src or src == "MANUEL/INCONNU":
+                    continue
+                entry = out.setdefault(src, {"count": 0, "profit": 0.0, "pips": 0.0})
+                entry["count"] += 1
+                try: entry["profit"] += float(row.get("Profit") or 0)
+                except Exception: pass
+                try: entry["pips"] += float(row.get("Pips") or 0)
+                except Exception: pass
+    except Exception as e:
+        logger.warning(f"⚠️ get_channel_stats_period : {e}")
+    return out
+
+
 def get_long_term_stats_report():
     if not os.path.exists(HISTORY_FILENAME): return "Pas encore d'historique."
     
@@ -1962,10 +2003,22 @@ async def close_partial(pos, pct, tp_label, pips_gained, fixed_lot=None):
     # --- UTILISATION DU WRAPPER BLOQUANT ---
     res = await run_mt5(_send_order_blocking, req)
 
+    # Journal MDT : on trace le RÉSULTAT de chaque partiel (succès comme échec) -- un partiel
+    # raté silencieusement est exactement le genre de chose qu'on cherche à repérer en relisant.
+    _src_dbg = ACTIVE_TRADE_SOURCES.get(pos.ticket, "")
+    if "MDT" in _src_dbg:
+        _tag_dbg = "MDT_VIP" if "VIP" in _src_dbg else "MDT_FREE"
+        if res is None:
+            await run_bg(debug_mdt, _tag_dbg, f"❌ PARTIEL ÉCHOUÉ (timeout MT5) — {tp_label} | ticket {pos.ticket} | {lot:.2f} lots")
+        elif res.retcode == mt5.TRADE_RETCODE_DONE:
+            await run_bg(debug_mdt, _tag_dbg, f"✅ PARTIEL OK — {tp_label} | ticket {pos.ticket} | {lot:.2f} lots fermés | {pips_gained:.0f} pips")
+        else:
+            await run_bg(debug_mdt, _tag_dbg, f"❌ PARTIEL REFUSÉ (retcode {res.retcode}) — {tp_label} | ticket {pos.ticket} | {lot:.2f} lots")
+
     if res is None:
         logger.warning(f"⚠️ Timeout MT5 sur Close Partial {tp_label} (Ticket {pos.ticket})")
         return False # On retourne False pour dire "Ça a raté, réessaie à la seconde suivante !"
-    
+
     if res.retcode == mt5.TRADE_RETCODE_DONE:
         current_partial = PARTIAL_PROFITS.get(pos.ticket, 0.0)
         PARTIAL_PROFITS[pos.ticket] = current_partial + est_profit
@@ -1984,7 +2037,7 @@ async def close_partial(pos, pct, tp_label, pips_gained, fixed_lot=None):
         
         await send_channel_alert(f"✅️ **{tp_label} VALIDÉ (+{pips_gained:.0f} pips)**\n\n"
                          f"Symbole: {pos.symbol} ({open_time})\n\n"
-                         f"Gain Sécurisé: **+{est_profit:.2f}€** ({lot} lots)\n\n"
+                         f"Gain Sécurisé: **+{est_profit:.2f}€** ({lot:.2f} lots)\n\n"
                          f"Source: {src_clean}\n\n"
                          f"📊 **P&L Jour: {icon_day} {day_total:+.2f}€** ({day_pct:+.2f}%)\n"
                          f"   ├─ Encaissé: {day_realized:+.2f}€\n"
@@ -1993,6 +2046,24 @@ async def close_partial(pos, pct, tp_label, pips_gained, fixed_lot=None):
         return True
 
     return False
+
+MDT_DEBUG_FILE = "debug_mdt.log"
+
+
+def debug_mdt(tag, msg):
+    """Journal chronologique dédié aux canaux MDT (VIP + FREE) : messages reçus ET actions
+    du bot, dans UN SEUL fichier pour pouvoir relire la séquence complète et vérifier que
+    chaque instruction du canal (partiel, BE, clôture) a bien été suivie d'effet.
+
+    Les deux canaux partagent le fichier volontairement : ils sont tagués [MDT_VIP] /
+    [MDT_FREE], et les avoir dans le même ordre chronologique est justement ce qui permet
+    de corréler un message avec l'action qu'il a déclenchée."""
+    try:
+        with open(MDT_DEBUG_FILE, "a", encoding="utf-8") as f:
+            f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [{tag}] {msg}\n")
+    except Exception as e:
+        logger.error(f"⚠️ debug_mdt : {e}")
+
 
 def log_unclear_signal(raw_text, tickets):
     """(#20) Trace les messages de suivi (reply à un signal) qu'on n'a pas su interpréter,
@@ -2305,7 +2376,7 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
             )
             # Fallback si MT5 ne peut pas calculer (paire inconnue / SL manquant non géré par la table)
             total_vol = risk_lot if (risk_lot and risk_lot > 0) else FIXED_LOT_OTHER
-            log(f"📐 SABR hors-or {symbol} : lot risque {RISK_PERCENT_SABR_OTHER*100:.2f}% -> {total_vol}", important=True)
+            log(f"📐 SABR hors-or {symbol} : lot risque {RISK_PERCENT_SABR_OTHER*100:.2f}% -> {total_vol:.2f}", important=True)
 
         # --- APPLICATION DU MULTIPLICATEUR DE RÉACTIVATION ---
         total_vol = round(total_vol * custom_lot_modifier, 2)
@@ -2417,7 +2488,7 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
         # === ⚙️ DEBUG SABR (EXÉCUTION) ===
         logger.info(f"\n{'='*50}\n"
                     f"⚙️ DIAGNOSTIC SABR (ÉTAPE 2 : EXÉCUTION)\n"
-                    f"💰 Volume Total Calculé : {total_vol} lots\n"
+                    f"💰 Volume Total Calculé : {total_vol:.2f} lots\n"
                     f"🪓 Découpage (Prix, Lot) : {trades_to_execute}\n"
                     f"🛑 SL Global appliqué    : {sl_val}\n"
                     f"{'='*50}")
@@ -2552,6 +2623,11 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
                 
             t_str = "MARKET" if tact == mt5.TRADE_ACTION_DEAL else "PENDING"
             log(f"🔥 ORDRE {t_str} ENVOYÉ: {symbol} (Source: {channel_source})", important=True)
+
+            if channel_source and "MDT" in channel_source:
+                await run_bg(debug_mdt, "MDT_VIP" if "VIP" in channel_source else "MDT_FREE",
+                             f"🔥 TRADE OUVERT — ticket {res.order} | {symbol} {action} {t_str} | "
+                             f"{lot:.2f} lots @ {final_px} | SL {final_sl} | TP {final_tp}")
                 
             sig_time = get_broker_time(message_date)
             safe_source = channel_source.replace("_", " ") 
@@ -2572,7 +2648,7 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
             await send_channel_alert(
                 f"🔥 **ORDRE {t_str}**\n\n{symbol} {action}\n\n"
                 f"Prix: {final_px}\nSL: {final_sl} & TP: {final_tp}\n"
-                f"Signal: {sig_time}\nLot: **{lot}** (Risque: {risk_str})\n"
+                f"Signal: {sig_time}\nLot: **{lot:.2f}** (Risque: {risk_str})\n"
                 f"Source: {safe_source}{sabr_type_line}",
                 channel_source,
             )
@@ -2593,7 +2669,7 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
                 ACTIVE_TRADE_SOURCES[res2.order] = channel_source
                 await run_bg(save_channel_data)
                 # --- MODIFICATION TELEGRAM SECOURS ICI ---
-                await send_channel_alert(f"🔥 **ORDRE MARKET (RESCUE)**\n{symbol} {action}\nLot: **{lot}** (Risque: {risk_str})\n\n🛑 SL: {final_sl} & 🎯 TP: {final_tp}", channel_source)
+                await send_channel_alert(f"🔥 **ORDRE MARKET (RESCUE)**\n{symbol} {action}\nLot: **{lot:.2f}** (Risque: {risk_str})\n\n🛑 SL: {final_sl} & 🎯 TP: {final_tp}", channel_source)
                 tickets_opened.append(res2.order)
         else:
             logger.error(f"❌ REJET MT5 ({res.retcode}) sur {symbol} : {res.comment}")
@@ -2905,6 +2981,11 @@ async def check_closed_positions():
                    f"🏦 **Portefeuille: {acc.balance:.2f}€**")
             
             log(f"🏁 CLÔTURE: {sym} | Profit: {prof:+.2f}€ | {reason}", important=True)
+
+            if "MDT" in source:
+                await run_bg(debug_mdt, "MDT_VIP" if "VIP" in source else "MDT_FREE",
+                             f"🏁 TRADE CLÔTURÉ — ticket {t} | {sym} | {prof:+.2f}€ | "
+                             f"{pips:+.1f} pips | max {mfe:+.1f}p / min {mae:+.1f}p | {reason}")
 
             await send_channel_alert(msg, source)
 
@@ -3602,7 +3683,8 @@ async def monitor_positions():
                     # Le seul automatisme qui reste ici est un filet de sécurité : si le
                     # trade atteint +60 pips SANS qu'aucune instruction de BE n'ait été
                     # reçue (message manqué/supprimé), on sécurise quand même le SL au
-                    # point d'entrée, en partant du principe qu'on l'a loupé.
+                    # point d'entrée ET on encaisse 30% du volume, en partant du principe
+                    # qu'on a loupé l'instruction.
                     if src_trade == "CANAL MDT_VIP":
                         if pips >= 60 and "VIP_BE_DONE" not in processed:
                             be_price = entry
@@ -3616,7 +3698,20 @@ async def monitor_positions():
                                 res = await run_mt5(_send_order_blocking, req)
                                 if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                                     await send_channel_alert(f"🛡️ **SL SÉCURISÉ BE (MDT VIP - filet de sécurité 60p, aucune instruction reçue)**\n\nSymbole: {sym}\nTicket: {pos.ticket}", src_trade)
-                            processed.add("VIP_BE_DONE")
+
+                            # Prise partielle 30%, avec son propre marqueur.
+                            partial_done = "VIP_PARTIAL60_DONE" in processed
+                            if not partial_done and await close_partial(pos, 0.30, "MDT VIP 60p (30%)", pips):
+                                processed.add("VIP_PARTIAL60_DONE")
+                                partial_done = True
+
+                            # VIP_BE_DONE verrouille TOUT ce bloc (y compris pour le handler
+                            # d'instruction manuelle) : on ne le pose donc qu'une fois le
+                            # partiel réussi, sinon un rejet MT5 ponctuel le perdrait
+                            # définitivement. Rejouer le BE ci-dessus est sans effet (il ne
+                            # déplace le SL que s'il est moins bon que le point d'entrée).
+                            if partial_done:
+                                processed.add("VIP_BE_DONE")
                             await run_bg(save_memory)
 
                         continue
@@ -4508,6 +4603,17 @@ async def main_handler(event):
     log(f"👀 J'ai vu un message ! ID: {event.id}")
     log(f"Texte brut: {event.raw_text}")
 
+    # Journal MDT : on capture le message BRUT dès l'entrée, avant toute interprétation --
+    # c'est ce qui permet ensuite de distinguer "message jamais reçu" de "reçu mais mal
+    # interprété". reply_to_msg_id est essentiel : les instructions du canal (BE, partiel,
+    # clôture) sont des réponses au message du signal d'origine.
+    if event.chat_id in (ID_MDT_VIP, ID_MDT_FREE):
+        _mdt_tag = "MDT_VIP" if event.chat_id == ID_MDT_VIP else "MDT_FREE"
+        _reply_to = getattr(event, "reply_to_msg_id", None)
+        _reply_txt = f" (réponse au msg {_reply_to})" if _reply_to else ""
+        await run_bg(debug_mdt, _mdt_tag,
+                     f"📩 MESSAGE REÇU (id={event.id}){_reply_txt} :\n{event.raw_text}")
+
     # === 📤 TRANSFERT DES MESSAGES SABR (FORWARDER) ===
     # (#5) Si le canal copie est mute, on coupe aussi la recopie des messages.
     # (#53) Ne transfère que si le canal SABR VIP source lui-même fait partie du pack du
@@ -4696,12 +4802,20 @@ async def main_handler(event):
                             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                                 await send_alert(f"🛡️ **SL SÉCURISÉ AU BE** (signal canal)\n\nTicket #{tk}")
                                 action_taken = True
+                                if "MDT" in ACTIVE_TRADE_SOURCES.get(tk, ""):
+                                    await run_bg(debug_mdt, "MDT_VIP" if "VIP" in ACTIVE_TRADE_SOURCES.get(tk, "") else "MDT_FREE",
+                                                 f"🛡️ BE APPLIQUÉ (instruction du canal) — ticket {tk} | SL -> {new_sl_price}")
                         # On marque BE comme géré même si le SL n'a pas dû bouger (déjà mieux
                         # que le BE) -- évite que le filet de sécurité 60 pips (#20) ne repasse dessus.
                         TRADES_PROCESSED_LEVELS.setdefault(tk, set()).add("VIP_BE_DONE")
 
             if not action_taken:
                 log_unclear_signal(event.raw_text, tickets_to_manage)
+                # Le cas le plus important à repérer en relecture : une instruction du canal
+                # reçue mais qu'aucune règle n'a su interpréter -> aucune action sur le trade.
+                if event.chat_id in (ID_MDT_VIP, ID_MDT_FREE):
+                    await run_bg(debug_mdt, "MDT_VIP" if event.chat_id == ID_MDT_VIP else "MDT_FREE",
+                                 f"⚠️ INSTRUCTION NON COMPRISE — aucune action sur {tickets_to_manage} :\n{event.raw_text}")
 
             return # Fin de la gestion commande
     # ==================================================================
@@ -5299,12 +5413,22 @@ async def handle_firebase_command(cmd_id: str, cmd_data: dict) -> None:
                 monday = now - timedelta(days=now.weekday())
                 monday = monday.replace(hour=0, minute=0, second=0, microsecond=0)
                 stats = await get_historical_stats(start_date_custom=monday)
+                chan_stats = await run_bg(get_channel_stats_period, start_date_custom=monday)
             else:
                 days_int = 9999 if days == "all" else int(days)
                 stats = await get_historical_stats(days=days_int)
-            if stats and firebase_sync._firebase_initialized:
-                field_key = f"global_period_{days}"
-                await firebase_sync.push_state(user_id, {field_key: firebase_sync._safe(stats)})
+                chan_stats = await run_bg(get_channel_stats_period, days=days_int)
+            if firebase_sync._firebase_initialized:
+                payload_push = {}
+                if stats:
+                    payload_push[f"global_period_{days}"] = firebase_sync._safe(stats)
+                # (#stats) Stats par canal sur la même période que l'onglet Global. Poussé
+                # même si vide : un dict vide est une réponse légitime (aucun trade sur la
+                # période) et le dashboard doit pouvoir l'afficher plutôt que rester bloqué
+                # sur la période précédente.
+                payload_push[f"channels_period_{days}"] = firebase_sync._safe(
+                    {ch: v for ch, v in chan_stats.items() if channel_allowed(ch)})
+                await firebase_sync.push_state(user_id, payload_push)
             set_status("done", {"success": True})
 
         elif cmd_type == "kill":
