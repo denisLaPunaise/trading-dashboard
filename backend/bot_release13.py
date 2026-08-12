@@ -406,7 +406,8 @@ HISTORY_FILENAME = "history.csv"
 MEMORY_FILENAME = "trades_memory.json"
 MANUAL_FILENAME = "manual_trades.json"
 SETTINGS_FILENAME = "settings.json"
-STATS_PER_CHANNEL_FILE = "stats_channels.json"
+# (#stats) stats_channels.json n'est plus lu ni écrit : trades_detailed.csv est la source
+# unique des stats par canal. Un fichier résiduel sur un poste client est simplement ignoré.
 SOURCES_MEMORY_FILE = "active_sources.json"
 SIGNALS_MEMORY_FILE = "active_signals.json"
 DETAILED_HISTORY_FILE = "trades_detailed.csv"
@@ -478,10 +479,10 @@ PENDING_MESSAGES = {} # Key: ID, Value: Texte du message
 LIGUE_CONTEXT = {}
 # Stocke le contexte SABR : { "last_action": "SELL", "time": 123456789, "status": "WAITING_UPDATE" }
 SABR_CONTEXT = {}
-# Stocke : { "CANAL VIP": {"count", "positions", "profit", "pips", "lots", "wpips"} }
-# count = nombre de SIGNAUX, positions = nombre de positions MT5 (une zone SABR = 1 signal /
-# 3 positions). wpips/lots servent à calculer la moyenne de pips PONDÉRÉE par le volume.
-CHANNEL_STATS = {}
+# (#stats) Il n'y a plus de compteur cumulatif en mémoire : trades_detailed.csv est la SEULE
+# source des stats par canal. Le compteur ne portait aucune date, donc il ne pouvait pas
+# répondre à "les 30 derniers jours" -- il fallait de toute façon relire le CSV pour ça, et
+# faire vivre les deux en parallèle les faisait diverger. "Max" remplace l'ancien "lifetime".
 # Stocke : { ticket_id: "CANAL VIP" }
 ACTIVE_TRADE_SOURCES = {}
 # (#stats) Stocke : { ticket_id: "signal_id" } -- un appel à execute_trade() = un signal, même
@@ -1296,16 +1297,9 @@ def load_settings():
         except Exception as e: logger.error(f"⚠️ Erreur Load Settings: {e}")
 
 def load_channel_data():
-    global CHANNEL_STATS, ACTIVE_TRADE_SOURCES, ACTIVE_TRADE_SIGNALS
+    global ACTIVE_TRADE_SOURCES, ACTIVE_TRADE_SIGNALS
 
-    # 1. Stats cumulées
-    if os.path.exists(STATS_PER_CHANNEL_FILE):
-        try:
-            with open(STATS_PER_CHANNEL_FILE, "r") as f:
-                CHANNEL_STATS = json.load(f)
-        except: pass
-        
-    # 2. Sources des trades en cours
+    # 1. Sources des trades en cours
     if os.path.exists(SOURCES_MEMORY_FILE):
         try:
             with open(SOURCES_MEMORY_FILE, "r") as f:
@@ -1314,7 +1308,7 @@ def load_channel_data():
                 ACTIVE_TRADE_SOURCES = {int(k): v for k, v in raw.items()}
         except: pass
 
-    # 3. (#stats) Signal d'origine des trades en cours (1 signal = N positions)
+    # 2. (#stats) Signal d'origine des trades en cours (1 signal = N positions)
     if os.path.exists(SIGNALS_MEMORY_FILE):
         try:
             with open(SIGNALS_MEMORY_FILE, "r") as f:
@@ -1324,7 +1318,6 @@ def load_channel_data():
 
 def save_channel_data():
     try:
-        with open(STATS_PER_CHANNEL_FILE, "w") as f: json.dump(CHANNEL_STATS, f)
         with open(SOURCES_MEMORY_FILE, "w") as f: json.dump(ACTIVE_TRADE_SOURCES, f)
         with open(SIGNALS_MEMORY_FILE, "w") as f: json.dump(ACTIVE_TRADE_SIGNALS, f)
     except: pass
@@ -1483,13 +1476,12 @@ def log_trade_detail(ticket, symbol, source, direction, open_time, close_time, d
 def get_channel_stats_period(days=30, start_date_custom=None):
     """Stats par canal SUR UNE PÉRIODE, reconstruites depuis trades_detailed.csv.
 
-    CHANNEL_STATS (poussé sous 'channels_lifetime') est un compteur cumulatif depuis
-    toujours : impossible d'en extraire une période. Le CSV détaillé, lui, garde une ligne
-    par trade clôturé avec sa Source et sa Close Time -- c'est la seule source qui permet
-    de filtrer par date, d'où cette lecture de fichier plutôt qu'un calcul en mémoire.
+    SOURCE UNIQUE des stats par canal, tous comptes MT5 confondus. Il existait avant un
+    compteur cumulatif en mémoire (stats_channels.json) qui, faute de dates, ne pouvait pas
+    répondre à "les 30 derniers jours" : il fallait de toute façon relire le CSV, et les deux
+    finissaient par diverger. La période "Max" (days=9999) remplace l'ancien "lifetime".
 
-    Retourne {canal: {count, positions, profit, pips, avg_pips}} -- même forme que
-    channels_lifetime, pour que le dashboard puisse afficher les deux avec le même composant.
+    Retourne {canal: {count, positions, profit, pips, avg_pips}}.
 
     (#stats) `count` compte les SIGNAUX (une zone SABR = 1 signal / 3 positions) et `avg_pips`
     est la moyenne PONDÉRÉE par le volume : additionner les pips bruts fait peser une jambe à
@@ -3005,28 +2997,9 @@ async def check_closed_positions():
                 pass
 
             if source != "MANUEL/INCONNU":
-                # Initialisation si le canal n'existe pas encore
-                st = CHANNEL_STATS.setdefault(
-                    source, {"count": 0, "positions": 0, "profit": 0.0, "pips": 0.0,
-                             "lots": 0.0, "wpips": 0.0})
-                # Migration douce d'un stats_channels.json écrit par une version antérieure
-                for k, default in (("positions", st.get("count", 0)), ("lots", 0.0), ("wpips", 0.0)):
-                    st.setdefault(k, default)
-
-                # Mise à jour. `count` = signaux, `positions` = positions MT5 : une zone SABR
-                # ouvre 3 ordres pour un seul signal, les compter 3 fois divisait par 3 toutes
-                # les moyennes de ce canal. Le signal n'est décompté qu'à la fermeture de sa
-                # DERNIÈRE position encore ouverte.
-                still_open = any(s == signal_id for s in ACTIVE_TRADE_SIGNALS.values())
-                if not still_open:
-                    st["count"] += 1
-                st["positions"] += 1
-                st["profit"] += prof
-                st["pips"] += pips
-                st["lots"] += entry.volume
-                st["wpips"] += pips * entry.volume
-
-                # Nettoyage et Sauvegarde
+                # Plus rien à cumuler ici : la ligne écrite juste en dessous dans
+                # trades_detailed.csv est la seule trace, et get_channel_stats_period() la
+                # réagrège à la demande sur la période choisie.
                 del ACTIVE_TRADE_SOURCES[t]
                 TP1_PRICE_BY_TICKET.pop(t, None)
                 await run_bg(save_channel_data)
@@ -4563,40 +4536,41 @@ async def admin_commands(event):
 
 # --- 16. STATISTIQUES PAR CANAL (VERSION DÉTAILLÉE) ---
     elif text == "/canal_stats":
-        if not CHANNEL_STATS:
+        # (#stats) Recalculé depuis trades_detailed.csv, source unique. Sans argument on prend
+        # tout l'historique ; `/canal_stats 30` limite aux N derniers jours.
+        parts = text.split()
+        try: nb_days = int(parts[1]) if len(parts) > 1 else 9999
+        except ValueError: nb_days = 9999
+
+        stats_chan = await run_bg(get_channel_stats_period, days=nb_days)
+        stats_chan = {c: v for c, v in stats_chan.items() if channel_allowed(c)}
+        if not stats_chan:
             await event.reply("⚠️ Aucune donnée enregistrée pour le moment.")
             return
 
-        msg = "📊 **PERFORMANCE PAR CANAL (Focus Pips)**\n\n"
-        
-        # On parcourt chaque canal enregistré
-        for chan, data in CHANNEL_STATS.items():
-            # (#43) masque les canaux hors pack, cohérent avec /help et /status
-            if not channel_allowed(chan):
-                continue
+        titre = "TOUT L'HISTORIQUE" if nb_days >= 9999 else f"{nb_days} DERNIERS JOURS"
+        msg = f"📊 **PERFORMANCE PAR CANAL — {titre}**\n\n"
+
+        for chan, data in sorted(stats_chan.items(), key=lambda x: -x[1]["profit"]):
             cnt = data["count"]
+            nb_ordres = data.get("positions", cnt)
             prof = data["profit"]
             pips_total = data["pips"]
+            avg_pips = data.get("avg_pips", 0.0)
 
-            # (#stats) Moyenne PONDÉRÉE par le volume : la moyenne brute donnait le même poids
-            # à une jambe de zone SABR à 0.12 lot qu'à une à 0.27 lot.
-            lots_total = data.get("lots", 0.0)
-            avg_pips = (data.get("wpips", 0.0) / lots_total) if lots_total > 0 else \
-                       ((pips_total / cnt) if cnt > 0 else 0.0)
-            
-            # L'icône dépend désormais des pips
-            icon = "🟢" if pips_total >= 0 else "🔴"
-            
+            icon = "🟢" if prof >= 0 else "🔴"
+
             # Sécurité Telegram (Pour éviter le bug "Bad Request" des underscores)
-            chan_clean = chan.replace("_", " ") 
-            
+            chan_clean = chan.replace("_", " ")
+            detail_ordres = f" ({nb_ordres} ordres)" if nb_ordres != cnt else ""
+
             msg += (f"🔹 **{chan_clean}** {icon}\n"
-                    f"   📦 Trades : {cnt}\n"
+                    f"   📦 Trades : {cnt}{detail_ordres}\n"
                     f"   💰 Total Gain: {prof:+.2f}€\n"
                     f"   🎯 Total Pips : {pips_total:+.1f}\n"
-                    f"   ⚖️ **Moyenne : {avg_pips:+.1f} pips/trade**\n"
+                    f"   ⚖️ **Moyenne : {avg_pips:+.1f} pips/lot**\n"
                     f"\n")
-        
+
         await event.reply(msg)
 
     # (#45) Bascule DISPLAY_MODE à chaud, sans redémarrage -- persisté dans settings.json.
@@ -5334,23 +5308,10 @@ async def get_current_state_for_firebase() -> dict:
             "day_factor_6": DAY_RISK_FACTORS.get(6, 1.0),
         }
 
-        # (#53) Même filtre que /canal_stats côté Telegram : un canal retiré du pack ne doit
-        # plus apparaître dans les stats lifetime poussées au dashboard. `active_trades` reste
-        # volontairement NON filtré : ce sont des positions MT5 réellement ouvertes sur le
-        # compte du client, qu'il doit pouvoir continuer à gérer (fermer/BE) même si son pack
-        # a changé depuis l'ouverture -- les masquer casserait la gestion d'un vrai trade.
-        # (#stats) avg_pips = moyenne pondérée par le volume, calculée à la volée pour que
-        # l'onglet "Par Canal" affiche la même métrique en lifetime et sur une période.
-        channels_lifetime_filtered = {}
-        for ch, v in CHANNEL_STATS.items():
-            if not channel_allowed(ch):
-                continue
-            lots = v.get("lots", 0.0)
-            item = {k: val for k, val in v.items() if k not in ("lots", "wpips")}
-            item["avg_pips"] = round(v.get("wpips", 0.0) / lots, 1) if lots > 0 else 0.0
-            item.setdefault("positions", v.get("count", 0))
-            channels_lifetime_filtered[ch] = item
-
+        # (#stats) `channels_lifetime` a disparu : les stats par canal sont désormais toutes
+        # calculées depuis trades_detailed.csv et poussées sous channels_period_<X> (cf.
+        # _firebase_push_stats_loop et request_stats). Ce push-ci tourne toutes les 4s, on n'y
+        # relit pas un CSV.
         return firebase_sync.build_state_document(
             account, stats, settings, active_trades, closed_trades_today or [],
             # (#57) license_key n'est écrit ici QUE quand ce push a lieu, c'est-à-dire quand ce
@@ -5358,7 +5319,7 @@ async def get_current_state_for_firebase() -> dict:
             # via un get() sur licenses/{license_key}, que la licence est toujours ACTIVE avant
             # d'autoriser le dashboard à créer une commande (panic/kill/close_trade/...),
             # indépendamment de l'identité Telegram du client qui reste valide même banni.
-            extra={"channels_lifetime": channels_lifetime_filtered, "license_key": USER_LICENSE_KEY}
+            extra={"license_key": USER_LICENSE_KEY}
         )
     except Exception as e:
         logger.error(f"Erreur collecte état Firebase : {e}")
@@ -5581,7 +5542,15 @@ async def _firebase_push_stats_loop(user_id: str) -> None:
         try:
             stats_30d = await get_historical_stats(days=30)
             if stats_30d and firebase_sync._firebase_initialized:
-                await firebase_sync.push_state(user_id, {"global_period_30": firebase_sync._safe(stats_30d)})
+                # (#stats) channels_period_30 est poussé ici pour que l'onglet "Par Canal" ait
+                # quelque chose à afficher dès l'ouverture du dashboard, sans attendre l'aller-
+                # retour request_stats. Les autres périodes restent à la demande.
+                chan_30 = await run_bg(get_channel_stats_period, days=30)
+                await firebase_sync.push_state(user_id, {
+                    "global_period_30": firebase_sync._safe(stats_30d),
+                    "channels_period_30": firebase_sync._safe(
+                        {c: v for c, v in chan_30.items() if channel_allowed(c)}),
+                })
         except asyncio.CancelledError:
             break
         except Exception as e:

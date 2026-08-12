@@ -200,7 +200,6 @@ function App() {
   // Stats dérivées du state Firestore — chaque période dans sa propre clé
   useEffect(() => {
     if (!dashboardData) return;
-    const channels = dashboardData.channels_lifetime;
     const periodKey = `global_period_${globalPeriod}`;
     // Fallback sur global_period (poussé par l'exe) si la clé spécifique n'existe pas encore
     const period = dashboardData[periodKey] || (globalPeriod === '30' ? dashboardData.global_period : null);
@@ -209,11 +208,10 @@ function App() {
     // le même champ (global_period), donc "Cette Semaine" affichait en fait la période
     // sélectionnée côté Global (30 jours par défaut), pas un vrai 7 jours.
     const weekPeriod = dashboardData.global_period_7 || null;
-    // (#stats) Stats par canal sur la période choisie dans l'onglet Par Canal. Absent tant
-    // que l'exe du client n'a pas été mis à jour -> l'onglet retombe alors sur le cumul
-    // lifetime, comme avant.
+    // (#stats) Source unique des stats par canal : le CSV détaillé du bot, réagrégé sur la
+    // période choisie. Il n'y a plus de cumul "lifetime" séparé -- "Max" joue ce rôle.
     const channelsPeriod = dashboardData[`channels_period_${channelPeriod}`] || null;
-    setHistoricalStats({ channels_lifetime: channels || {}, global_period: period || null,
+    setHistoricalStats({ global_period: period || null,
                          week_period: weekPeriod, channels_period: channelsPeriod });
     if (period) setIsLoadingStats(false);
   }, [dashboardData, globalPeriod, channelPeriod]);
@@ -1473,37 +1471,33 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
 
           {/* 2. VUE PAR CANAL (Les vraies données) */}
           {statsTab === 'canal' && (() => {
-            // (#stats) channels_period vient du CSV détaillé (filtré par date) ; s'il est
-            // absent (exe client pas encore à jour) on retombe sur le cumul lifetime, et le
-            // sélecteur de période est alors masqué pour ne rien promettre qu'on ne tient pas.
-            const periodData = historicalStats?.channels_period;
-            const hasPeriod = periodData !== undefined && periodData !== null;
-            const channelData = hasPeriod ? periodData : (historicalStats?.channels_lifetime || {});
+            // (#stats) Source unique : le CSV détaillé du bot, réagrégé sur la période choisie
+            // (tous comptes MT5 confondus). "Max" tient lieu de cumul depuis toujours, donc le
+            // sélecteur est toujours affiché -- il n'y a plus de mode dégradé sans période.
+            const channelData = historicalStats?.channels_period || {};
             return (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
 
-              {hasPeriod && (
-                <div style={{ display: 'flex', gap: '5px', background: '#1e1e1e', padding: '5px', borderRadius: '8px', border: '1px solid #333' }}>
-                  {[
-                    { id: '14', label: '14j' }, { id: '30', label: '1M' }, { id: '90', label: '3M' },
-                    { id: '180', label: '6M' }, { id: '365', label: '1 An' }, { id: 'all', label: 'Max' }
-                  ].map(p => (
-                    <button
-                      key={p.id}
-                      onClick={() => setChannelPeriod(p.id)}
-                      style={{
-                        flex: 1, padding: '8px 5px', borderRadius: '6px', border: 'none', cursor: 'pointer',
-                        fontSize: '0.75rem', fontWeight: 'bold',
-                        background: channelPeriod === p.id ? '#00e676' : 'transparent',
-                        color: channelPeriod === p.id ? '#000' : '#888',
-                        transition: '0.2s'
-                      }}
-                    >
-                      {p.label}
-                    </button>
-                  ))}
-                </div>
-              )}
+              <div style={{ display: 'flex', gap: '5px', background: '#1e1e1e', padding: '5px', borderRadius: '8px', border: '1px solid #333' }}>
+                {[
+                  { id: '14', label: '14j' }, { id: '30', label: '1M' }, { id: '90', label: '3M' },
+                  { id: '180', label: '6M' }, { id: '365', label: '1 An' }, { id: 'all', label: 'Max' }
+                ].map(p => (
+                  <button
+                    key={p.id}
+                    onClick={() => setChannelPeriod(p.id)}
+                    style={{
+                      flex: 1, padding: '8px 5px', borderRadius: '6px', border: 'none', cursor: 'pointer',
+                      fontSize: '0.75rem', fontWeight: 'bold',
+                      background: channelPeriod === p.id ? '#00e676' : 'transparent',
+                      color: channelPeriod === p.id ? '#000' : '#888',
+                      transition: '0.2s'
+                    }}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
 
               {isLoadingStats && (
                 <div style={{ textAlign: 'center', padding: '12px', color: '#00e676', fontSize: '0.82rem', background: 'rgba(0,230,118,0.05)', borderRadius: '8px', border: '1px solid rgba(0,230,118,0.2)' }}>
@@ -1556,7 +1550,7 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
                 )})
               ) : (
                 <div style={{ textAlign: 'center', color: '#666', padding: '40px', background: '#1e1e1e', borderRadius: '12px' }}>
-                  {hasPeriod ? 'Aucun trade sur cette période.' : 'Aucun trade enregistré par canal.'}
+                  Aucun trade sur cette période.
                 </div>
               )}
             </div>
