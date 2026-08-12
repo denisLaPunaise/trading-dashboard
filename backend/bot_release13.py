@@ -1530,13 +1530,11 @@ def _merge_stats_seed(out, cutoff):
             continue  # la période demandée ne remonte pas assez loin
         entry = out.setdefault(normalize_channel_source(chan),
                                {"count": 0, "positions": 0, "profit": 0.0, "pips": 0.0,
-                                "avg_pips": 0.0, "_lots": 0.0, "_wpips": 0.0})
+                                "avg_pips": 0.0})
         entry["count"] += int(data.get("count", 0))
         entry["positions"] += int(data.get("positions", data.get("count", 0)))
         entry["profit"] += float(data.get("profit", 0.0))
         entry["pips"] += float(data.get("pips", 0.0))
-        entry["_lots"] += float(data.get("lots", 0.0))
-        entry["_wpips"] += float(data.get("wpips", 0.0))
 
 
 def get_channel_stats_period(days=30, start_date_custom=None):
@@ -1549,12 +1547,8 @@ def get_channel_stats_period(days=30, start_date_custom=None):
 
     Retourne {canal: {count, positions, profit, pips, avg_pips}}.
 
-    (#stats) `count` compte les SIGNAUX (une zone SABR = 1 signal / 3 positions) et `avg_pips`
-    est la moyenne PONDÉRÉE par le volume : additionner les pips bruts fait peser une jambe à
-    0.12 lot autant qu'une à 0.27 lot, ce qui produisait des canaux affichés en profit € positif
-    et en pips négatifs. La pondération ne rend pas les pips comparables entre symboles
-    (1 pip d'AUDCAD ≈ 10 pips d'US100 en euros), mais elle supprime la contradiction de signe
-    à l'intérieur d'un même symbole."""
+    (#stats) `count` compte les SIGNAUX (une zone SABR = 1 signal / 3 positions), et `avg_pips`
+    est la moyenne simple pips/trade -- cf. _finalize_channel_stats() pour ses limites."""
     out = {}
     cutoff = start_date_custom if start_date_custom else (datetime.now() - timedelta(days=days))
     seen_signals = {}
@@ -1574,8 +1568,7 @@ def get_channel_stats_period(days=30, start_date_custom=None):
                 if not src or src == "MANUEL/INCONNU":
                     continue
                 entry = out.setdefault(src, {"count": 0, "positions": 0, "profit": 0.0,
-                                             "pips": 0.0, "avg_pips": 0.0,
-                                             "_lots": 0.0, "_wpips": 0.0})
+                                             "pips": 0.0, "avg_pips": 0.0})
                 entry["positions"] += 1
                 # Un signal peut avoir produit plusieurs positions : on ne le compte qu'une fois.
                 # Sans Signal ID (lignes d'avant ce format), on retombe sur le ticket = 1 trade.
@@ -1585,12 +1578,7 @@ def get_channel_stats_period(days=30, start_date_custom=None):
                     entry["count"] += 1
                 try: entry["profit"] += float(row.get("Profit") or 0)
                 except Exception: pass
-                try:
-                    p = float(row.get("Pips") or 0)
-                    lots = float(row.get("Lots") or 0)
-                    entry["pips"] += p
-                    entry["_wpips"] += p * lots
-                    entry["_lots"] += lots
+                try: entry["pips"] += float(row.get("Pips") or 0)
                 except Exception: pass
     except Exception as e:
         logger.warning(f"⚠️ get_channel_stats_period : {e}")
@@ -1599,10 +1587,18 @@ def get_channel_stats_period(days=30, start_date_custom=None):
 
 
 def _finalize_channel_stats(out):
+    """avg_pips = moyenne SIMPLE, somme des pips / nombre de trades (choix produit assumé).
+
+    Une moyenne pondérée par le volume serait plus fidèle au résultat en euros -- sur un canal
+    où les lots varient beaucoup (MDT VIP), la moyenne simple peut être négative alors que le
+    canal gagne de l'argent, parce qu'un petit lot perdant pèse autant qu'un gros lot gagnant.
+    L'affichage annonce "pips/trade", donc c'est bien une moyenne par trade qui est calculée.
+    """
     for entry in out.values():
-        lots = entry.pop("_lots", 0.0)
-        wpips = entry.pop("_wpips", 0.0)
-        entry["avg_pips"] = round(wpips / lots, 1) if lots > 0 else 0.0
+        entry.pop("_lots", None)
+        entry.pop("_wpips", None)
+        cnt = entry.get("count", 0)
+        entry["avg_pips"] = round(entry["pips"] / cnt, 1) if cnt > 0 else 0.0
         entry["pips"] = round(entry["pips"], 1)
         entry["profit"] = round(entry["profit"], 2)
     return out
@@ -4639,7 +4635,7 @@ async def admin_commands(event):
                     f"   📦 Trades : {cnt}{detail_ordres}\n"
                     f"   💰 Total Gain: {prof:+.2f}€\n"
                     f"   🎯 Total Pips : {pips_total:+.1f}\n"
-                    f"   ⚖️ **Moyenne pondérée : {avg_pips:+.1f} pips/trade**\n"
+                    f"   ⚖️ **Moyenne : {avg_pips:+.1f} pips/trade**\n"
                     f"\n")
 
         await event.reply(msg)

@@ -1544,7 +1544,7 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
 
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: '#888' }}>
                       <span>📦 {data.count} Trades{nbPositions !== data.count ? ` (${nbPositions} ordres)` : ''}</span>
-                      <span>⚖️ Moy: {avgPips} pips/lot</span>
+                      <span>⚖️ Moy: {avgPips} pips/trade</span>
                     </div>
                   </div>
                 )})
