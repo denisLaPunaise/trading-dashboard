@@ -411,6 +411,9 @@ SETTINGS_FILENAME = "settings.json"
 SOURCES_MEMORY_FILE = "active_sources.json"
 SIGNALS_MEMORY_FILE = "active_signals.json"
 DETAILED_HISTORY_FILE = "trades_detailed.csv"
+# (#stats) Historique agrégé repris d'avant la refonte des stats. Optionnel : absent chez un
+# nouveau client, il ne fait qu'ajouter un total aux périodes qui couvrent sa plage de dates.
+STATS_SEED_FILE = "stats_seed.json"
 
 BLACKLIST_WORDS = [
     "FERMEZ", "CLOSE", "MOITIÉ", "DÉPLACEZ", "BREAKEVEN", "RESULTAT", "ANNULEZ",
@@ -1299,6 +1302,9 @@ def load_settings():
 def load_channel_data():
     global ACTIVE_TRADE_SOURCES, ACTIVE_TRADE_SIGNALS
 
+    # 0. (#stats) Archive un trades_detailed.csv resté à l'ancien format avant toute lecture
+    rotate_detailed_csv_if_outdated()
+
     # 1. Sources des trades en cours
     if os.path.exists(SOURCES_MEMORY_FILE):
         try:
@@ -1404,6 +1410,39 @@ def archive_daily_stats_to_csv():
     except Exception as e: logger.error(f"⚠️ Erreur CSV: {e}")
 
 
+DETAILED_CSV_COLUMNS = [
+    "Ticket", "Signal ID", "Symbol", "Source", "Type", "Open Time", "Close Time",
+    "Duration (min)", "Lots", "Profit", "Pips", "EUR/pip",
+    "MAE (Drawdown)", "MFE (Max Peak)", "Exit Reason",
+]
+
+
+def rotate_detailed_csv_if_outdated(fieldnames=None):
+    """(#stats) Archive trades_detailed.csv si son en-tête n'est plus celui du format courant.
+
+    Appelé au DÉMARRAGE (et non pas seulement à la première écriture) pour deux raisons :
+    appender des lignes à 15 champs sous un en-tête de 13 produirait un CSV décalé, et surtout
+    l'ancien historique cohabiterait avec stats_seed.json jusqu'au premier trade clôturé --
+    donc une période "Max" comptant deux fois les mêmes résultats. Retourne True si rotation.
+    """
+    fieldnames = fieldnames or DETAILED_CSV_COLUMNS
+    if not os.path.isfile(DETAILED_HISTORY_FILE):
+        return False
+    try:
+        with open(DETAILED_HISTORY_FILE, "r", encoding="utf-8") as f:
+            old_header = (f.readline() or "").strip().split(",")
+        if old_header == fieldnames:
+            return False
+        bak = DETAILED_HISTORY_FILE.replace(".csv", "") + \
+              f".v1_{datetime.now().strftime('%Y%m%d_%H%M%S')}.bak.csv"
+        os.rename(DETAILED_HISTORY_FILE, bak)
+        logger.warning(f"📦 Ancien format de {DETAILED_HISTORY_FILE} archivé -> {bak}")
+        return True
+    except Exception as e:
+        logger.error(f"⚠️ Rotation CSV detailed : {e}")
+        return False
+
+
 def normalize_channel_source(source):
     """(#stats) Regroupe les sous-catégories SABR sous deux libellés stables.
 
@@ -1447,22 +1486,8 @@ def log_trade_detail(ticket, symbol, source, direction, open_time, close_time, d
     }
 
     fieldnames = list(row.keys())
-
-    # (#stats) Le format a gagné les colonnes "Signal ID" et "EUR/pip". Appender des lignes à
-    # 15 champs sous un en-tête de 13 produirait un CSV décalé et illisible : on archive
-    # l'ancien fichier et on repart sur un en-tête propre.
-    if file_exists:
-        try:
-            with open(DETAILED_HISTORY_FILE, "r", encoding="utf-8") as f:
-                old_header = (f.readline() or "").strip().split(",")
-            if old_header != fieldnames:
-                bak = DETAILED_HISTORY_FILE.replace(".csv", "") + \
-                      f".v1_{datetime.now().strftime('%Y%m%d_%H%M%S')}.bak.csv"
-                os.rename(DETAILED_HISTORY_FILE, bak)
-                file_exists = False
-                logger.warning(f"📦 Ancien format de {DETAILED_HISTORY_FILE} archivé -> {bak}")
-        except Exception as e:
-            logger.error(f"⚠️ Rotation CSV detailed : {e}")
+    if rotate_detailed_csv_if_outdated(fieldnames):
+        file_exists = False
 
     try:
         with open(DETAILED_HISTORY_FILE, "a", newline='', encoding='utf-8') as f:
@@ -1472,6 +1497,47 @@ def log_trade_detail(ticket, symbol, source, direction, open_time, close_time, d
             writer.writerow(row)
             logger.info(f"📝 Trade #{ticket} archivé dans {DETAILED_HISTORY_FILE}")
     except Exception as e: logger.error(f"⚠️ Erreur CSV Detailed: {e}")
+
+def _merge_stats_seed(out, cutoff):
+    """(#stats) Injecte un historique REPRIS d'avant la refonte des stats (stats_seed.json).
+
+    Le CSV détaillé contient une ligne par trade ; un total agrégé ne peut donc pas y être
+    écrit sans inventer des trades qui n'ont jamais existé sous cette forme. Ce fichier
+    optionnel porte le total tel qu'il avait été mesuré, avec la plage de dates qu'il couvre.
+
+    Il n'est ajouté QUE si la période demandée englobe entièrement cette plage (cutoff <=
+    'from'). Un chevauchement partiel est ignoré : on ne sait pas découper un agrégat, et
+    l'inclure quand même gonflerait par exemple un "14 jours" avec des mois de résultats.
+    """
+    if not os.path.exists(STATS_SEED_FILE):
+        return
+    try:
+        with open(STATS_SEED_FILE, "r", encoding="utf-8") as f:
+            seed = json.load(f)
+    except Exception as e:
+        logger.warning(f"⚠️ stats_seed.json illisible : {e}")
+        return
+
+    for chan, data in seed.items():
+        if chan.startswith("_") or not isinstance(data, dict):
+            continue  # clés de documentation (_README, _CALCUL_...)
+        try:
+            date_from = datetime.strptime(data["from"], "%Y-%m-%d")
+        except Exception:
+            logger.warning(f"⚠️ stats_seed.json : champ 'from' manquant/invalide pour {chan}")
+            continue
+        if cutoff > date_from:
+            continue  # la période demandée ne remonte pas assez loin
+        entry = out.setdefault(normalize_channel_source(chan),
+                               {"count": 0, "positions": 0, "profit": 0.0, "pips": 0.0,
+                                "avg_pips": 0.0, "_lots": 0.0, "_wpips": 0.0})
+        entry["count"] += int(data.get("count", 0))
+        entry["positions"] += int(data.get("positions", data.get("count", 0)))
+        entry["profit"] += float(data.get("profit", 0.0))
+        entry["pips"] += float(data.get("pips", 0.0))
+        entry["_lots"] += float(data.get("lots", 0.0))
+        entry["_wpips"] += float(data.get("wpips", 0.0))
+
 
 def get_channel_stats_period(days=30, start_date_custom=None):
     """Stats par canal SUR UNE PÉRIODE, reconstruites depuis trades_detailed.csv.
@@ -1490,10 +1556,11 @@ def get_channel_stats_period(days=30, start_date_custom=None):
     (1 pip d'AUDCAD ≈ 10 pips d'US100 en euros), mais elle supprime la contradiction de signe
     à l'intérieur d'un même symbole."""
     out = {}
-    if not os.path.exists(DETAILED_HISTORY_FILE):
-        return out
     cutoff = start_date_custom if start_date_custom else (datetime.now() - timedelta(days=days))
     seen_signals = {}
+    _merge_stats_seed(out, cutoff)
+    if not os.path.exists(DETAILED_HISTORY_FILE):
+        return _finalize_channel_stats(out)
     try:
         with open(DETAILED_HISTORY_FILE, "r", encoding="utf-8") as f:
             for row in csv.DictReader(f):
@@ -1528,6 +1595,10 @@ def get_channel_stats_period(days=30, start_date_custom=None):
     except Exception as e:
         logger.warning(f"⚠️ get_channel_stats_period : {e}")
 
+    return _finalize_channel_stats(out)
+
+
+def _finalize_channel_stats(out):
     for entry in out.values():
         lots = entry.pop("_lots", 0.0)
         wpips = entry.pop("_wpips", 0.0)
@@ -4568,7 +4639,7 @@ async def admin_commands(event):
                     f"   📦 Trades : {cnt}{detail_ordres}\n"
                     f"   💰 Total Gain: {prof:+.2f}€\n"
                     f"   🎯 Total Pips : {pips_total:+.1f}\n"
-                    f"   ⚖️ **Moyenne : {avg_pips:+.1f} pips/lot**\n"
+                    f"   ⚖️ **Moyenne pondérée : {avg_pips:+.1f} pips/trade**\n"
                     f"\n")
 
         await event.reply(msg)
