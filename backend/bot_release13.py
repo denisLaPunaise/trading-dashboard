@@ -150,7 +150,7 @@ SECURITY_PIN = str(secrets.randbelow(900000) + 100000)
 # ==========================================
 # 🔐 CONFIGURATION DISTRIBUTION (LICENCE)
 # ==========================================
-VERSION_BOT = "15.0.0"
+VERSION_BOT = "15.1.0"
 # (URL_LICENCE retire — licence verifiee via Firestore, Phase 4)
 
 # ==========================================
@@ -408,6 +408,7 @@ MANUAL_FILENAME = "manual_trades.json"
 SETTINGS_FILENAME = "settings.json"
 STATS_PER_CHANNEL_FILE = "stats_channels.json"
 SOURCES_MEMORY_FILE = "active_sources.json"
+SIGNALS_MEMORY_FILE = "active_signals.json"
 DETAILED_HISTORY_FILE = "trades_detailed.csv"
 
 BLACKLIST_WORDS = [
@@ -477,10 +478,15 @@ PENDING_MESSAGES = {} # Key: ID, Value: Texte du message
 LIGUE_CONTEXT = {}
 # Stocke le contexte SABR : { "last_action": "SELL", "time": 123456789, "status": "WAITING_UPDATE" }
 SABR_CONTEXT = {}
-# Stocke : { "CANAL VIP": {"count": 0, "profit": 0.0, "pips": 0.0} }
+# Stocke : { "CANAL VIP": {"count", "positions", "profit", "pips", "lots", "wpips"} }
+# count = nombre de SIGNAUX, positions = nombre de positions MT5 (une zone SABR = 1 signal /
+# 3 positions). wpips/lots servent à calculer la moyenne de pips PONDÉRÉE par le volume.
 CHANNEL_STATS = {}
 # Stocke : { ticket_id: "CANAL VIP" }
 ACTIVE_TRADE_SOURCES = {}
+# (#stats) Stocke : { ticket_id: "signal_id" } -- un appel à execute_trade() = un signal, même
+# s'il produit plusieurs ordres (zone SABR). Permet de compter 1 trade et non 3.
+ACTIVE_TRADE_SIGNALS = {}
 # Format : { ticket_id: montant_deja_compte }
 PARTIAL_PROFITS = {}
 # (#22) Prix TP1 réel lu dans le signal MDT_FREE (ticket_id: prix) -- permet de fermer
@@ -1290,8 +1296,8 @@ def load_settings():
         except Exception as e: logger.error(f"⚠️ Erreur Load Settings: {e}")
 
 def load_channel_data():
-    global CHANNEL_STATS, ACTIVE_TRADE_SOURCES
-    
+    global CHANNEL_STATS, ACTIVE_TRADE_SOURCES, ACTIVE_TRADE_SIGNALS
+
     # 1. Stats cumulées
     if os.path.exists(STATS_PER_CHANNEL_FILE):
         try:
@@ -1308,10 +1314,19 @@ def load_channel_data():
                 ACTIVE_TRADE_SOURCES = {int(k): v for k, v in raw.items()}
         except: pass
 
+    # 3. (#stats) Signal d'origine des trades en cours (1 signal = N positions)
+    if os.path.exists(SIGNALS_MEMORY_FILE):
+        try:
+            with open(SIGNALS_MEMORY_FILE, "r") as f:
+                raw = json.load(f)
+                ACTIVE_TRADE_SIGNALS = {int(k): v for k, v in raw.items()}
+        except: pass
+
 def save_channel_data():
     try:
         with open(STATS_PER_CHANNEL_FILE, "w") as f: json.dump(CHANNEL_STATS, f)
         with open(SOURCES_MEMORY_FILE, "w") as f: json.dump(ACTIVE_TRADE_SOURCES, f)
+        with open(SIGNALS_MEMORY_FILE, "w") as f: json.dump(ACTIVE_TRADE_SIGNALS, f)
     except: pass
 
 def save_state_and_stats(day, balance_snapshot):
@@ -1396,16 +1411,33 @@ def archive_daily_stats_to_csv():
     except Exception as e: logger.error(f"⚠️ Erreur CSV: {e}")
 
 
-def log_trade_detail(ticket, symbol, source, direction, open_time, close_time, duration, lots, profit, pips, mae, mfe, exit_reason):
+def normalize_channel_source(source):
+    """(#stats) Regroupe les sous-catégories SABR sous deux libellés stables.
+
+    Appliqué à l'ÉCRITURE (check_closed_positions) ET à la LECTURE
+    (get_channel_stats_period) : sans ça, un historique écrit par une version antérieure au
+    regroupement se retrouve éclaté en 8 lignes distinctes dans l'onglet "Par Canal"
+    (CANAL SABR_VIP_BLIND, CANAL SABR_FREE_UPDATE_ZONE...) alors que le cumul lifetime, lui,
+    n'en montre que 2. Pire, _channel_base_token() ne sait pas rattacher ces variantes à un
+    pack, donc elles disparaissaient purement et simplement chez un client SABR."""
+    s = (source or "").strip()
+    if "SABR" not in s.upper():
+        return s
+    return "CANAL SABR VIP" if ("VIP" in s.upper() or "COPIE" in s.upper()) else "CANAL SABR FREE"
+
+
+def log_trade_detail(ticket, symbol, source, direction, open_time, close_time, duration, lots,
+                     profit, pips, mae, mfe, exit_reason, signal_id="", eur_per_pip=0.0):
     """Enregistre chaque trade individuellement pour analyse expert"""
     file_exists = os.path.isfile(DETAILED_HISTORY_FILE)
-    
+
     # Conversion des timestamps en format lisible (Excel friendly) avec correction heure française
     ot_str = (datetime.fromtimestamp(open_time) - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
     ct_str = (datetime.fromtimestamp(close_time) - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
     
     row = {
         "Ticket": ticket,
+        "Signal ID": signal_id,      # (#stats) 1 signal = N positions (zone SABR = 3 ordres)
         "Symbol": symbol,
         "Source": source,
         "Type": direction,
@@ -1415,13 +1447,30 @@ def log_trade_detail(ticket, symbol, source, direction, open_time, close_time, d
         "Lots": f"{lots:.2f}",
         "Profit": f"{profit:.2f}",
         "Pips": f"{pips:.1f}",
+        "EUR/pip": f"{eur_per_pip:.2f}",  # valeur d'un pip pour 1.00 lot sur ce symbole
         "MAE (Drawdown)": f"{mae:.1f}", # Le point le plus bas atteint (ex: -15.0)
         "MFE (Max Peak)": f"{mfe:.1f}", # Le point le plus haut atteint (ex: +45.0)
         "Exit Reason": exit_reason
     }
-    
+
     fieldnames = list(row.keys())
-    
+
+    # (#stats) Le format a gagné les colonnes "Signal ID" et "EUR/pip". Appender des lignes à
+    # 15 champs sous un en-tête de 13 produirait un CSV décalé et illisible : on archive
+    # l'ancien fichier et on repart sur un en-tête propre.
+    if file_exists:
+        try:
+            with open(DETAILED_HISTORY_FILE, "r", encoding="utf-8") as f:
+                old_header = (f.readline() or "").strip().split(",")
+            if old_header != fieldnames:
+                bak = DETAILED_HISTORY_FILE.replace(".csv", "") + \
+                      f".v1_{datetime.now().strftime('%Y%m%d_%H%M%S')}.bak.csv"
+                os.rename(DETAILED_HISTORY_FILE, bak)
+                file_exists = False
+                logger.warning(f"📦 Ancien format de {DETAILED_HISTORY_FILE} archivé -> {bak}")
+        except Exception as e:
+            logger.error(f"⚠️ Rotation CSV detailed : {e}")
+
     try:
         with open(DETAILED_HISTORY_FILE, "a", newline='', encoding='utf-8') as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -1439,12 +1488,20 @@ def get_channel_stats_period(days=30, start_date_custom=None):
     par trade clôturé avec sa Source et sa Close Time -- c'est la seule source qui permet
     de filtrer par date, d'où cette lecture de fichier plutôt qu'un calcul en mémoire.
 
-    Retourne {canal: {count, profit, pips}} -- même forme que channels_lifetime, pour que
-    le dashboard puisse afficher les deux avec le même composant."""
+    Retourne {canal: {count, positions, profit, pips, avg_pips}} -- même forme que
+    channels_lifetime, pour que le dashboard puisse afficher les deux avec le même composant.
+
+    (#stats) `count` compte les SIGNAUX (une zone SABR = 1 signal / 3 positions) et `avg_pips`
+    est la moyenne PONDÉRÉE par le volume : additionner les pips bruts fait peser une jambe à
+    0.12 lot autant qu'une à 0.27 lot, ce qui produisait des canaux affichés en profit € positif
+    et en pips négatifs. La pondération ne rend pas les pips comparables entre symboles
+    (1 pip d'AUDCAD ≈ 10 pips d'US100 en euros), mais elle supprime la contradiction de signe
+    à l'intérieur d'un même symbole."""
     out = {}
     if not os.path.exists(DETAILED_HISTORY_FILE):
         return out
     cutoff = start_date_custom if start_date_custom else (datetime.now() - timedelta(days=days))
+    seen_signals = {}
     try:
         with open(DETAILED_HISTORY_FILE, "r", encoding="utf-8") as f:
             for row in csv.DictReader(f):
@@ -1454,17 +1511,37 @@ def get_channel_stats_period(days=30, start_date_custom=None):
                     continue  # ligne corrompue / en-tête d'un ancien format -> on ignore
                 if closed_at < cutoff:
                     continue
-                src = (row.get("Source") or "").strip()
+                src = normalize_channel_source(row.get("Source"))
                 if not src or src == "MANUEL/INCONNU":
                     continue
-                entry = out.setdefault(src, {"count": 0, "profit": 0.0, "pips": 0.0})
-                entry["count"] += 1
+                entry = out.setdefault(src, {"count": 0, "positions": 0, "profit": 0.0,
+                                             "pips": 0.0, "avg_pips": 0.0,
+                                             "_lots": 0.0, "_wpips": 0.0})
+                entry["positions"] += 1
+                # Un signal peut avoir produit plusieurs positions : on ne le compte qu'une fois.
+                # Sans Signal ID (lignes d'avant ce format), on retombe sur le ticket = 1 trade.
+                sig = (row.get("Signal ID") or "").strip() or f"_tk{row.get('Ticket')}"
+                if sig not in seen_signals.setdefault(src, set()):
+                    seen_signals[src].add(sig)
+                    entry["count"] += 1
                 try: entry["profit"] += float(row.get("Profit") or 0)
                 except Exception: pass
-                try: entry["pips"] += float(row.get("Pips") or 0)
+                try:
+                    p = float(row.get("Pips") or 0)
+                    lots = float(row.get("Lots") or 0)
+                    entry["pips"] += p
+                    entry["_wpips"] += p * lots
+                    entry["_lots"] += lots
                 except Exception: pass
     except Exception as e:
         logger.warning(f"⚠️ get_channel_stats_period : {e}")
+
+    for entry in out.values():
+        lots = entry.pop("_lots", 0.0)
+        wpips = entry.pop("_wpips", 0.0)
+        entry["avg_pips"] = round(wpips / lots, 1) if lots > 0 else 0.0
+        entry["pips"] = round(entry["pips"], 1)
+        entry["profit"] = round(entry["profit"], 2)
     return out
 
 
@@ -2157,6 +2234,11 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
         logger.warning(f"🚫 TRADE BLOQUÉ (execute_trade) : canal {channel_source} mute ou hors pack.")
         return None
 
+    # (#stats) Un appel = un signal, même s'il débouche sur plusieurs ordres (zone SABR en
+    # place 3). Tous les tickets créés ci-dessous partagent cet identifiant, ce qui permet de
+    # compter 1 trade et non 3 dans les stats par canal.
+    signal_id = f"{symbol}-{int(datetime.now().timestamp() * 1000)}"
+
     # -----------------------------------------------------------
     # 🛠️ GESTION SPECIALE: MISE A JOUR SL SABR
     # -----------------------------------------------------------
@@ -2619,6 +2701,7 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
         if res.retcode == mt5.TRADE_RETCODE_DONE:
             daily_stats["total_trades"] += 1
             ACTIVE_TRADE_SOURCES[res.order] = channel_source
+            ACTIVE_TRADE_SIGNALS[res.order] = signal_id
             await run_bg(save_channel_data)
                 
             t_str = "MARKET" if tact == mt5.TRADE_ACTION_DEAL else "PENDING"
@@ -2667,6 +2750,7 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
             res2 = await run_mt5(_send_order_blocking, req)
             if res2 and res2.retcode == mt5.TRADE_RETCODE_DONE:
                 ACTIVE_TRADE_SOURCES[res2.order] = channel_source
+                ACTIVE_TRADE_SIGNALS[res2.order] = signal_id
                 await run_bg(save_channel_data)
                 # --- MODIFICATION TELEGRAM SECOURS ICI ---
                 await send_channel_alert(f"🔥 **ORDRE MARKET (RESCUE)**\n{symbol} {action}\nLot: **{lot:.2f}** (Risque: {risk_str})\n\n🛑 SL: {final_sl} & 🎯 TP: {final_tp}", channel_source)
@@ -2905,25 +2989,43 @@ async def check_closed_positions():
             raw_source = ACTIVE_TRADE_SOURCES.get(t, "MANUEL/INCONNU")
 
             # 🧹 Regroupement des sous-catégories SABR pour des stats propres
-            if "SABR" in raw_source:
-                # On met VIP et COPIE ensemble sous le nom SABR VIP
-                if "VIP" in raw_source or "COPIE" in raw_source:
-                    source = "CANAL SABR VIP"
-                else:
-                    source = "CANAL SABR FREE"
-            else:
-                source = raw_source
-            
+            source = normalize_channel_source(raw_source)
+
+            signal_id = ACTIVE_TRADE_SIGNALS.pop(t, "") or f"_tk{t}"
+
+            # (#stats) Valeur d'un pip pour 1.00 lot : permet de repondérer proprement les pips
+            # a posteriori, et d'expliquer un canal qui gagne en € tout en perdant en pips
+            # (1 pip d'AUDCAD vaut ~10 pips d'US100).
+            eur_per_pip = 0.0
+            try:
+                s_info = mt5.symbol_info(sym)
+                if s_info and s_info.trade_tick_size > 0:
+                    eur_per_pip = s_info.trade_tick_value * ((pt * div) / s_info.trade_tick_size)
+            except Exception:
+                pass
+
             if source != "MANUEL/INCONNU":
                 # Initialisation si le canal n'existe pas encore
-                if source not in CHANNEL_STATS:
-                    CHANNEL_STATS[source] = {"count": 0, "profit": 0.0, "pips": 0.0}
-                
-                # Mise à jour
-                CHANNEL_STATS[source]["count"] += 1
-                CHANNEL_STATS[source]["profit"] += prof
-                CHANNEL_STATS[source]["pips"] += pips
-                
+                st = CHANNEL_STATS.setdefault(
+                    source, {"count": 0, "positions": 0, "profit": 0.0, "pips": 0.0,
+                             "lots": 0.0, "wpips": 0.0})
+                # Migration douce d'un stats_channels.json écrit par une version antérieure
+                for k, default in (("positions", st.get("count", 0)), ("lots", 0.0), ("wpips", 0.0)):
+                    st.setdefault(k, default)
+
+                # Mise à jour. `count` = signaux, `positions` = positions MT5 : une zone SABR
+                # ouvre 3 ordres pour un seul signal, les compter 3 fois divisait par 3 toutes
+                # les moyennes de ce canal. Le signal n'est décompté qu'à la fermeture de sa
+                # DERNIÈRE position encore ouverte.
+                still_open = any(s == signal_id for s in ACTIVE_TRADE_SIGNALS.values())
+                if not still_open:
+                    st["count"] += 1
+                st["positions"] += 1
+                st["profit"] += prof
+                st["pips"] += pips
+                st["lots"] += entry.volume
+                st["wpips"] += pips * entry.volume
+
                 # Nettoyage et Sauvegarde
                 del ACTIVE_TRADE_SOURCES[t]
                 TP1_PRICE_BY_TICKET.pop(t, None)
@@ -2947,7 +3049,9 @@ async def check_closed_positions():
                 pips=pips,
                 mae=mae,
                 mfe=mfe,
-                exit_reason=reason
+                exit_reason=reason,
+                signal_id=signal_id,
+                eur_per_pip=eur_per_pip
             )
             
             # --- RECUPERATION DONNEES EXACTES (Ton format) ---
@@ -4243,7 +4347,9 @@ async def admin_commands(event):
             p_open = await run_mt5(mt5.positions_get, ticket=ticket_id)
             if not p_open: await event.reply("❌ Ticket introuvable."); return
             MANAGED_MANUAL_TICKETS.add(ticket_id); await run_bg(save_memory)
-            ACTIVE_TRADE_SOURCES[ticket_id] = "CANAL PERSO"; await run_bg(save_channel_data)
+            ACTIVE_TRADE_SOURCES[ticket_id] = "CANAL PERSO"
+            ACTIVE_TRADE_SIGNALS[ticket_id] = f"MANUEL-{ticket_id}"
+            await run_bg(save_channel_data)
             await event.reply(f"✅ **SUIVI ACTIVÉ** (Trade #{ticket_id})")
         except: await event.reply("❌ Erreur ID")
 
@@ -4471,9 +4577,12 @@ async def admin_commands(event):
             cnt = data["count"]
             prof = data["profit"]
             pips_total = data["pips"]
-            
-            # Calcul Moyenne
-            avg_pips = (pips_total / cnt) if cnt > 0 else 0.0
+
+            # (#stats) Moyenne PONDÉRÉE par le volume : la moyenne brute donnait le même poids
+            # à une jambe de zone SABR à 0.12 lot qu'à une à 0.27 lot.
+            lots_total = data.get("lots", 0.0)
+            avg_pips = (data.get("wpips", 0.0) / lots_total) if lots_total > 0 else \
+                       ((pips_total / cnt) if cnt > 0 else 0.0)
             
             # L'icône dépend désormais des pips
             icon = "🟢" if pips_total >= 0 else "🔴"
@@ -5230,7 +5339,17 @@ async def get_current_state_for_firebase() -> dict:
         # volontairement NON filtré : ce sont des positions MT5 réellement ouvertes sur le
         # compte du client, qu'il doit pouvoir continuer à gérer (fermer/BE) même si son pack
         # a changé depuis l'ouverture -- les masquer casserait la gestion d'un vrai trade.
-        channels_lifetime_filtered = {ch: v for ch, v in CHANNEL_STATS.items() if channel_allowed(ch)}
+        # (#stats) avg_pips = moyenne pondérée par le volume, calculée à la volée pour que
+        # l'onglet "Par Canal" affiche la même métrique en lifetime et sur une période.
+        channels_lifetime_filtered = {}
+        for ch, v in CHANNEL_STATS.items():
+            if not channel_allowed(ch):
+                continue
+            lots = v.get("lots", 0.0)
+            item = {k: val for k, val in v.items() if k not in ("lots", "wpips")}
+            item["avg_pips"] = round(v.get("wpips", 0.0) / lots, 1) if lots > 0 else 0.0
+            item.setdefault("positions", v.get("count", 0))
+            channels_lifetime_filtered[ch] = item
 
         return firebase_sync.build_state_document(
             account, stats, settings, active_trades, closed_trades_today or [],
@@ -5318,6 +5437,7 @@ async def handle_firebase_command(cmd_id: str, cmd_data: dict) -> None:
             MANAGED_MANUAL_TICKETS.add(ticket)
             await run_bg(save_memory)
             ACTIVE_TRADE_SOURCES[ticket] = "CANAL PERSO"
+            ACTIVE_TRADE_SIGNALS[ticket] = f"MANUEL-{ticket}"
             await run_bg(save_channel_data)
             set_status("done", {"success": True})
 

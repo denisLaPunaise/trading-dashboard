@@ -1516,7 +1516,14 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
                 .filter(([name]) => isChannelVisible(name)) // (#7) pack du client
                 .sort((a, b) => (b[1].profit ?? 0) - (a[1].profit ?? 0)) // Tri par profit décroissant
                 .map(([name, data]) => {
-                  const avgPips = data.count > 0 ? (data.pips / data.count).toFixed(1) : "0.0";
+                  // (#stats) Moyenne PONDÉRÉE par le volume, calculée côté bot. Fallback sur la
+                  // moyenne brute pour un exe client pas encore à jour (champ absent).
+                  const avgPips = (data.avg_pips !== undefined && data.avg_pips !== null)
+                    ? Number(data.avg_pips).toFixed(1)
+                    : (data.count > 0 ? (data.pips / data.count).toFixed(1) : "0.0");
+                  // Une zone SABR = 1 signal mais 3 positions MT5 : on affiche le nombre de
+                  // signaux, et le détail des positions seulement quand les deux diffèrent.
+                  const nbPositions = data.positions ?? data.count;
                   const isPositive = (data.profit ?? 0) >= 0;
                   
                   return (
@@ -1542,8 +1549,8 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
                     </div>
 
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: '#888' }}>
-                      <span>📦 {data.count} Trades</span>
-                      <span>⚖️ Moy: {avgPips} pips/trade</span>
+                      <span>📦 {data.count} Trades{nbPositions !== data.count ? ` (${nbPositions} ordres)` : ''}</span>
+                      <span>⚖️ Moy: {avgPips} pips/lot</span>
                     </div>
                   </div>
                 )})

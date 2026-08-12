@@ -1,4 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
+# V15.1.0 — Partiel 30% MDT VIP, stats par canal periodisees, journal debug MDT, bouton Dashboard auto
 # V15.0.0 — Lot de correctifs audit securite v2 (issues #46-#62)
 # V14.0.0 — Migration SaaS Firebase V2 (Auth email/password REST, pas d'Admin SDK côté client)
 # (#30) Renommé Bot_FTMO -> Kairos
@@ -38,7 +39,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='Kairos_V15.0.0',
+    name='Kairos_V15.1.0',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
