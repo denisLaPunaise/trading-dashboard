@@ -191,8 +191,11 @@ function App() {
   const [statsTab, setStatsTab] = useState('jour'); // 'jour', 'canal', 'global'
   const [historicalStats, setHistoricalStats] = useState(null);
   const [globalPeriod, setGlobalPeriod] = useState('30'); // 👈 NOUVEAU : 30 jours par défaut
-  // (#stats) Période propre à l'onglet "Par Canal", indépendante de celle de l'onglet Global
-  const [channelPeriod, setChannelPeriod] = useState('30');
+  // (#stats) Période propre à l'onglet "Par Canal", indépendante de celle de l'onglet Global.
+  // "Max" par défaut : c'est la vue cumulée depuis toujours (elle inclut l'historique repris de
+  // stats_seed.json), donc celle qui a du sens à l'ouverture. Un 1M par défaut affichait
+  // "Aucun trade sur cette période" tant qu'aucun trade récent n'était clôturé.
+  const [channelPeriod, setChannelPeriod] = useState('all');
   const [dayWeekToggle, setDayWeekToggle] = useState('day'); // 'day' ou 'week'
   const [isLoadingStats, setIsLoadingStats] = useState(false);
   const requestedPeriods = useRef(new Set());
@@ -230,9 +233,11 @@ function App() {
     if (!wantWeek && !wantGlobal && !wantChannel) return;
     const period = wantWeek ? '7' : (wantChannel ? channelPeriod : globalPeriod);
     const periodKey = wantChannel ? `channels_period_${period}` : `global_period_${period}`;
-    if (dashboardData?.[periodKey]) return; // données déjà en cache
-    // Clé de dédoublonnage préfixée : une même durée peut être demandée pour deux onglets
-    // qui lisent des champs différents (global_period_X vs channels_period_X).
+    // (#stats) On ne se fie PAS à la présence de la clé dans Firestore pour éviter la requête :
+    // ces champs sont persistants et peuvent dater d'une version antérieure du bot. C'était la
+    // cause d'un affichage figé où "14j" montrait plus de trades que "1M", et où 3M et 6M
+    // étaient identiques -- deux vieux instantanés que rien ne rafraîchissait jamais.
+    // requestedPeriods suffit : une requête par période et par chargement de page.
     const reqKey = wantChannel ? `chan_${period}` : period;
     if (requestedPeriods.current.has(reqKey)) return; // requête déjà envoyée
     requestedPeriods.current.add(reqKey);
@@ -1505,13 +1510,16 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
                 </div>
               )}
 
-              {Object.keys(channelData).length > 0 ? (
+              {/* (#stats) Pendant un recalcul on n'affiche AUCUNE carte : la valeur encore
+                  presente dans Firestore peut dater d'une version anterieure du bot, et la
+                  laisser visible quelques secondes revient a afficher des chiffres faux. */}
+              {isLoadingStats ? null : Object.keys(channelData).length > 0 ? (
                 Object.entries(channelData)
                 .filter(([name]) => isChannelVisible(name)) // (#7) pack du client
                 .sort((a, b) => (b[1].profit ?? 0) - (a[1].profit ?? 0)) // Tri par profit décroissant
                 .map(([name, data]) => {
-                  // (#stats) Moyenne PONDÉRÉE par le volume, calculée côté bot. Fallback sur la
-                  // moyenne brute pour un exe client pas encore à jour (champ absent).
+                  // (#stats) Moyenne simple pips/trade, calculée côté bot. Fallback sur le même
+                  // calcul local pour un exe client pas encore à jour (champ absent).
                   const avgPips = (data.avg_pips !== undefined && data.avg_pips !== null)
                     ? Number(data.avg_pips).toFixed(1)
                     : (data.count > 0 ? (data.pips / data.count).toFixed(1) : "0.0");

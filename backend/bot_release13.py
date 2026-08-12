@@ -1526,7 +1526,10 @@ def _merge_stats_seed(out, cutoff):
         except Exception:
             logger.warning(f"⚠️ stats_seed.json : champ 'from' manquant/invalide pour {chan}")
             continue
-        if cutoff > date_from:
+        # Comparaison au JOUR près : cutoff porte l'heure courante, donc un seed daté du même
+        # jour que le début de la fenêtre (ex. "il y a 14 jours" pour la période 14j) serait
+        # exclu de quelques heures si on comparait les datetime bruts.
+        if cutoff.date() > date_from.date():
             continue  # la période demandée ne remonte pas assez loin
         entry = out.setdefault(normalize_channel_source(chan),
                                {"count": 0, "positions": 0, "profit": 0.0, "pips": 0.0,
