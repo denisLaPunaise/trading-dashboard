@@ -395,6 +395,101 @@ def generate_client_package(client_name: str, key: str, fb_email: str, fb_passwo
     return buf, filename, exe_included
 
 
+def exe_version_from_filename():
+    """(#64) Extrait "15.1.0" de "Kairos_V15.1.0.exe". Source unique de la version distribuée :
+    le nom du binaire posé à côté de ce script, pas une constante à tenir à jour en double."""
+    m = re.search(r"V(\d+(?:\.\d+){0,3})", EXE_FILENAME)
+    return m.group(1) if m else ""
+
+
+UPDATE_NOTICE = """MISE A JOUR DE {product}
+=========================================
+
+Cette archive ne contient QUE le programme, volontairement.
+
+A FAIRE
+-------
+1. Ferme completement {product} (la fenetre noire doit etre fermee).
+2. Ouvre le dossier ou tu l'avais installe.
+3. Remplace l'ancien {old_hint} par le {exe} de cette archive.
+   -> Tu peux supprimer l'ancien fichier .exe une fois la mise a jour verifiee.
+4. Relance le nouveau {exe}.
+
+NE TOUCHE A RIEN D'AUTRE
+------------------------
+Garde tous les autres fichiers de ton dossier, en particulier :
+  - settings.json               (ta cle de licence et tes reglages)
+  - ftmo_bot_session.session    (ta connexion Telegram)
+  - bot_session.session         (ton bot Telegram)
+  - trades_detailed.csv         (ton historique de trades)
+
+Si tu les supprimes, il faudra refaire l'appairage Telegram (numero, SMS, code PIN)
+et tu perdras tes statistiques.
+
+SI WINDOWS AFFICHE UN AVERTISSEMENT
+-----------------------------------
+"Windows a protege votre ordinateur" -> clique "Informations complementaires",
+puis "Executer quand meme". C'est normal pour chaque nouvelle version.
+"""
+
+
+def generate_update_package(client_name: str) -> tuple:
+    """(#64) ZIP de MISE A JOUR : l'exe seul, sans settings.json.
+
+    Contrairement a generate_client_package(), on n'inclut surtout pas settings.json : le
+    client en a deja un, contenant sa cle, ses identifiants Firebase, ses API Telegram et ses
+    reglages. L'ecraser le forcerait a tout reconfigurer et a refaire l'appairage Telegram.
+
+    Retourne (zip_bytes, filename, exe_included)."""
+    buf = io.BytesIO()
+    exe_included = False
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        if os.path.isfile(BOT_EXE_PATH):
+            zf.write(BOT_EXE_PATH, arcname=EXE_FILENAME)
+            exe_included = True
+        zf.writestr("LIRE_MOI_MAJ.txt", UPDATE_NOTICE.format(
+            product=PRODUCT_NAME, exe=EXE_FILENAME,
+            old_hint=f"{PRODUCT_NAME}_V....exe").encode("utf-8"))
+    buf.seek(0)
+    safe_name = re.sub(r"[^a-zA-Z0-9_-]", "", client_name) or "client"
+    ver = exe_version_from_filename() or "MAJ"
+    filename = f"{PRODUCT_NAME}_MAJ_v{ver}_{safe_name}.zip"
+    buf.name = filename
+    return buf, filename, exe_included
+
+
+def set_client_version(key, new_ver):
+    """(#64) Fixe le ver_min d'UN SEUL client (Sheet + Firestore), sans toucher aux autres.
+
+    Le pendant unitaire de push_version_to_all() : sert a bloquer l'ancien exe d'un client
+    precis juste apres lui avoir envoye sa mise a jour."""
+    try:
+        sheet = get_sheet()
+        cell = sheet.find(key)
+        if not cell: return False, "Clé introuvable."
+        user = sheet.cell(cell.row, COL_USER).value or ""
+        status = sheet.cell(cell.row, COL_STATUS).value or "ACTIVE"
+        sheet.update_cell(cell.row, COL_VER, sheet_text(new_ver))
+        # Le bot client ne lit ver_min QUE depuis Firestore -- sans cette ligne, la Sheet
+        # afficherait la nouvelle version sans qu'aucun blocage soit réellement appliqué.
+        fb_sync_license(key, user, status, new_ver)
+        return True, user
+    except Exception as e:
+        return False, str(e)
+
+
+def find_license_row(key):
+    """Retourne (nom_client, statut) pour une clé, ou (None, None) si introuvable."""
+    try:
+        sheet = get_sheet()
+        cell = sheet.find(key)
+        if not cell: return None, None
+        return (sheet.cell(cell.row, COL_USER).value or "",
+                sheet.cell(cell.row, COL_STATUS).value or "")
+    except Exception:
+        return None, None
+
+
 def escape_md(text):
     """(#40) Échappe les caractères spéciaux Markdown (Telethon parse par défaut) avant
     d'injecter du texte non fiable (message client) dans un event.reply() -- sinon un *,
@@ -999,6 +1094,65 @@ async def main_handler(event):
             
         except Exception as e: await event.reply(f"❌ Crash: {e}")
 
+    # A-ter. (#64) Paquet de MISE A JOUR pour un client existant (/maj CLE [force])
+    elif msg.lower().startswith("/maj"):
+        try:
+            parts = msg.split()
+            if len(parts) < 2:
+                await event.reply("❌ Usage: `/maj CLE [force]`\n"
+                                  "Envoie le ZIP de mise à jour (exe seul, sans settings.json).\n"
+                                  "`force` bloque en plus son ancienne version au démarrage.")
+                return
+
+            key = parts[1].strip()
+            do_force = len(parts) > 2 and parts[2].lower() == "force"
+
+            client_name, status = await asyncio.to_thread(find_license_row, key)
+            if client_name is None:
+                await event.reply(f"❌ Clé `{key}` introuvable dans la Sheet.")
+                return
+
+            zip_buf, zip_name, exe_included = generate_update_package(client_name)
+            if not exe_included:
+                await event.reply(f"❌ `{EXE_FILENAME}` absent du VPS : rien à envoyer.\n"
+                                  f"Dépose-le à côté de `admin_license_bot_V3.py`.")
+                return
+
+            ver = exe_version_from_filename()
+            forced_txt = ""
+            if do_force:
+                # Le blocage n'est posé QU'APRÈS la construction du ZIP : inutile de couper
+                # l'accès à un client si l'exe n'était même pas disponible à l'envoi.
+                if not ver:
+                    await event.reply(f"⚠️ Version illisible dans `{EXE_FILENAME}`, "
+                                      f"`force` ignoré. Le ZIP part quand même.")
+                else:
+                    ok, res = await sheet_write(set_client_version, key, ver)
+                    forced_txt = (f"\n🔒 Version minimale passée à **{ver}** : son ancien exe "
+                                  f"refusera de démarrer."
+                                  if ok else f"\n⚠️ Blocage non appliqué : {res}")
+
+            await event.reply(
+                f"📦 **PAQUET DE MISE À JOUR**\n"
+                f"👤 Client : {client_name}\n"
+                f"🔑 Clé : `{key}`\n"
+                f"📋 Statut : {status}\n"
+                f"🆕 Version : **{ver or '?'}**\n\n"
+                f"Le ZIP contient :\n"
+                f"  • `{EXE_FILENAME}`\n"
+                f"  • `LIRE_MOI_MAJ.txt`\n\n"
+                f"⚠️ **Pas de `settings.json`**, volontairement : le client garde sa clé, "
+                f"ses identifiants et son appairage Telegram.{forced_txt}")
+
+            await event.client.send_file(
+                event.chat_id, zip_buf,
+                attributes=[DocumentAttributeFilename(zip_name)],
+                force_document=True,
+                caption=f"🆕 Mise à jour {ver or ''} pour {client_name}")
+
+        except Exception as e:
+            await event.reply(f"❌ Crash: {e}")
+
     # A-bis. (#7) Changer le pack d'un client EXISTANT à distance (/channels CLE profil|canaux)
     elif msg.lower().startswith("/channels"):
         try:
@@ -1527,6 +1681,8 @@ async def main_handler(event):
                           "`/ban Clé confirm` : Bloquer accès (confirmation requise)\n"
                           "`/unban Clé` : Réactive sans toucher à la date (contrairement à /time)\n"
                           "`/del Clé confirm` : Supprimer ligne (⚠️ définitif, confirmation requise)\n"
+                          "`/maj Clé` : Envoie le ZIP de mise à jour (exe seul, garde ses réglages)\n"
+                          "`/maj Clé force` : Idem + bloque son ancienne version au démarrage\n"
                           "`/set_ver Version` : Changer version min par défaut (prochaines clés /gen)\n"
                           "`/push_ver VersionX confirm` : Forcer TOUS les clients actifs en VersionX (confirmation requise)\n"
                           "`/search Terme` : Recherche terme dans licences\n\n\n"
