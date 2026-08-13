@@ -3212,6 +3212,68 @@ def calculate_pips(symbol: str, price_diff: float) -> float:
     
     return (price_diff / pt) / div
 
+async def get_equity_curve(days=30, start_date_custom=None, max_points=180):
+    """(#65) Courbe de BALANCE du compte sur la période, pour le graphique de l'onglet Global.
+
+    Reconstruite depuis l'historique MT5 (et non depuis trades_detailed.csv) : c'est la seule
+    source qui couvre TOUT le compte -- trades du bot, trades manuels, et l'antériorité à
+    l'installation. La courbe est donc déjà remplie au premier lancement.
+
+    Méthode : on somme les mouvements de la période, on en déduit la balance de DÉPART
+    (balance actuelle - total), puis on rejoue les journées en avançant. Partir de la balance
+    actuelle et remonter évite d'avoir à connaître un capital initial, que MT5 n'expose pas.
+
+    Balance RÉALISÉE : les positions ouvertes ne sont pas comptées, la courbe ne bouge qu'à la
+    clôture. Les dépôts/retraits sont en revanche inclus, sinon la courbe ne correspondrait
+    plus au solde réel affiché par MT5.
+
+    Retourne [{"d": "2026-08-13", "v": 10236.69}, ...] trié par date, [] si indisponible.
+    """
+    end_date = datetime.now()
+    start_date = start_date_custom if start_date_custom else (end_date - timedelta(days=days))
+
+    acc = await run_mt5(mt5.account_info)
+    if acc is None:
+        return []
+    balance_now = float(acc.balance)
+
+    history = await run_mt5(mt5.history_deals_get, start_date, end_date)
+
+    per_day = {}
+    total = 0.0
+    for deal in (history or []):
+        amount = deal.profit + deal.swap + deal.commission
+        if amount == 0:
+            continue
+        day = datetime.fromtimestamp(deal.time).strftime("%Y-%m-%d")
+        per_day[day] = per_day.get(day, 0.0) + amount
+        total += amount
+
+    balance_start = balance_now - total
+    points = [{"d": start_date.strftime("%Y-%m-%d"), "v": round(balance_start, 2)}]
+    running = balance_start
+    for day in sorted(per_day):
+        running += per_day[day]
+        points.append({"d": day, "v": round(running, 2)})
+
+    # Point final à aujourd'hui : sans lui, une courbe dont le dernier trade date d'une semaine
+    # s'arrêterait au milieu du graphique, ce qui se lit comme un arrêt d'activité.
+    today = end_date.strftime("%Y-%m-%d")
+    if points[-1]["d"] != today:
+        points.append({"d": today, "v": round(balance_now, 2)})
+
+    # Sous-échantillonnage pour "Max" (des années de trading = des milliers de points, illisible
+    # et lourd à pousser). Les extrémités sont toujours conservées : ce sont elles qui portent la
+    # performance affichée sous le graphique.
+    if len(points) > max_points:
+        stride = len(points) / float(max_points - 1)
+        kept = [points[int(i * stride)] for i in range(max_points - 1)]
+        kept.append(points[-1])
+        points = kept
+
+    return points
+
+
 async def get_historical_stats(days=30, start_date_custom=None):
     from datetime import datetime, timedelta
     end_date = datetime.now()
@@ -5572,14 +5634,18 @@ async def handle_firebase_command(cmd_id: str, cmd_data: dict) -> None:
                 monday = monday.replace(hour=0, minute=0, second=0, microsecond=0)
                 stats = await get_historical_stats(start_date_custom=monday)
                 chan_stats = await run_bg(get_channel_stats_period, start_date_custom=monday)
+                curve = await get_equity_curve(start_date_custom=monday)
             else:
                 days_int = 9999 if days == "all" else int(days)
                 stats = await get_historical_stats(days=days_int)
                 chan_stats = await run_bg(get_channel_stats_period, days=days_int)
+                curve = await get_equity_curve(days=days_int)
             if firebase_sync._firebase_initialized:
                 payload_push = {}
                 if stats:
                     payload_push[f"global_period_{days}"] = firebase_sync._safe(stats)
+                # (#65) Courbe de balance de la MÊME période, pour le graphique sous les 4 cases.
+                payload_push[f"equity_curve_{days}"] = firebase_sync._safe(curve)
                 # (#stats) Stats par canal sur la même période que l'onglet Global. Poussé
                 # même si vide : un dict vide est une réponse légitime (aucun trade sur la
                 # période) et le dashboard doit pouvoir l'afficher plutôt que rester bloqué
@@ -5627,6 +5693,7 @@ async def _firebase_push_stats_loop(user_id: str) -> None:
                     "global_period_30": firebase_sync._safe(stats_30d),
                     "channels_period_30": firebase_sync._safe(
                         {c: v for c, v in chan_30.items() if channel_allowed(c)}),
+                    "equity_curve_30": firebase_sync._safe(await get_equity_curve(days=30)),
                 })
         except asyncio.CancelledError:
             break

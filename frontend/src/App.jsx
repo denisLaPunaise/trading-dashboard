@@ -65,6 +65,120 @@ const AnimatedNumber = ({ value, duration = 800, prefix = '' }) => {
   return <>{prefix}{displayValue.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</>;
 };
 
+// (#65) Courbe d'évolution du portefeuille, sous les 4 cases de l'onglet Global.
+// SVG écrit à la main plutôt qu'une librairie de graphiques : le bundle dépasse déjà 870 Ko et
+// une seule courbe ne justifie pas une dépendance de plus. `points` vient du bot :
+// [{d: "2026-08-13", v: 10236.69}, ...], balance réalisée reconstruite depuis l'historique MT5.
+const EquityChart = ({ points, loading }) => {
+  const [hover, setHover] = useState(null);
+
+  if (loading) return null;
+  if (!Array.isArray(points) || points.length < 2) {
+    return (
+      <div style={{ background: '#1e1e1e', borderRadius: '12px', border: '1px solid #333',
+                    padding: '30px', textAlign: 'center', color: '#666', fontSize: '0.85rem' }}>
+        Pas encore assez d'historique pour tracer une courbe sur cette période.
+      </div>
+    );
+  }
+
+  const values = points.map((p) => p.v);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  // Marge de 8 % en haut et en bas, et garde-fou sur une courbe parfaitement plate (max === min
+  // donnerait une division par zéro, donc des coordonnées NaN et un tracé invisible).
+  const span = (max - min) || Math.max(Math.abs(max) * 0.01, 1);
+  const pad = span * 0.08;
+  const lo = min - pad;
+  const hi = max + pad;
+
+  const W = 1000;
+  const H = 260;
+  const x = (i) => (i / (points.length - 1)) * W;
+  const y = (v) => H - ((v - lo) / (hi - lo)) * H;
+
+  const line = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${x(i).toFixed(1)},${y(p.v).toFixed(1)}`).join(' ');
+  const area = `${line} L${W},${H} L0,${H} Z`;
+
+  const first = values[0];
+  const last = values[values.length - 1];
+  const delta = last - first;
+  const pct = first !== 0 ? (delta / Math.abs(first)) * 100 : 0;
+  const up = delta >= 0;
+  const color = up ? '#00e676' : '#ff4444';
+  const gradId = up ? 'eqUp' : 'eqDown';
+
+  const eur = (v) => v.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const shortDate = (d) => {
+    const [, m, day] = String(d).split('-');
+    return day && m ? `${day}/${m}` : d;
+  };
+
+  // Le survol travaille en pourcentage de largeur : le SVG est étiré en CSS, donc les
+  // coordonnées de l'événement ne correspondent pas au repère interne du viewBox.
+  const onMove = (e) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const ratio = Math.min(Math.max((clientX - r.left) / r.width, 0), 1);
+    setHover(Math.round(ratio * (points.length - 1)));
+  };
+
+  const hp = hover !== null ? points[hover] : null;
+
+  return (
+    <div style={{ background: '#1e1e1e', borderRadius: '12px', border: '1px solid #333', padding: '18px 16px 12px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '14px' }}>
+        <div>
+          <div style={{ color: '#888', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '1px' }}>
+            Évolution du portefeuille
+          </div>
+          <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: '#fff', marginTop: '6px' }}>
+            {eur(hp ? hp.v : last)} €
+          </div>
+        </div>
+        <div style={{ textAlign: 'right' }}>
+          <div style={{ color, fontWeight: 'bold', fontSize: '1rem' }}>
+            {up ? '+' : ''}{eur(delta)} €
+          </div>
+          <div style={{ color, fontSize: '0.8rem' }}>
+            {up ? '+' : ''}{pct.toFixed(2)} %
+          </div>
+        </div>
+      </div>
+
+      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none"
+           style={{ width: '100%', height: '150px', display: 'block', touchAction: 'pan-y' }}
+           onMouseMove={onMove} onMouseLeave={() => setHover(null)}
+           onTouchStart={onMove} onTouchMove={onMove} onTouchEnd={() => setHover(null)}>
+        <defs>
+          <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={color} stopOpacity="0.35" />
+            <stop offset="100%" stopColor={color} stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        <path d={area} fill={`url(#${gradId})`} />
+        {/* vectorEffect : sans lui, preserveAspectRatio="none" étire aussi l'épaisseur du trait */}
+        <path d={line} fill="none" stroke={color} strokeWidth="2"
+              vectorEffect="non-scaling-stroke" strokeLinejoin="round" strokeLinecap="round" />
+        {hp && (
+          <>
+            <line x1={x(hover)} y1="0" x2={x(hover)} y2={H} stroke="#666" strokeWidth="1"
+                  strokeDasharray="4 4" vectorEffect="non-scaling-stroke" />
+            <circle cx={x(hover)} cy={y(hp.v)} r="4" fill={color} stroke="#1e1e1e" strokeWidth="2"
+                    vectorEffect="non-scaling-stroke" />
+          </>
+        )}
+      </svg>
+
+      <div style={{ display: 'flex', justifyContent: 'space-between', color: '#666', fontSize: '0.7rem', marginTop: '8px' }}>
+        <span>{shortDate(points[0].d)}</span>
+        {hp && <span style={{ color: '#aaa' }}>{shortDate(hp.d)}</span>}
+        <span>{shortDate(points[points.length - 1].d)}</span>
+      </div>
+    </div>
+  );
+};
+
 function App() {
   const [dashboardData, setDashboardData] = useState(null)
   const [error, setError] = useState(null)
@@ -214,8 +328,10 @@ function App() {
     // (#stats) Source unique des stats par canal : le CSV détaillé du bot, réagrégé sur la
     // période choisie. Il n'y a plus de cumul "lifetime" séparé -- "Max" joue ce rôle.
     const channelsPeriod = dashboardData[`channels_period_${channelPeriod}`] || null;
-    setHistoricalStats({ global_period: period || null,
-                         week_period: weekPeriod, channels_period: channelsPeriod });
+    // (#65) Courbe de balance, poussée par le bot avec les stats de la même période.
+    const equityCurve = dashboardData[`equity_curve_${globalPeriod}`] || null;
+    setHistoricalStats({ global_period: period || null, week_period: weekPeriod,
+                         channels_period: channelsPeriod, equity_curve: equityCurve });
     if (period) setIsLoadingStats(false);
   }, [dashboardData, globalPeriod, channelPeriod]);
 
@@ -1644,6 +1760,9 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
                   </div>
                 </div>
               </div>
+
+              {/* (#65) ÉVOLUTION DU PORTEFEUILLE sur la période sélectionnée */}
+              <EquityChart points={historicalStats?.equity_curve} loading={isLoadingStats} />
             </div>
           )}
 
