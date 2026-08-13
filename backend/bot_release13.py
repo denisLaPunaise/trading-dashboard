@@ -1568,8 +1568,14 @@ def get_channel_stats_period(days=30, start_date_custom=None):
                 if closed_at < cutoff:
                     continue
                 src = normalize_channel_source(row.get("Source"))
-                if not src or src == "MANUEL/INCONNU":
+                if not src:
                     continue
+                # (#stats) Un trade ouvert à la main dans MT5, ou dont le canal d'origine a été
+                # perdu (redémarrage avant l'écriture d'active_sources.json), est rattaché au
+                # canal PERSO plutôt qu'ignoré : ce sont de vraies positions du compte, avec un
+                # vrai résultat, elles doivent apparaître quelque part.
+                if src == "MANUEL/INCONNU":
+                    src = "CANAL PERSO"
                 entry = out.setdefault(src, {"count": 0, "positions": 0, "profit": 0.0,
                                              "pips": 0.0, "avg_pips": 0.0})
                 entry["positions"] += 1
@@ -3066,13 +3072,14 @@ async def check_closed_positions():
             except Exception:
                 pass
 
-            if source != "MANUEL/INCONNU":
-                # Plus rien à cumuler ici : la ligne écrite juste en dessous dans
-                # trades_detailed.csv est la seule trace, et get_channel_stats_period() la
-                # réagrège à la demande sur la période choisie.
-                del ACTIVE_TRADE_SOURCES[t]
-                TP1_PRICE_BY_TICKET.pop(t, None)
-                await run_bg(save_channel_data)
+            # Plus rien à cumuler ici : la ligne écrite juste en dessous dans
+            # trades_detailed.csv est la seule trace, et get_channel_stats_period() la réagrège
+            # à la demande sur la période choisie. Le nettoyage est inconditionnel (.pop) : un
+            # trade sans source connue n'a rien à supprimer dans ACTIVE_TRADE_SOURCES, mais
+            # laissait auparavant traîner son entrée dans TP1_PRICE_BY_TICKET.
+            ACTIVE_TRADE_SOURCES.pop(t, None)
+            TP1_PRICE_BY_TICKET.pop(t, None)
+            await run_bg(save_channel_data)
 
             # --- 👇 GENERATION DU FICHIER CSV DETAILLE 👇 ---
             duration = exit.time - entry.time
