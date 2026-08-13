@@ -41,3 +41,6 @@ chaque partie : un suffixe (`-beta`, `_test`…) lève une `ValueError` avalée 
 - **V15.2.0** — graphique d'évolution du portefeuille dans l'onglet Global, trades manuels
   rattachés au canal PERSO. Côté bot de licence (pas de rebuild) : commande `/maj` et
   correctif de la conversion en date par Google Sheets.
+- **V15.2.1** — courbe du portefeuille : la dotation initiale d'un compte prop (deal de type
+  BALANCE) était comptée comme un mouvement, la courbe démarrait donc au solde d'avant
+  financement puis bondissait à la dotation.

@@ -150,7 +150,7 @@ SECURITY_PIN = str(secrets.randbelow(900000) + 100000)
 # ==========================================
 # 🔐 CONFIGURATION DISTRIBUTION (LICENCE)
 # ==========================================
-VERSION_BOT = "15.2.0"
+VERSION_BOT = "15.2.1"
 # (URL_LICENCE retire — licence verifiee via Firestore, Phase 4)
 
 # ==========================================
@@ -3224,8 +3224,13 @@ async def get_equity_curve(days=30, start_date_custom=None, max_points=180):
     actuelle et remonter évite d'avoir à connaître un capital initial, que MT5 n'expose pas.
 
     Balance RÉALISÉE : les positions ouvertes ne sont pas comptées, la courbe ne bouge qu'à la
-    clôture. Les dépôts/retraits sont en revanche inclus, sinon la courbe ne correspondrait
-    plus au solde réel affiché par MT5.
+    clôture.
+
+    (#65) Seuls les deals de TRADING sont comptés. La dotation initiale d'un compte prop est un
+    deal de type BALANCE, exactement comme un dépôt : l'inclure faisait démarrer la courbe au
+    solde d'AVANT le financement (≈ 0, à quelques euros de frais près), suivi d'un bond vertical
+    jusqu'à la dotation qui écrasait toute la performance en une ligne plate. En l'excluant, la
+    courbe part du capital réellement disponible au début de la période.
 
     Retourne [{"d": "2026-08-13", "v": 10236.69}, ...] trié par date, [] si indisponible.
     """
@@ -3242,6 +3247,10 @@ async def get_equity_curve(days=30, start_date_custom=None, max_points=180):
     per_day = {}
     total = 0.0
     for deal in (history or []):
+        # Dotation, dépôts, retraits, crédits, corrections : ce sont des mouvements de compte,
+        # pas des résultats de trading. Ils ne doivent pas dessiner de marche dans la courbe.
+        if deal.type not in (mt5.DEAL_TYPE_BUY, mt5.DEAL_TYPE_SELL):
+            continue
         amount = deal.profit + deal.swap + deal.commission
         if amount == 0:
             continue
