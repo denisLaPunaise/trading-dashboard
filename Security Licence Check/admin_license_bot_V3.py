@@ -405,6 +405,38 @@ def escape_md(text):
     return text
 
 
+VERSION_RE = re.compile(r"^\d+(?:\.\d+){0,3}$")
+
+
+def sheet_text(value):
+    """(#63) Force Google Sheets à stocker la valeur comme du TEXTE.
+
+    gspread écrit en valueInputOption=USER_ENTERED, donc Sheets interprète la saisie comme si
+    elle était tapée à la main : "15.1.0" est lu comme une date (15 janvier de l'an 0) et
+    stocké comme tel, puis réaffiché "15.1.2000" dans une locale JJ.MM.AAAA. L'apostrophe de
+    tête est la convention Sheets pour « ceci est du texte » ; elle n'apparaît ni dans la
+    cellule ni à la relecture."""
+    s = str(value or "").strip()
+    return ("'" + s) if s else s
+
+
+def parse_version_cell(raw, default="7.2"):
+    """(#63) Valide une version relue de la Sheet. Retourne (version, erreur_ou_None).
+
+    Une cellule convertie en date par Sheets se relit "15.1.2000" : la forme reste valide, mais
+    aucun numéro de version n'a un segment >= 1900. Sans ce garde-fou, cette valeur partait dans
+    le ver_min Firestore d'un nouveau client, qui se voyait alors refusé au démarrage pour
+    version obsolète (0 < 2000)."""
+    s = str(raw or "").strip().lstrip("'")
+    if not s:
+        return default, None
+    if not VERSION_RE.match(s):
+        return default, f"format inattendu : {s!r}"
+    if any(int(p) >= 1900 for p in s.split(".")):
+        return default, f"valeur convertie en date par Google Sheets : {s!r}"
+    return s, None
+
+
 def sheet_safe(value):
     """(#39) Préfixe d'une apostrophe toute valeur commençant par =/+/-/@ avant écriture dans
     la Sheet -- ces caractères sont interprétés comme le début d'une formule par Google Sheets.
@@ -584,7 +616,11 @@ def get_current_default_version():
         val = sheet.cell(ROW_CONFIG_VER, COL_CONFIG_VER).value
         # Si vide, on renvoie une valeur de sécurité
         if not val: return "7.2"
-        return val.strip()
+        version, err = parse_version_cell(val)
+        if err:
+            print(f"⚠️ VERSION_MIN_DEFAUT (H2) inutilisable -- {err}. Repli sur {version}. "
+                  f"Relance `/set_ver <version>` pour réparer la case.")
+        return version
     except: return "7.2"
 
 def set_default_version(new_ver):
@@ -593,8 +629,8 @@ def set_default_version(new_ver):
         sheet = get_sheet()
         # On écrit dans H1 le titre pour que tu t'y retrouves visuellement
         sheet.update_cell(1, COL_CONFIG_VER, "VERSION_MIN_DEFAUT")
-        # On écrit la version dans H2
-        sheet.update_cell(ROW_CONFIG_VER, COL_CONFIG_VER, new_ver)
+        # On écrit la version dans H2, en TEXTE (sinon Sheets la convertit en date)
+        sheet.update_cell(ROW_CONFIG_VER, COL_CONFIG_VER, sheet_text(new_ver))
         return True
     except Exception as e: return False
     
@@ -607,8 +643,13 @@ def add_license_row(user, key, days=None, allowed_channels=None):
         if sheet.find(key): return False, "Clé existe déjà !", None, None  # (#34) 4-tuple, comme tous les autres retours
 
         # 1. On récupère la version depuis le Sheet (H2)
-        version_to_use = sheet.cell(ROW_CONFIG_VER, COL_CONFIG_VER).value
-        if not version_to_use: version_to_use = "7.2" # Sécurité
+        # (#63) Même garde-fou que get_current_default_version() : une case H2 convertie en date
+        # par Sheets partait telle quelle dans le ver_min Firestore du nouveau client, qui se
+        # retrouvait bloqué au démarrage pour "version obsolète".
+        version_to_use, ver_err = parse_version_cell(sheet.cell(ROW_CONFIG_VER, COL_CONFIG_VER).value)
+        if ver_err:
+            print(f"⚠️ /gen : VERSION_MIN_DEFAUT (H2) inutilisable -- {ver_err}. "
+                  f"Repli sur {version_to_use}.")
 
         # 2. Calcul date fin
         date_fin = ""
@@ -618,7 +659,7 @@ def add_license_row(user, key, days=None, allowed_channels=None):
 
         # 3. On inscrit la ligne avec la version dynamique + le pack (#26, colonne G)
         pack_text = channels_to_pack_text(allowed_channels)
-        row_data = [user, key, "ACTIVE", version_to_use, "", date_fin, pack_text]
+        row_data = [user, key, "ACTIVE", sheet_text(version_to_use), "", date_fin, pack_text]
         sheet.append_row(row_data)
         fb_sync_license(key, user, "ACTIVE", version_to_use, "", date_fin, allowed_channels=allowed_channels or [])
         # 4. Création du compte Firebase Auth pour ce client (clé neuve -> force sans effet)
@@ -784,7 +825,7 @@ def push_version_to_all(new_ver):
             key = row[1] if len(row) > 1 else ""
             user = row[0] if len(row) > 0 else ""
             try:
-                sheet.update_cell(i, COL_VER, new_ver)
+                sheet.update_cell(i, COL_VER, sheet_text(new_ver))
                 # (#33) Le bot client ne lit ver_min QUE depuis Firestore (jamais la Sheet) --
                 # sans cette ligne, la Sheet affichait la nouvelle version mais aucun client
                 # n'était réellement forcé de mettre à jour.
@@ -1350,7 +1391,14 @@ async def main_handler(event):
                 await event.reply(f"ℹ️ Version actuelle par défaut : **{current}**")
                 return
             
-            new_ver = parts[1]
+            new_ver = parts[1].strip().lstrip("'")
+            # (#63) Un suffixe non numérique ("15.1.0-beta") ferait lever is_version_older()
+            # côté client, dont le `except: return False` désactive alors SILENCIEUSEMENT tout
+            # le blocage de version. On refuse en amont plutôt que de le découvrir trop tard.
+            if not VERSION_RE.match(new_ver):
+                await event.reply(f"❌ Version invalide : `{new_ver}`\nAttendu : uniquement des "
+                                  f"chiffres et des points, par exemple `15.1.0`.")
+                return
             await event.reply("⏳ Mise à jour de la config...")
             
             success = await sheet_write(set_default_version, new_ver)
@@ -1427,7 +1475,13 @@ async def main_handler(event):
             if len(parts) < 2:
                 await event.reply("❌ Usage: `/push_ver VersionX confirm`")
                 return
-            new_ver = parts[1]
+            new_ver = parts[1].strip().lstrip("'")
+            # (#63) cf. /set_ver : une version non numérique désactive silencieusement le
+            # blocage côté client. Ici l'enjeu est pire, la commande touche TOUS les clients.
+            if not VERSION_RE.match(new_ver):
+                await event.reply(f"❌ Version invalide : `{new_ver}`\nAttendu : uniquement des "
+                                  f"chiffres et des points, par exemple `15.1.0`.")
+                return
             # (#45) Action groupée irréversible (touche TOUS les clients actifs) -- confirmation
             # explicite exigée, comme /ban et /del.
             if len(parts) < 3 or parts[2].lower() != "confirm":
