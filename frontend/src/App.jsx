@@ -556,6 +556,18 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
   // (#7) Pack du client : on n'affiche que les canaux de son pack (réglages, mute, stats).
   // Liste vide/absente = tout afficher (rétro-compatible). Filtre purement cosmétique.
   const allowedChannels = settings.allowed_channels || [];
+  // (#ui) Les prix débordaient sur la colonne du gain : un toFixed(4) sur une paire JPY
+  // (195.1234) ou un indice fait 7 chiffres ou plus. On plafonne à 6 chiffres au total, point
+  // exclu, en rognant uniquement sur les décimales -- la partie entière n'est jamais tronquée,
+  // sinon le prix devient faux et non plus seulement imprécis.
+  const MAX_PRICE_DIGITS = 6;
+  const fmtPrice = (value) => {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return '—';
+    const intDigits = Math.trunc(Math.abs(n)).toString().length;
+    return n.toFixed(Math.max(0, MAX_PRICE_DIGITS - intDigits));
+  };
+
   const channelBaseToken = (name) => {
     if (!name) return '';
     let t = String(name).toUpperCase().replace('CANAL', '').trim().replace(/\s+/g, '_').replace(/_+/g, '_');
@@ -887,10 +899,6 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
             <div style={{ textAlign: 'center', padding: '30px', color: '#666', background: '#1e1e1e', borderRadius: '10px' }}>Aucune position.</div>
           ) : (
             displayedTrades.map((trade, index) => {
-              // Logique pour le nombre de chiffres après la virgule
-              const isCryptoOrGold = trade.symbol.includes('BTC') || trade.symbol.includes('XAU');
-              const dec = isCryptoOrGold ? 0 : 4;
-
               return (
               <div key={trade.ticket} style={{ 
                 background: trade.managed ? '#1e1e1e' : 'rgba(33, 150, 243, 0.1)', 
@@ -921,8 +929,8 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
                   
                   {/* Prix formatés dynamiquement */}
                   <div style={{ fontSize: '0.65rem', color: '#888', lineHeight: '1.4', whiteSpace: 'nowrap' }}>
-                    Ouv: {Number(trade.open_price).toFixed(dec)} | Act: <span style={{ color: '#fff' }}>{Number(trade.current_price).toFixed(dec)}</span><br />
-                    SL: {trade.sl > 0 ? Number(trade.sl).toFixed(dec) : "Aucun"} | TP: {trade.tp > 0 ? Number(trade.tp).toFixed(dec) : "Aucun"}
+                    Ouv: {fmtPrice(trade.open_price)} | Act: <span style={{ color: '#fff' }}>{fmtPrice(trade.current_price)}</span><br />
+                    SL: {trade.sl > 0 ? fmtPrice(trade.sl) : "Aucun"} | TP: {trade.tp > 0 ? fmtPrice(trade.tp) : "Aucun"}
                   </div>
                 </div>
 
