@@ -35,3 +35,9 @@ chaque partie : un suffixe (`-beta`, `_test`…) lève une `ValueError` avalée 
 - **V15.0.0** — audit sécurité v2 (issues #46-#62). Deux builds portent ce nom : le
   PyInstaller d'origine (36,7 Mo, conservé en `.pyinstaller.bak.exe`) et le premier build
   Nuitka (33,1 Mo). C'est cette collision qui a motivé la convention.
+- **V15.1.0** — stats par canal fiabilisées (source unique `trades_detailed.csv`, moyenne
+  pips/trade, comptage par signal), reprise d'historique via `stats_seed.json`, partiel 30 %
+  MDT VIP, bouton Dashboard automatique. Jamais distribuée.
+- **V15.2.0** — graphique d'évolution du portefeuille dans l'onglet Global, trades manuels
+  rattachés au canal PERSO. Côté bot de licence (pas de rebuild) : commande `/maj` et
+  correctif de la conversion en date par Google Sheets.

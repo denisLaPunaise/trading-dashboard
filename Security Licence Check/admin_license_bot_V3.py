@@ -244,7 +244,7 @@ ROW_CONFIG_VER = 2 # Ligne Config Version min
 # ── Package client ────────────────────────────────────────────────────────────
 # (#30) Nom du produit distribué au client (exe, ZIP, textes) -- renommé depuis "Bot FTMO"
 PRODUCT_NAME = "Kairos"
-EXE_FILENAME = "Kairos_V15.1.0.exe"
+EXE_FILENAME = "Kairos_V15.2.0.exe"
 # Chemin vers le .exe compilé (à mettre à jour à chaque nouvelle version)
 BOT_EXE_PATH = os.path.join(os.path.dirname(__file__), EXE_FILENAME)
 # Fichier texte d'installation fourni dans chaque ZIP client (cf. generate_client_package)
