@@ -150,7 +150,7 @@ SECURITY_PIN = str(secrets.randbelow(900000) + 100000)
 # ==========================================
 # 🔐 CONFIGURATION DISTRIBUTION (LICENCE)
 # ==========================================
-VERSION_BOT = "15.2.1"
+VERSION_BOT = "15.2.2"
 # (URL_LICENCE retire — licence verifiee via Firestore, Phase 4)
 
 # ==========================================
@@ -1016,6 +1016,16 @@ def parse_signal(raw_text, channel_id=None):
     # ==========================================
     # 🧠 PARTIE 4 : MODULES CLASSIQUES (MDT VIP, MDT FREE)
     # ==========================================
+    # (#67) Le CANAL D'ORIGINE fait foi. Avant, l'attribution VIP/FREE se déduisait uniquement
+    # du FORMAT du message : prix collé à l'action -> VIP, prix introduit par À/@ -> FREE. Le
+    # jour où MDT FREE a cessé d'écrire le "À", tous ses signaux ont donc basculé en VIP --
+    # avec le risque % de VIP, sa gestion (filet 60 pips + partiel 30 %) et ses stats.
+    # Le format ne sert plus qu'à EXTRAIRE symbole/action/prix, plus à décider du canal.
+    mdt_source = None
+    if channel_id == ID_MDT_VIP:
+        mdt_source = "CANAL MDT_VIP"
+    elif channel_id == ID_MDT_FREE:
+        mdt_source = "CANAL MDT_FREE"
     # SL lu sur le texte BRUT (pas le texte nettoyé) : un message édité peut afficher
     # "SL : 3992 3987" (ancienne valeur barrée + nouvelle soulignée) -- clean_text() fusionnerait
     # les deux nombres espacés en un seul bloc illisible (ex: "39923987"). On relit donc ici sur
@@ -1039,7 +1049,7 @@ def parse_signal(raw_text, channel_id=None):
             act_raw = m1.group(2).upper()
             price = m1.group(3)
             action = "ACHAT" if "ACHAT" in act_raw or "BUY" in act_raw else "VENTE"
-            return rsym, action, price, sl, tp, "CANAL MDT_VIP" # <-- NOUVEAU NOM
+            return rsym, action, price, sl, tp, mdt_source or "CANAL MDT_VIP"
 
     # Format 3 (nouveau format MDT_FREE, 2026-07) : "SYMBOLE ACTION[-LIMIT/-STOP] À PRIX"
     # ex: "XAUUSD SELL-LIMIT À 4055", "XAUUSD BUY À 3997"
@@ -1049,7 +1059,7 @@ def parse_signal(raw_text, channel_id=None):
         act_raw = m3.group(2).upper()
         price = m3.group(3)
         action = "ACHAT" if "ACHAT" in act_raw or "BUY" in act_raw else "VENTE"
-        return rsym, action, price, sl, tp, "CANAL MDT_FREE"
+        return rsym, action, price, sl, tp, mdt_source or "CANAL MDT_FREE"
 
     # Format 2
     m2 = REGEX_F2_ENTRY.search(text)
@@ -1064,7 +1074,7 @@ def parse_signal(raw_text, channel_id=None):
         if m_hash_sym:
             rsym = m_hash_sym.group(1).upper()
         action = "ACHAT" if "ACHAT" in act_raw or "BUY" in act_raw else "VENTE"
-        return rsym, action, price, sl, tp, "CANAL MDT_FREE" # <-- NOUVEAU NOM
+        return rsym, action, price, sl, tp, mdt_source or "CANAL MDT_FREE"
 
     return None, None, None, None, None, None
     
