@@ -1031,7 +1031,22 @@ def parse_signal(raw_text, channel_id=None):
     # les deux nombres espacés en un seul bloc illisible (ex: "39923987"). On relit donc ici sur
     # raw_text et on garde le DERNIER nombre trouvé après SL/STOP (= la valeur à jour).
     m_sl_raw = re.search(r"(?:SL|STOP)\s*[:=]?[ \t]*([\d.,]+)(?:[ \t]+([\d.,]+))?", raw_text, re.IGNORECASE)
-    sl = (m_sl_raw.group(2) or m_sl_raw.group(1)).replace(',', '.') if m_sl_raw else "0.0"
+    sl = "0.0"
+    if m_sl_raw:
+        sl_a = m_sl_raw.group(1).replace(',', '.')
+        sl_b = (m_sl_raw.group(2) or "").replace(',', '.')
+        if not sl_b:
+            sl = sl_a
+        elif "." not in sl_a and len(sl_b.split(".")[0]) == 3 and len(sl_a) <= 3:
+            # (#68) "SL : 53 770.0" -- l'espace est un SÉPARATEUR DE MILLIERS, pas deux valeurs.
+            # Garder le dernier nombre donnait un SL de 770 sur un US30 acheté à 53 879, soit
+            # aucune protection réelle. Observé en production le 2026-08-12 (ticket 517701435).
+            # Le motif est reconnaissable : 2e bloc de 3 chiffres exactement, 1er sans décimale
+            # et d'au plus 3 chiffres. Un message édité ("SL : 3992 3987" = ancienne valeur
+            # barrée + nouvelle) ne rentre pas dans ce moule, il garde donc la dernière valeur.
+            sl = sl_a + sl_b
+        else:
+            sl = sl_b
 
     # On cherche TOUS les TP dans le texte, et on prend le TOUT DERNIER (On force le : ou =)
     all_tps = re.findall(r"(?:TP|TARGET)\s*(?:\d+)?\s*[:=]\s*([\d\.,]+)", text, re.IGNORECASE)
@@ -5008,6 +5023,14 @@ async def main_handler(event):
                     action_taken = True
                 else:
                     await send_alert("⚠️ Commande reçue mais tickets introuvables (Déjà fermés ?).")
+                    # (#68) L'instruction A été comprise, il n'y avait simplement plus rien à
+                    # fermer. Sans cette trace, le journal affichait "INSTRUCTION NON COMPRISE",
+                    # ce qui laissait croire à un défaut de parsing lors de la relecture.
+                    if event.chat_id in (ID_MDT_VIP, ID_MDT_FREE):
+                        await run_bg(debug_mdt, "MDT_VIP" if event.chat_id == ID_MDT_VIP else "MDT_FREE",
+                                     f"ℹ️ ORDRE DE CLÔTURE COMPRIS mais plus aucun ticket ouvert "
+                                     f"parmi {tickets_to_manage} :\n{event.raw_text}")
+                    action_taken = True
 
             else:
                 # --- (#20) Clôture partielle (moitié explicite, ou "partiellement" sans %

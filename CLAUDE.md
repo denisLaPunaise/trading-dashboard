@@ -44,7 +44,11 @@ chaque partie : un suffixe (`-beta`, `_test`…) lève une `ValueError` avalée 
 - **V15.2.1** — courbe du portefeuille : la dotation initiale d'un compte prop (deal de type
   BALANCE) était comptée comme un mouvement, la courbe démarrait donc au solde d'avant
   financement puis bondissait à la dotation.
-- **V15.2.2** — les signaux MDT FREE étaient attribués à MDT VIP. Le canal se déduisait du
-  FORMAT du message (prix collé à l'action = VIP, prix après « À » = FREE) ; MDT FREE ayant
-  changé sa mise en forme, tout basculait en VIP. Le canal d'origine Telegram fait désormais
-  foi. Côté bot de licence (pas de rebuild) : détection auto de l'exe, apostrophe `/gen`.
+- **V15.2.2** — deux correctifs trouvés grâce à `debug_mdt.log` :
+  1. les signaux MDT FREE étaient attribués à MDT VIP. Le canal se déduisait du FORMAT du
+     message (prix collé à l'action = VIP, prix après « À » = FREE) ; MDT FREE ayant changé sa
+     mise en forme, tout basculait en VIP. Le canal d'origine Telegram fait désormais foi.
+  2. un espace comme séparateur de milliers (« SL : 53 770.0 ») était lu comme deux valeurs,
+     et la règle « garder la dernière » retenait **770**. Observé en production sur un US30
+     acheté à 53 879 (ticket 517701435), soit une position sans protection réelle.
+  Côté bot de licence (pas de rebuild) : détection auto de l'exe, apostrophe `/gen`.
