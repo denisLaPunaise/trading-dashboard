@@ -1,4 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
+# V15.2.3 — Zone SABR : prix abrege de 3 chiffres mal reconstruit
 # V15.2.2 — MDT FREE lu comme MDT VIP : le canal d'origine fait foi
 # V15.2.1 — Courbe portefeuille : exclusion de la dotation initiale
 # V15.2.0 — Graphique evolution du portefeuille, trades manuels rattaches a PERSO
@@ -42,7 +43,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='Kairos_V15.2.2',
+    name='Kairos_V15.2.3',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

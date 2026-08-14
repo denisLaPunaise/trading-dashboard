@@ -52,3 +52,7 @@ chaque partie : un suffixe (`-beta`, `_test`…) lève une `ValueError` avalée 
      et la règle « garder la dernière » retenait **770**. Observé en production sur un US30
      acheté à 53 879 (ticket 517701435), soit une position sans protection réelle.
   Côté bot de licence (pas de rebuild) : détection auto de l'exe, apostrophe `/gen`.
+  Ajouté ensuite : alerte au démarrage si le trading algorithmique est désactivé dans MT5.
+- **V15.2.3** — zone SABR : un prix abrégé de 3 chiffres était mal reconstruit.
+  `smart_adjust_price()` raisonnait toujours en centaines, donc « sell 4395-400 » donnait une
+  borne à 4600 au lieu de 4400. Elle s'aligne désormais sur le nombre de chiffres écrits.

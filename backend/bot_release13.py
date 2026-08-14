@@ -150,7 +150,7 @@ SECURITY_PIN = str(secrets.randbelow(900000) + 100000)
 # ==========================================
 # 🔐 CONFIGURATION DISTRIBUTION (LICENCE)
 # ==========================================
-VERSION_BOT = "15.2.2"
+VERSION_BOT = "15.2.3"
 # (URL_LICENCE retire — licence verifiee via Firestore, Phase 4)
 
 # ==========================================
@@ -805,38 +805,34 @@ def smart_adjust_price(ref_price_str, partial_price_str):
     """
     try:
         ref = float(ref_price_str)
-        part = float(partial_price_str)
+        part_str = str(partial_price_str).strip()
+        part = float(part_str)
 
-        # Si le prix partiel est déjà grand (ex: > 500), c'est sans doute un prix complet
-        if part > 500: return partial_price_str
-        
         # Si le prix partiel contient une virgule/point, c'est souvent un prix complet (ex: 1.05)
-        if "." in partial_price_str: return partial_price_str
+        if "." in part_str: return part_str
 
-        # --- LOGIQUE DES 3 CANDIDATS ---
-        # On cherche à quelle centaine appartient ce "bout" de prix
-        
-        # Base des centaines du prix de référence (ex: 5090 -> 5000)
-        base_hundreds = (int(ref) // 100) * 100
-        
-        # Candidat 1 : Dans la même centaine (5000 + 10 = 5010)
-        c0 = base_hundreds + part
-        
-        # Candidat 2 : Centaine suivante (5010 + 100 = 5110)
-        c_plus = c0 + 100
-        
-        # Candidat 3 : Centaine précédente (5010 - 100 = 4910)
-        c_minus = c0 - 100
-        
-        # On garde celui qui est le plus proche du prix de référence
-        candidates = [c0, c_plus, c_minus]
+        # (#70) L'abrégé est un SUFFIXE du prix de référence : on s'aligne sur le NOMBRE DE
+        # CHIFFRES écrits, pas sur une centaine codée en dur. L'ancienne version raisonnait
+        # toujours en centaines, ce qui marchait pour "4060-40" (2 chiffres) mais se trompait
+        # dès 3 chiffres : "4395-400" testait 4700/4800/4600 et retenait 4600, alors que le
+        # trader voulait 4400. Observé en production le 2026-08-14 (signal SABR VIP).
+        int_ref = str(abs(int(ref)))
+        int_part = part_str.lstrip("+-")
+        # Autant (ou plus) de chiffres que la référence -> c'est déjà un prix complet
+        if len(int_part) >= len(int_ref):
+            return part_str
+
+        step = 10 ** len(int_part)          # 2 chiffres -> 100, 3 chiffres -> 1000
+        base = (int(ref) // step) * step    # on remplace les N derniers chiffres du prix de réf
+        candidates = [base + part, base + part + step, base + part - step]
         best_price = min(candidates, key=lambda x: abs(x - ref))
-        
-        # Sécurité : Si l'écart est délirant (> 300 points), on ne touche à rien
-        if abs(best_price - ref) > 300:
-            return partial_price_str
-            
-        return str(best_price)
+
+        # Sécurité : un écart supérieur à la moitié du pas signifierait qu'aucun candidat ne
+        # colle vraiment -- on préfère alors ne rien inventer.
+        if abs(best_price - ref) > step / 2:
+            return part_str
+
+        return str(float(best_price))
 
     except:
         return partial_price_str
