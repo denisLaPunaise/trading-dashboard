@@ -5763,6 +5763,28 @@ async def main():
     logger.info(f"✔️ Terminal MT5 Connecté (Compte: {mt5.account_info().login})")
     client_status(f"✔️ MetaTrader 5 connecté (compte {mt5.account_info().login})")
 
+    # (#69) Sans "Trading algorithmique" coché dans MT5, la connexion réussit, les signaux
+    # arrivent, mais CHAQUE ordre est rejeté (retcode 10027). Le client voyait un bot qui
+    # démarre normalement puis échoue en silence sur tous ses trades, sans indice sur la cause.
+    try:
+        term = mt5.terminal_info()
+        if term is not None and not term.trade_allowed:
+            logger.critical("❌ Trading algorithmique DÉSACTIVÉ dans MetaTrader 5.")
+            client_status(
+                "\n" + "█" * 65 + "\n" +
+                " ⚠️  TRADING ALGORITHMIQUE DÉSACTIVÉ DANS METATRADER 5 ".center(64, "█") + "\n" +
+                "█" * 65 + "\n\n" +
+                " Le programme est bien connecté, mais MetaTrader refusera TOUS\n"
+                " les ordres tant que cette option est désactivée.\n\n"
+                " 👉 Dans MetaTrader 5, cliquez sur le bouton « Algo Trading »\n"
+                "    de la barre d'outils : il doit devenir VERT.\n\n"
+                " Si le bouton est absent : menu Outils > Options > Expert Advisors,\n"
+                " puis cochez « Autoriser le trading algorithmique ».\n\n"
+                " Aucun redémarrage nécessaire, l'activation est prise en compte\n"
+                " immédiatement.\n" + "█" * 65 + "\n")
+    except Exception as e:
+        logger.warning(f"⚠️ Vérification du trading algorithmique impossible : {e}")
+
     await bot_user.start(bot_token=BOT_TOKEN)
     logger.info("✔️ Interface interactive Telegram chargée.")
     client_status("✔️ Interface Telegram chargée.")

@@ -95,6 +95,27 @@ doubles).
 Sauvegarde le fichier settings.json.
 
 ---------------------------------------------------------------
+ÉTAPE 3 bis — ACTIVER LE TRADING ALGORITHMIQUE (INDISPENSABLE)
+---------------------------------------------------------------
+Sans cette option, MetaTrader refuse TOUS les ordres. Le programme
+demarrera normalement, recevra bien les signaux... et aucun trade
+ne sera pris.
+
+1. Ouvre MetaTrader 5.
+2. Dans la barre d'outils en haut, repere le bouton "Algo Trading"
+   (parfois ecrit "Trading algorithmique").
+3. Clique dessus : il doit devenir VERT.
+     - VERT  = autorise, tout est bon
+     - ROUGE = bloque, aucun ordre ne passera
+
+Si tu ne trouves pas le bouton :
+   Menu "Outils" > "Options" > onglet "Expert Advisors",
+   puis coche "Autoriser le trading algorithmique". Valide par OK.
+
+A verifier apres chaque redemarrage de MetaTrader : selon les
+versions, l'option peut revenir a l'etat desactive.
+
+---------------------------------------------------------------
 ÉTAPE 4 — Premier lancement
 ---------------------------------------------------------------
 IMPORTANT : décompresse d'abord TOUT le ZIP dans un dossier de ton
