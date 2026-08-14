@@ -784,8 +784,13 @@ def add_license_row(user, key, days=None, allowed_channels=None):
 
         # 3. On inscrit la ligne avec la version dynamique + le pack (#26, colonne G)
         pack_text = channels_to_pack_text(allowed_channels)
-        row_data = [user, key, "ACTIVE", sheet_text(version_to_use), "", date_fin, pack_text]
-        sheet.append_row(row_data)
+        # (#63) PAS de sheet_text() ici, contrairement aux update_cell() : append_row écrit en
+        # valueInputOption=RAW, qui stocke la valeur telle quelle sans jamais l'interpréter --
+        # donc aucune conversion en date à empêcher, et l'apostrophe se retrouvait affichée
+        # littéralement dans la Sheet ("'15.2.1"). Le mode est passé explicitement pour ne pas
+        # dépendre du défaut de gspread, qui diffère justement d'une méthode à l'autre.
+        row_data = [user, key, "ACTIVE", version_to_use, "", date_fin, pack_text]
+        sheet.append_row(row_data, value_input_option="RAW")
         fb_sync_license(key, user, "ACTIVE", version_to_use, "", date_fin, allowed_channels=allowed_channels or [])
         # 4. Création du compte Firebase Auth pour ce client (clé neuve -> force sans effet)
         fb_email, fb_password, _ = fb_create_firebase_user(key, force=True)
