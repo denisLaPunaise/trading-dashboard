@@ -244,9 +244,38 @@ ROW_CONFIG_VER = 2 # Ligne Config Version min
 # ── Package client ────────────────────────────────────────────────────────────
 # (#30) Nom du produit distribué au client (exe, ZIP, textes) -- renommé depuis "Bot FTMO"
 PRODUCT_NAME = "Kairos"
-EXE_FILENAME = "Kairos_V15.2.1.exe"
-# Chemin vers le .exe compilé (à mettre à jour à chaque nouvelle version)
-BOT_EXE_PATH = os.path.join(os.path.dirname(__file__), EXE_FILENAME)
+
+# (#66) Le nom de l'exe était écrit en dur ici, ce qui obligeait à recopier ce script sur le VPS
+# à CHAQUE nouvelle version. Oublier cette étape ne produisait aucune erreur visible : /gen et
+# /maj cherchaient l'ancien nom, ne le trouvaient pas, et envoyaient un ZIP sans le programme.
+# On détecte désormais le binaire présent dans le dossier -- déposer l'exe suffit.
+#
+# Le motif est ancré (^...$) pour ne PAS attraper les sauvegardes du type
+# "Kairos_V15.0.0.pyinstaller.bak.exe", qui sinon pourraient être distribuées à un client.
+EXE_PATTERN = re.compile(rf"^{re.escape(PRODUCT_NAME)}_V(\d+(?:\.\d+){{0,3}})\.exe$", re.IGNORECASE)
+
+
+def find_bot_exe():
+    """Retourne (chemin, nom, version) de l'exe le plus RÉCENT du dossier, ('', '', '') si aucun.
+
+    Le tri se fait sur le numéro de version et non sur la date du fichier : recopier une
+    ancienne version sur le VPS lui donnerait une date récente et la ferait passer devant.
+    """
+    folder = os.path.dirname(os.path.abspath(__file__))
+    best = None
+    try:
+        for name in os.listdir(folder):
+            m = EXE_PATTERN.match(name)
+            if not m:
+                continue
+            parts = tuple(int(p) for p in m.group(1).split("."))
+            if best is None or parts > best[0]:
+                best = (parts, name, m.group(1))
+    except Exception as e:
+        print(f"⚠️ find_bot_exe : {e}")
+    if best is None:
+        return "", "", ""
+    return os.path.join(folder, best[1]), best[1], best[2]
 # Fichier texte d'installation fourni dans chaque ZIP client (cf. generate_client_package)
 INSTALL_GUIDE_PATH = os.path.join(os.path.dirname(__file__), "INSTALLATION.txt")
 
@@ -359,7 +388,7 @@ def generate_client_package(client_name: str, key: str, fb_email: str, fb_passwo
     """
     Génère un ZIP en mémoire contenant :
     - settings.json pré-rempli (clé + Firebase + valeurs par défaut)
-    - {EXE_FILENAME} (si disponible sur le VPS)
+    - l'exe détecté dans le dossier (si présent sur le VPS), cf. find_bot_exe()
     - INSTALLATION.txt (si présent à côté de ce script)
 
     allowed_channels : (#7) liste blanche des canaux visibles du client (vide = tous).
@@ -381,8 +410,9 @@ def generate_client_package(client_name: str, key: str, fb_email: str, fb_passwo
     exe_included = False
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("settings.json", settings_bytes)
-        if os.path.isfile(BOT_EXE_PATH):
-            zf.write(BOT_EXE_PATH, arcname=EXE_FILENAME)
+        exe_path, exe_name, _ = find_bot_exe()
+        if exe_path and os.path.isfile(exe_path):
+            zf.write(exe_path, arcname=exe_name)
             exe_included = True
         if os.path.isfile(INSTALL_GUIDE_PATH):
             zf.write(INSTALL_GUIDE_PATH, arcname="INSTALLATION.txt")
@@ -396,10 +426,9 @@ def generate_client_package(client_name: str, key: str, fb_email: str, fb_passwo
 
 
 def exe_version_from_filename():
-    """(#64) Extrait "15.1.0" de "Kairos_V15.1.0.exe". Source unique de la version distribuée :
-    le nom du binaire posé à côté de ce script, pas une constante à tenir à jour en double."""
-    m = re.search(r"V(\d+(?:\.\d+){0,3})", EXE_FILENAME)
-    return m.group(1) if m else ""
+    """(#64) Version de l'exe présent dans le dossier ("15.2.1"), "" si aucun.
+    Source unique de la version distribuée : le nom du binaire, pas une constante en double."""
+    return find_bot_exe()[2]
 
 
 UPDATE_NOTICE = """MISE A JOUR DE {product}
@@ -441,18 +470,19 @@ def generate_update_package(client_name: str) -> tuple:
     reglages. L'ecraser le forcerait a tout reconfigurer et a refaire l'appairage Telegram.
 
     Retourne (zip_bytes, filename, exe_included)."""
+    exe_path, exe_name, ver = find_bot_exe()
     buf = io.BytesIO()
     exe_included = False
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        if os.path.isfile(BOT_EXE_PATH):
-            zf.write(BOT_EXE_PATH, arcname=EXE_FILENAME)
+        if exe_path and os.path.isfile(exe_path):
+            zf.write(exe_path, arcname=exe_name)
             exe_included = True
         zf.writestr("LIRE_MOI_MAJ.txt", UPDATE_NOTICE.format(
-            product=PRODUCT_NAME, exe=EXE_FILENAME,
+            product=PRODUCT_NAME, exe=exe_name or f"{PRODUCT_NAME}_V....exe",
             old_hint=f"{PRODUCT_NAME}_V....exe").encode("utf-8"))
     buf.seek(0)
     safe_name = re.sub(r"[^a-zA-Z0-9_-]", "", client_name) or "client"
-    ver = exe_version_from_filename() or "MAJ"
+    ver = ver or "MAJ"
     filename = f"{PRODUCT_NAME}_MAJ_v{ver}_{safe_name}.zip"
     buf.name = filename
     return buf, filename, exe_included
@@ -1075,7 +1105,7 @@ async def main_handler(event):
                          f"📝 {info}\n\n"
                          f"📦 Le ZIP contient :\n"
                          f"  • `settings.json` pré-rempli\n"
-                         f"{'  • `' + EXE_FILENAME + '`' if exe_included else '  ⚠️ exe absent du VPS (ajouter `' + EXE_FILENAME + '` à côté du bot)'}\n"
+                         f"{'  • `' + find_bot_exe()[1] + '`' if exe_included else '  ⚠️ AUCUN exe trouvé sur le VPS : dépose un `' + PRODUCT_NAME + '_Vx.y.z.exe` à côté du bot de licence'}\n"
                          f"  • `INSTALLATION.txt`\n\n"
                          f"📋 **Ce que le client doit remplir dans settings.json :**\n"
                          f"  • `TELEGRAM_API_ID` et `TELEGRAM_API_HASH` → my.telegram.org\n"
@@ -1113,18 +1143,19 @@ async def main_handler(event):
                 return
 
             zip_buf, zip_name, exe_included = generate_update_package(client_name)
+            _, exe_name, ver = find_bot_exe()
             if not exe_included:
-                await event.reply(f"❌ `{EXE_FILENAME}` absent du VPS : rien à envoyer.\n"
-                                  f"Dépose-le à côté de `admin_license_bot_V3.py`.")
+                await event.reply(f"❌ Aucun exe trouvé sur le VPS : rien à envoyer.\n"
+                                  f"Dépose un `{PRODUCT_NAME}_Vx.y.z.exe` à côté de "
+                                  f"`admin_license_bot_V3.py`.")
                 return
 
-            ver = exe_version_from_filename()
             forced_txt = ""
             if do_force:
                 # Le blocage n'est posé QU'APRÈS la construction du ZIP : inutile de couper
                 # l'accès à un client si l'exe n'était même pas disponible à l'envoi.
                 if not ver:
-                    await event.reply(f"⚠️ Version illisible dans `{EXE_FILENAME}`, "
+                    await event.reply(f"⚠️ Version illisible dans `{exe_name}`, "
                                       f"`force` ignoré. Le ZIP part quand même.")
                 else:
                     ok, res = await sheet_write(set_client_version, key, ver)
@@ -1139,7 +1170,7 @@ async def main_handler(event):
                 f"📋 Statut : {status}\n"
                 f"🆕 Version : **{ver or '?'}**\n\n"
                 f"Le ZIP contient :\n"
-                f"  • `{EXE_FILENAME}`\n"
+                f"  • `{exe_name}`\n"
                 f"  • `LIRE_MOI_MAJ.txt`\n\n"
                 f"⚠️ **Pas de `settings.json`**, volontairement : le client garde sa clé, "
                 f"ses identifiants et son appairage Telegram.{forced_txt}")
