@@ -8,6 +8,54 @@ Ce dossier contient :
   - INSTALLATION.txt     -> ce guide
 
 ---------------------------------------------------------------
+AVANT DE COMMENCER — OU INSTALLER KAIROS ?
+---------------------------------------------------------------
+Kairos doit rester ALLUME pour travailler. Il surveille les canaux
+de signaux, ouvre les positions, deplace les stops et prend les
+partiels en temps reel. Si le programme est ferme, plus rien n'est
+suivi -- y compris les trades deja ouverts.
+
+Concretement, sur ton PC personnel, cela veut dire :
+  - ne jamais l'eteindre, ni le mettre en veille
+  - ne pas fermer la fenetre du programme
+  - ne pas perdre la connexion internet
+  - une coupure de courant = trades laisses sans surveillance
+
+C'est jouable si ton ordinateur tourne deja en permanence. Sinon,
+la solution est un VPS.
+
+  QU'EST-CE QU'UN VPS ?
+  Un ordinateur qui ne t'appartient pas physiquement, heberge dans
+  un centre de donnees, et allume 24h/24 toute l'annee. Tu t'y
+  connectes depuis ton PC ou ton telephone, exactement comme si tu
+  prenais le controle d'un autre ordinateur : tu y installes
+  MetaTrader et Kairos une fois, et tu les laisses tourner.
+
+  CE QUE CA CHANGE POUR TOI
+  - Ton PC peut etre eteint, le bot continue de travailler.
+  - Plus de trade rate parce que ton ordinateur dormait a 3h du
+    matin, alors que les marches, eux, ne dorment pas.
+  - Connexion internet et alimentation de qualite professionnelle :
+    pas de coupure au mauvais moment, avec une position ouverte.
+  - Tu peux verifier ton bot depuis ton telephone, en deplacement.
+
+  QUOI PRENDRE
+  Il te faut imperativement WINDOWS (MetaTrader et Kairos ne
+  fonctionnent pas sous Linux). Chez Contabo, la licence Windows
+  est une option payante a cocher AU MOMENT de la commande --
+  verifie bien ce point, c'est l'erreur la plus frequente.
+  Compte 4 Go de RAM minimum, 8 Go pour etre confortable.
+
+  OU LE PRENDRE
+  Passe par ce lien, c'est celui que je recommande :
+
+     https://www.kqzyfj.com/click-101845094-13796470?sid=telegram
+
+  Transparence : c'est un lien partenaire. Le prix est exactement
+  le meme pour toi, et ca soutient le developpement de Kairos.
+  Merci d'avance de l'utiliser.
+
+---------------------------------------------------------------
 ÉTAPE 1 — Récupérer TELEGRAM_API_ID et TELEGRAM_API_HASH
 ---------------------------------------------------------------
 
@@ -148,6 +196,39 @@ le même dossier — ne lance pas l'exe directement depuis le ZIP.
 7. C'est fait : le bot est appairé et se met en surveillance des
    signaux. Laisse la fenêtre ouverte : si tu la fermes, le bot
    s'arrête et ne suit plus tes trades.
+
+---------------------------------------------------------------
+ÉTAPE 5 — REGLE TA TAILLE DE LOT AVANT LE PREMIER SIGNAL
+---------------------------------------------------------------
+
+  >> A FAIRE MAINTENANT, PAS APRES LE PREMIER TRADE. <<
+
+Le bot est livre avec des valeurs par defaut. Elles ne connaissent
+pas la taille de ton compte : tant que tu ne les as pas reglees,
+Kairos prendra les memes positions que tu aies 500 EUR ou 50 000.
+
+Ouvre le dashboard (bouton "Dashboard" en bas de ton bot Telegram)
+et verifie DEUX choses :
+
+1. LES LOTS SABR  --  le point le plus important
+   Ce sont des lots FIXES, en dur : 0.06 par defaut. Ils ne
+   s'adaptent PAS automatiquement a ton capital, contrairement aux
+   pourcentages ci-dessous. C'est le reglage qui peut faire mal.
+   Regle-les selon ton compte, quitte a demarrer tres bas (0.01) le
+   temps de voir le bot travailler.
+
+2. LES POURCENTAGES DE RISQUE  --  0.8 % par defaut
+   Ceux-la s'adaptent tout seuls a ton capital : 0.8 % de risque
+   par trade, quelle que soit la taille du compte. Tu peux les
+   laisser tels quels au debut, ils sont volontairement prudents.
+
+Un garde-fou existe : le drawdown journalier maximum est fixe a
+5 %. Au-dela, le bot ferme tout et se bloque. C'est une securite,
+pas une raison de negliger le reglage des lots.
+
+CONSEIL : lance-toi d'abord sur un compte DEMO, ou avec les lots au
+minimum, pendant quelques jours. Tu verras comment le bot se
+comporte avant d'y mettre le montant qui compte.
 
 ---------------------------------------------------------------
 BESOIN D'AIDE ?
