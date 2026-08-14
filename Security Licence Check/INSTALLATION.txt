@@ -10,18 +10,66 @@ Ce dossier contient :
 ---------------------------------------------------------------
 ÉTAPE 1 — Récupérer TELEGRAM_API_ID et TELEGRAM_API_HASH
 ---------------------------------------------------------------
-1. Va sur https://my.telegram.org et connecte-toi avec ton numéro
-   de téléphone Telegram.
+
+  >> A FAIRE SUR UN ORDINATEUR, PAS SUR LE TELEPHONE. <<
+  Le formulaire echoue presque toujours depuis un mobile.
+
+1. Va sur https://my.telegram.org et connecte-toi avec ton numero
+   de telephone Telegram (tu recevras un code DANS Telegram, pas
+   par SMS).
+
 2. Clique sur "API development tools".
-3. Remplis le petit formulaire (App title / Short name : ce que tu
-   veux, ex: "Kairos"). Valide.
+
+   >> Si tu vois deja "App api_id" et "App api_hash" affiches, tu as
+      deja fait cette etape par le passe : passe directement au
+      point 4. On ne peut creer qu'une seule application par compte,
+      et elle ne peut pas etre supprimee.
+
+3. Remplis le formulaire. TOUS les champs, meme ceux presentes comme
+   facultatifs : les laisser vides fait souvent echouer la creation.
+
+   Les valeurs ci-dessous ne sont QUE DES EXEMPLES : tu peux ecrire
+   ce que tu veux, ca n'a aucune importance pour le fonctionnement
+   du programme. Recopie-les telles quelles si tu preferes.
+
+     App title    : Kairos Perso
+     Short name   : kairosperso
+     URL          : https://example.com
+     Platform     : Desktop
+     Description  : Usage personnel
+
+   Deux regles a respecter quand meme :
+     - "Short name" : lettres et chiffres uniquement, entre 5 et 32
+       caracteres. Pas d'espace, pas d'accent, pas de tiret.
+     - Ne mets pas exactement le meme texte dans "App title" et dans
+       "Short name".
+
+   Puis clique sur "Create application".
+
+   >> SI TU VOIS L'ERREUR "Incorrect app name!" :
+      Ce message de Telegram est trompeur, le probleme vient rarement
+      du nom. Dans l'ordre :
+        a) Verifie que tu es bien sur un ordinateur.
+        b) Recharge entierement la page (touche F5), reconnecte-toi
+           et re-remplis le formulaire d'un seul coup.
+        c) Verifie qu'aucun champ n'est vide.
+        d) Si ca echoue encore : ATTENDS 15 MINUTES. Le site bloque
+           temporairement apres plusieurs essais et renvoie cette
+           meme erreur quoi que tu saisisses. Reessaye ensuite.
+
 4. Tu obtiens deux valeurs :
      - api_id    -> un nombre (ex: 1234567)
-     - api_hash  -> une suite de lettres/chiffres
+     - api_hash  -> une suite de lettres et de chiffres
+
+   Garde-les pour toi : elles donnent acces a ton compte Telegram.
+
 5. Ouvre settings.json (clic droit > Modifier / Ouvrir avec le
    Bloc-notes) et remplis :
      "TELEGRAM_API_ID": 1234567,
      "TELEGRAM_API_HASH": "ton_hash_ici",
+
+   Attention : l'api_id est un NOMBRE, donc sans guillemets.
+   L'api_hash est du TEXTE, donc entre guillemets.
 
 ---------------------------------------------------------------
 ÉTAPE 2 — Créer ton bot Telegram (BotFather)
