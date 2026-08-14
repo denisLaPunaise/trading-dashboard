@@ -52,3 +52,6 @@ desktop.ini
 
 # CSV trades (données client locales)
 trades_detailed.csv
+
+# Rapport de crash genere par Nuitka lors d une compilation echouee
+nuitka-crash-report.xml
