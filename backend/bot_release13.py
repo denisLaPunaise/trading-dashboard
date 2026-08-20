@@ -1560,6 +1560,75 @@ def log_trade_detail(ticket, symbol, source, direction, open_time, close_time, d
             logger.info(f"📝 Trade #{ticket} archivé dans {DETAILED_HISTORY_FILE}")
     except Exception as e: logger.error(f"⚠️ Erreur CSV Detailed: {e}")
 
+def history_cutoff(period):
+    """(#74) Début de période pour l'historique des trades, calé sur des JOURNÉES ENTIÈRES.
+
+    "24h" ne veut pas dire "les 24 dernières heures" mais "aujourd'hui, de 00h00 à 23h59" ;
+    "48h" couvre toute la journée d'hier plus aujourd'hui. Un trade clôturé hier à 23h50 doit
+    apparaître en 48h même s'il date de plus de 48 heures au sens strict.
+    """
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    if str(period) == "all":
+        return datetime(1970, 1, 1)
+    try:
+        n_days = max(1, int(period))
+    except Exception:
+        n_days = 1
+    return today - timedelta(days=n_days - 1)
+
+
+def get_trades_history(period="1", max_rows=100):
+    """(#74) Liste des trades clôturés sur la période, du plus récent au plus ancien.
+
+    Lue depuis trades_detailed.csv et non depuis l'historique MT5 : c'est la seule source qui
+    porte le CANAL d'origine et la RAISON de sortie, deux colonnes attendues dans un historique.
+    En contrepartie, "all" ne remonte qu'à ce que le bot a enregistré.
+
+    Plafonné à max_rows : au-delà le document Firestore gonflerait sans que personne ne fasse
+    défiler autant de lignes.
+    """
+    out = []
+    if not os.path.exists(DETAILED_HISTORY_FILE):
+        return out
+    cutoff = history_cutoff(period)
+    try:
+        with open(DETAILED_HISTORY_FILE, "r", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                try:
+                    closed_at = datetime.strptime(row.get("Close Time", ""), "%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    continue
+                if closed_at < cutoff:
+                    continue
+                src = normalize_channel_source(row.get("Source"))
+                if src == "MANUEL/INCONNU":
+                    src = "CANAL PERSO"
+                if not channel_allowed(src):
+                    continue
+                def _f(key):
+                    try: return float(row.get(key) or 0)
+                    except Exception: return 0.0
+                out.append({
+                    "ticket": row.get("Ticket", ""),
+                    "symbol": row.get("Symbol", ""),
+                    "type": row.get("Type", ""),
+                    "source": src.replace("CANAL ", ""),
+                    "lots": _f("Lots"),
+                    "profit": round(_f("Profit"), 2),
+                    "pips": round(_f("Pips"), 1),
+                    "close_time": row.get("Close Time", ""),
+                    "reason": row.get("Exit Reason", ""),
+                    "_ts": closed_at.timestamp(),
+                })
+    except Exception as e:
+        logger.warning(f"⚠️ get_trades_history : {e}")
+
+    out.sort(key=lambda t: t["_ts"], reverse=True)
+    for t in out:
+        t.pop("_ts", None)
+    return out[:max_rows]
+
+
 def _merge_stats_seed(out, cutoff):
     """(#stats) Injecte un historique REPRIS d'avant la refonte des stats (stats_seed.json).
 
@@ -5787,6 +5856,17 @@ async def handle_firebase_command(cmd_id: str, cmd_data: dict) -> None:
                 await firebase_sync.push_state(user_id, payload_push)
             set_status("done", {"success": True})
 
+        elif cmd_type == "request_history":
+            # (#74) Historique des trades sur la periode demandee. Commande dediee et non
+            # greffee sur request_stats : la section a son propre selecteur, ouvert/ferme
+            # independamment de la fenetre de statistiques.
+            period = str(payload.get("period", "1"))
+            hist = await run_bg(get_trades_history, period=period)
+            if firebase_sync._firebase_initialized:
+                await firebase_sync.push_state(user_id, {
+                    f"trades_history_{period}": firebase_sync._safe(hist)})
+            set_status("done", {"success": True})
+
         elif cmd_type == "kill":
             set_status("done", {"success": True})
             await mark_bot_offline_and_exit()
@@ -5826,6 +5906,7 @@ async def _firebase_push_stats_loop(user_id: str) -> None:
                     "channels_period_30": firebase_sync._safe(
                         {c: v for c, v in chan_30.items() if channel_allowed(c)}),
                     "equity_curve_30": firebase_sync._safe(await get_equity_curve(days=30)),
+                    "trades_history_1": firebase_sync._safe(await run_bg(get_trades_history, period="1")),
                 })
         except asyncio.CancelledError:
             break

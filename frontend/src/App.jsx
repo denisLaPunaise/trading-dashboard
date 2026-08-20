@@ -311,6 +311,10 @@ function App() {
   // "Aucun trade sur cette période" tant qu'aucun trade récent n'était clôturé.
   const [channelPeriod, setChannelPeriod] = useState('all');
   const [dayWeekToggle, setDayWeekToggle] = useState('day'); // 'day' ou 'week'
+  // (#74) Période de la section "Historique Trades". Les libellés sont en heures mais les
+  // bornes sont des JOURNÉES ENTIÈRES côté bot : '2' = toute la journée d'hier + aujourd'hui.
+  const [historyPeriod, setHistoryPeriod] = useState('1');
+  const requestedHistory = useRef(new Set());
   const [isLoadingStats, setIsLoadingStats] = useState(false);
   const requestedPeriods = useRef(new Set());
 
@@ -387,6 +391,26 @@ function App() {
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps -- dashboardData lu volontairement sans redéclencher la requête (cf. commentaire ci-dessus)
   }, [isStatsOpen, statsTab, dayWeekToggle, globalPeriod, channelPeriod, userId]);
+
+  // (#74) Historique des trades : demandé au bot à l'ouverture de la section et à chaque
+  // changement de période. Comme pour les stats, on ne se fie PAS à la présence de la clé
+  // dans Firestore pour éviter la requête -- ces champs sont persistants et pourraient dater
+  // d'une session précédente. requestedHistory dédoublonne par chargement de page.
+  useEffect(() => {
+    if (!isClosedTradesOpen || !userId) return;
+    if (requestedHistory.current.has(historyPeriod)) return;
+    requestedHistory.current.add(historyPeriod);
+    let cancelled = false;
+    (async () => {
+      try {
+        await addDoc(collection(db, 'users', userId, 'commands'), {
+          type: 'request_history', payload: { period: historyPeriod },
+          status: 'pending', created_at: serverTimestamp(), expire_at: commandExpiry(),
+        });
+      } catch { /* silencieux */ }
+    })();
+    return () => { cancelled = true; };
+  }, [isClosedTradesOpen, historyPeriod, userId]);
 
   // Authentification Firebase + abonnement temps réel Firestore
   useEffect(() => {
@@ -674,7 +698,10 @@ function App() {
     );
   }
 
-const { account, daily_stats, settings, active_trades, closed_trades = [] } = dashboardData
+const { account, daily_stats, settings, active_trades } = dashboardData
+  // (#74) Historique des trades sur la période choisie, poussé par le bot en réponse à
+  // request_history. Remplace l'ancien `closed_trades`, qui ne couvrait que la journée en cours.
+  const tradesHistory = dashboardData[`trades_history_${historyPeriod}`] || []
 
   // (#7) Pack du client : on n'affiche que les canaux de son pack (réglages, mute, stats).
   // Liste vide/absente = tout afficher (rétro-compatible). Filtre purement cosmétique.
@@ -1102,11 +1129,11 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
       </div>
       </div>
 
-      {/* SECTION 2 BIS : TRADES FERMÉS */}
+      {/* SECTION 2 BIS : HISTORIQUE DES TRADES (#74) */}
       <div {...a11yToggleProps(() => { triggerHaptic('light'); setIsClosedTradesOpen(!isClosedTradesOpen); }, isClosedTradesOpen)} style={{ display: 'flex', justifyContent: 'flex-start', alignItems: 'center', cursor: 'pointer', borderBottom: '1px solid #333', paddingBottom: '25px', marginBottom: '0px', marginTop: '30px', userSelect: 'none' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#888' }}>
           <XCircle size={20} color="#888" />
-          <h2 style={{ fontSize: '1.2rem', margin: 0 }}>Trades Fermés ({closed_trades.length})</h2>
+          <h2 style={{ fontSize: '1.2rem', margin: 0, color: '#fff' }}>Historique Trades ({tradesHistory.length})</h2>
           {isClosedTradesOpen ? <ChevronUp size={20} color="#888" /> : <ChevronDown size={20} color="#888" />}
         </div>
       </div>
@@ -1114,42 +1141,73 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
       <div style={{ display: 'grid', gridTemplateRows: isClosedTradesOpen ? '1fr' : '0fr', transition: 'grid-template-rows 0.4s ease-out' }}>
         <div style={{ overflow: 'hidden' }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '30px', paddingTop: '5px' }}>
-          {closed_trades.length === 0 ? (
-            <div style={{ textAlign: 'center', padding: '20px', color: '#555', background: '#1a1a1a', borderRadius: '10px', fontSize: '0.9rem' }}>Aucun trade clôturé aujourd'hui.</div>
-          ) : (
-            closed_trades.map((trade, index) => (
-              // (#61) ?? au lieu de || -- un ticket à 0 (peu probable en pratique pour MT5,
-              // mais possible sur des lignes de stats sans vrai ticket) tombait à tort sur
-              // l'index, moins stable en cas de réordonnancement du tableau.
-              <div key={trade.ticket ?? index} style={{
-                background: '#1a1a1a', 
-                borderLeft: `4px solid ${trade.profit >= 0 ? '#00e676' : '#ff4444'}`, 
-                padding: '12px 15px', 
-                borderRadius: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '15px'
-              }}>
-                <div style={{ flex: '1 1 200px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '5px' }}>
-                    <span style={{ padding: '2px 6px', borderRadius: '4px', fontSize: '0.7rem', fontWeight: 'bold', background: trade.type === 'BUY' ? 'rgba(0, 230, 118, 0.1)' : 'rgba(255, 68, 68, 0.1)', color: trade.type === 'BUY' ? '#00e676' : '#ff4444' }}>{trade.type}</span>
-                    <strong style={{ fontSize: '1rem', color: '#ccc' }}>{trade.symbol}</strong>
-                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
-                      <span style={{ color: '#888', fontSize: '0.75rem', fontWeight: 'bold', whiteSpace: 'nowrap' }}>{trade.volume} lots</span>
-                      <span style={{ color: '#555', fontSize: '0.65rem' }}>{trade.open_time}</span>
+
+            {/* Selecteur de periode. Les libelles sont en heures mais les bornes sont des
+                JOURNEES ENTIERES cote bot : "48h" = toute la journee d'hier + aujourd'hui. */}
+            <div style={{ display: 'flex', gap: '5px', background: '#1e1e1e', padding: '5px', borderRadius: '8px', border: '1px solid #333' }}>
+              {[
+                { id: '1', label: '24h' }, { id: '2', label: '48h' }, { id: '7', label: '1 Sem' },
+                { id: '30', label: '1 Mois' }, { id: '365', label: '1 An' }, { id: 'all', label: 'Max' }
+              ].map(p => (
+                <button
+                  key={p.id}
+                  onClick={() => { triggerHaptic('light'); setHistoryPeriod(p.id); }}
+                  style={{
+                    flex: 1, padding: '8px 5px', borderRadius: '6px', border: 'none', cursor: 'pointer',
+                    fontSize: '0.75rem', fontWeight: 'bold',
+                    background: historyPeriod === p.id ? '#00e676' : 'transparent',
+                    color: historyPeriod === p.id ? '#000' : '#888',
+                    transition: '0.2s'
+                  }}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+
+            {tradesHistory.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '20px', color: '#555', background: '#1a1a1a', borderRadius: '10px', fontSize: '0.9rem' }}>
+                Aucun trade cloture sur cette periode.
+              </div>
+            ) : (
+              /* Hauteur PLAFONNEE a 5 lignes : la section garde toujours la meme taille, quelle
+                 que soit la periode choisie, et le reste se consulte en faisant defiler. */
+              <div style={{ maxHeight: '400px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '10px', paddingRight: '4px' }}>
+                {tradesHistory.map((trade, index) => (
+                  <div key={trade.ticket ?? index} style={{
+                    background: '#1a1a1a',
+                    borderLeft: `4px solid ${trade.profit >= 0 ? '#00e676' : '#ff4444'}`,
+                    padding: '12px 15px', borderRadius: '8px', display: 'flex',
+                    justifyContent: 'space-between', alignItems: 'center', gap: '12px', flexShrink: 0
+                  }}>
+                    <div style={{ flex: '1 1 auto', minWidth: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px', flexWrap: 'wrap' }}>
+                        <span style={{ padding: '2px 6px', borderRadius: '4px', fontSize: '0.7rem', fontWeight: 'bold', background: trade.type === 'BUY' ? 'rgba(0, 230, 118, 0.1)' : 'rgba(255, 68, 68, 0.1)', color: trade.type === 'BUY' ? '#00e676' : '#ff4444' }}>{trade.type}</span>
+                        <strong style={{ fontSize: '0.95rem', color: '#ccc' }}>{trade.symbol}</strong>
+                        <span style={{ color: '#666', fontSize: '0.7rem' }}>{(trade.lots ?? 0).toFixed(2)} lots</span>
+                      </div>
+                      <div style={{ fontSize: '0.72rem', color: '#777', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {trade.close_time} · {String(trade.source || '').replace('_', ' ')}
+                      </div>
+                      {trade.reason && (
+                        <div style={{ fontSize: '0.68rem', color: '#555', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          {trade.reason}
+                        </div>
+                      )}
+                    </div>
+
+                    <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                      <div style={{ fontWeight: 'bold', fontSize: '1.05rem', color: trade.profit >= 0 ? '#00e676' : '#ff4444' }}>
+                        {trade.profit > 0 ? '+' : ''}{(trade.profit ?? 0).toFixed(2)} €
+                      </div>
+                      <div style={{ fontSize: '0.75rem', color: '#666' }}>
+                        {trade.pips > 0 ? '+' : ''}{(trade.pips ?? 0).toFixed(1)} pips
+                      </div>
                     </div>
                   </div>
-                  <div style={{ fontSize: '0.75rem', color: '#777' }}>
-                    Ouv: {Number(trade.open_price).toFixed(5)} | Ferm: <span style={{color: '#aaa'}}>{Number(trade.close_price).toFixed(5)}</span>
-                  </div>
-                </div>
-
-                <div style={{ textAlign: 'right' }}>
-                  <div style={{ fontWeight: 'bold', fontSize: '1.1rem', color: trade.profit >= 0 ? '#00e676' : '#ff4444' }}>
-                    {trade.profit > 0 ? '+' : ''}{(trade.profit ?? 0).toFixed(2)} €
-                  </div>
-                  <div style={{ fontSize: '0.8rem', color: '#666' }}>{trade.pips > 0 ? '+' : ''}{trade.pips} pips</div>
-                </div>
+                ))}
               </div>
-            ))
-          )}
+            )}
           </div>
         </div>
       </div>
