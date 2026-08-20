@@ -1,9 +1,15 @@
+/* (#71) Le dashboard est en thème SOMBRE en dur (#121212 posé par App.jsx). Ces variables
+   venaient du modèle Vite par défaut et suivaient le thème du téléphone : chez un client dont
+   le mobile est en mode CLAIR, --text-h valait #08060d, donc les <h2> du dashboard
+   s'affichaient en NOIR sur fond noir, illisibles. La palette est désormais figée en sombre,
+   quel que soit le réglage du téléphone. */
 :root {
-  --text: #6b6375;
-  --text-h: #08060d;
-  --bg: #fff;
-  --border: #e5e4e7;
-  --code-bg: #f4f3ec;
+  color-scheme: dark;
+  --text: #e8e8e8;
+  --text-h: #ffffff;
+  --bg: #121212;
+  --border: #333333;
+  --code-bg: #1f2028;
   --accent: #aa3bff;
   --accent-bg: rgba(170, 59, 255, 0.1);
   --accent-border: rgba(170, 59, 255, 0.5);
@@ -17,7 +23,7 @@
 
   font: 18px/145% var(--sans);
   letter-spacing: 0.18px;
-  color-scheme: light dark;
+  /* color-scheme deja fixe a dark plus haut */
   color: var(--text);
   background: var(--bg);
   font-synthesis: none;
@@ -30,21 +36,9 @@
   }
 }
 
+/* (#71) Plus de bascule de palette selon le thème du téléphone : les variables sont figées en
+   sombre dans :root ci-dessus. Ce bloc ne redéfinit donc plus aucune couleur. */
 @media (prefers-color-scheme: dark) {
-  :root {
-    --text: #9ca3af;
-    --text-h: #f3f4f6;
-    --bg: #16171d;
-    --border: #2e303a;
-    --code-bg: #1f2028;
-    --accent: #c084fc;
-    --accent-bg: rgba(192, 132, 252, 0.15);
-    --accent-border: rgba(192, 132, 252, 0.5);
-    --social-bg: rgba(47, 48, 58, 0.5);
-    --shadow:
-      rgba(0, 0, 0, 0.4) 0 10px 15px -3px, rgba(0, 0, 0, 0.25) 0 4px 6px -2px;
-  }
-
   #social .button-icon {
     filter: invert(1) brightness(2);
   }
@@ -52,6 +46,10 @@
 
 body {
   margin: 0;
+  /* (#71) Fond et couleur explicites : sans eux, la zone hors du conteneur de l'application
+     reprenait le blanc du thème clair du téléphone. */
+  background: var(--bg);
+  color: var(--text);
 }
 
 #root {

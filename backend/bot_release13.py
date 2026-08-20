@@ -320,6 +320,22 @@ SOFT_SL_PERCENT = 0.30
 # (#10) Interrupteurs ON/OFF (dashboard) pour la gestion du SL général (hors SABR)
 SL_SUIVEUR_ACTIVE = True   # False -> le bot ne déplace plus le SL (BE/trailing/paliers)
 SOFT_SL_ACTIVE = True      # False -> pas de clôture partielle sur repli (Soft SL Vente)
+
+# (#72) Décalage du SL lors d'une mise à BE, en pips, réglable au dashboard.
+#   0   -> SL exactement au prix d'entrée (comportement historique)
+#   > 0 -> SL AU-DELÀ de l'entrée, dans le sens du gain : le trade est déjà gagnant si le SL
+#          est touché (couvre le spread et les frais)
+#   < 0 -> SL EN DEÇÀ de l'entrée : on tolère une petite perte plutôt que de se faire sortir
+#          par une mèche sur le prix d'entrée exact
+# Le signe vaut pour les deux sens : sur une VENTE, un décalage positif place le SL SOUS
+# l'entrée. On raisonne en gain/perte, pas en haut/bas.
+BE_OFFSET_PIPS = 0.0
+
+# (#73) SL suiveur propre aux positions SABR. Elles sont gérées à part (BE +100p et prises
+# partielles) et n'ont jamais eu de trailing : SABR_TRAILING_ACTIVE existait dans les fichiers
+# de configuration distribués mais n'était lu nulle part.
+SABR_TRAILING_ACTIVE = False   # False -> aucun SL suiveur sur SABR (comportement historique)
+SABR_TRAILING_PIPS = 100       # distance en pips entre le prix courant et le SL suiveur
 BTC_ENTRY_OFFSET = 70
 DEFAULT_TP1_PCT = 0.50
 
@@ -798,6 +814,25 @@ def clean_text(text):
 
     return t.strip()
 
+def compute_be_price(entry_price, is_buy, symbol):
+    """(#72) Prix de mise à BE, décalé de BE_OFFSET_PIPS.
+
+    Le décalage est exprimé en GAIN, pas en direction : un décalage positif éloigne le SL de
+    l'entrée du côté du profit, quel que soit le sens du trade. Sur un ACHAT il monte le SL,
+    sur une VENTE il le descend. Un décalage négatif fait l'inverse et tolère une petite perte,
+    ce qui évite de se faire sortir par une mèche pile sur le prix d'entrée.
+    """
+    try:
+        if not BE_OFFSET_PIPS:
+            return entry_price
+        pt = get_cached_point(symbol)
+        div = get_pip_divisor(symbol)
+        offset = BE_OFFSET_PIPS * pt * div
+        return entry_price + offset if is_buy else entry_price - offset
+    except Exception:
+        return entry_price
+
+
 def smart_adjust_price(ref_price_str, partial_price_str):
     """
     Reconstruit un prix partiel basé sur un prix de référence.
@@ -1230,6 +1265,9 @@ def save_settings():
                 "SOFT_SL_PERCENT": SOFT_SL_PERCENT,
                 "SL_SUIVEUR_ACTIVE": SL_SUIVEUR_ACTIVE,
                 "SOFT_SL_ACTIVE": SOFT_SL_ACTIVE,
+                "BE_OFFSET_PIPS": BE_OFFSET_PIPS,
+                "SABR_TRAILING_ACTIVE": SABR_TRAILING_ACTIVE,
+                "SABR_TRAILING_PIPS": SABR_TRAILING_PIPS,
                 "SABR_ANTI_DOUBLON_ACTIVE": SABR_ANTI_DOUBLON_ACTIVE,
                 "MUTED_CHANNELS": MUTED_CHANNELS,
                 "ALLOWED_CHANNELS": ALLOWED_CHANNELS,
@@ -1261,7 +1299,7 @@ FIREBASE_PASSWORD = ""
 
 def load_settings():
     """Charge les réglages au démarrage"""
-    global RISK_PERCENT_GOLD, SABR_FORWARD_ACTIVE, RISK_PERCENT_OTHER, RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE, MAX_DAILY_DRAWDOWN, DRAWDOWN_ACTIVE, TRAILING_STOP_PIPS, RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO, SOFT_SL_PERCENT, MUTED_CHANNELS, ALLOWED_CHANNELS, CHANNEL_TP1_PCT, TELEGRAM_DESTINATION_ID, ADMIN_ID, RISK_PERCENT_INDICES, PRIME_HOURS, TIME_OFF_PEAK_FACTOR, DAY_RISK_FACTORS, FIXED_LOT_SABR_FREE, FIXED_LOT_SABR_VIP, RISK_PERCENT_SABR_OTHER, SABR_ZONE_EQUAL_SPLIT, SABR_ZONE_PCT1, SABR_ZONE_PCT2, SL_SUIVEUR_ACTIVE, SOFT_SL_ACTIVE, FIREBASE_EMAIL, FIREBASE_PASSWORD, SERVER_PACK_CHANNELS
+    global RISK_PERCENT_GOLD, SABR_FORWARD_ACTIVE, RISK_PERCENT_OTHER, RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE, MAX_DAILY_DRAWDOWN, DRAWDOWN_ACTIVE, TRAILING_STOP_PIPS, RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO, SOFT_SL_PERCENT, MUTED_CHANNELS, ALLOWED_CHANNELS, CHANNEL_TP1_PCT, TELEGRAM_DESTINATION_ID, ADMIN_ID, RISK_PERCENT_INDICES, PRIME_HOURS, TIME_OFF_PEAK_FACTOR, DAY_RISK_FACTORS, FIXED_LOT_SABR_FREE, FIXED_LOT_SABR_VIP, RISK_PERCENT_SABR_OTHER, SABR_ZONE_EQUAL_SPLIT, SABR_ZONE_PCT1, SABR_ZONE_PCT2, SL_SUIVEUR_ACTIVE, SOFT_SL_ACTIVE, FIREBASE_EMAIL, FIREBASE_PASSWORD, SERVER_PACK_CHANNELS, BE_OFFSET_PIPS, SABR_TRAILING_ACTIVE, SABR_TRAILING_PIPS
 
     if os.path.exists(SETTINGS_FILENAME):
         try:
@@ -1291,6 +1329,9 @@ def load_settings():
                 if "TRAILING_STOP_PIPS" in data: TRAILING_STOP_PIPS = data["TRAILING_STOP_PIPS"]
                 if "SOFT_SL_PERCENT" in data: SOFT_SL_PERCENT = data["SOFT_SL_PERCENT"]
                 if "SL_SUIVEUR_ACTIVE" in data: SL_SUIVEUR_ACTIVE = data["SL_SUIVEUR_ACTIVE"]
+                if "BE_OFFSET_PIPS" in data: BE_OFFSET_PIPS = float(data["BE_OFFSET_PIPS"])
+                if "SABR_TRAILING_ACTIVE" in data: SABR_TRAILING_ACTIVE = bool(data["SABR_TRAILING_ACTIVE"])
+                if "SABR_TRAILING_PIPS" in data: SABR_TRAILING_PIPS = int(float(data["SABR_TRAILING_PIPS"]))
                 if "SOFT_SL_ACTIVE" in data: SOFT_SL_ACTIVE = data["SOFT_SL_ACTIVE"]
                 if "MUTED_CHANNELS" in data: MUTED_CHANNELS = data["MUTED_CHANNELS"]
                 # (#26) Le pack local n'est qu'un repli avant la 1ère vérif licence en ligne --
@@ -3508,6 +3549,7 @@ async def api_update_setting(data: SettingUpdate):
     global RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE, RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO
     global FIXED_LOT_SABR_VIP, FIXED_LOT_SABR_FREE, RISK_PERCENT_SABR_OTHER, SABR_ZONE_EQUAL_SPLIT, SABR_ZONE_PCT1, SABR_ZONE_PCT2
     global MAX_DAILY_DRAWDOWN, TRAILING_STOP_PIPS, SOFT_SL_PERCENT
+    global BE_OFFSET_PIPS, SABR_TRAILING_PIPS
     global PRIME_HOURS, TIME_OFF_PEAK_FACTOR
 
     k = data.key
@@ -3544,6 +3586,11 @@ async def api_update_setting(data: SettingUpdate):
     elif k == "sabr_zone_pct2": SABR_ZONE_PCT2 = max(0.01, min(0.98, float(v)))
     elif k == "max_dd": MAX_DAILY_DRAWDOWN = float(v)
     elif k == "sl_suiveur": TRAILING_STOP_PIPS = int(float(v))
+    # (#72) Decalage du BE : signe libre, positif = SL dans le gain, negatif = petite
+    # perte toleree. Borne a +/-500 pips pour eviter une saisie aberrante qui poserait
+    # le SL tres loin du prix et rendrait la position ingerable.
+    elif k == "be_offset_pips": BE_OFFSET_PIPS = max(-500.0, min(500.0, float(v)))
+    elif k == "sabr_trailing_pips": SABR_TRAILING_PIPS = max(1, int(float(v)))
     elif k == "sl_sell": SOFT_SL_PERCENT = float(v)
     
     # 👇 CE QU'ON AJOUTE POUR LE PLANNING 👇
@@ -3896,7 +3943,7 @@ async def monitor_positions():
                         if hit_tp1:
                             # 1. On sécurise le BE en priorité absolue
                             if "MDT_FREE_TP1_BE" not in processed:
-                                be_price = entry
+                                be_price = compute_be_price(entry, pos.type == mt5.ORDER_TYPE_BUY, sym)
                                 update_hard_sl = False
                                 if pos.type == mt5.ORDER_TYPE_BUY and pos.sl < be_price: update_hard_sl = True
                                 if pos.type == mt5.ORDER_TYPE_SELL and (pos.sl > be_price or pos.sl == 0): update_hard_sl = True
@@ -3933,7 +3980,7 @@ async def monitor_positions():
                     # qu'on a loupé l'instruction.
                     if src_trade == "CANAL MDT_VIP":
                         if pips >= 60 and "VIP_BE_DONE" not in processed:
-                            be_price = entry
+                            be_price = compute_be_price(entry, pos.type == mt5.ORDER_TYPE_BUY, sym)
                             update_hard_sl = False
                             if pos.type == mt5.ORDER_TYPE_BUY and pos.sl < be_price: update_hard_sl = True
                             if pos.type == mt5.ORDER_TYPE_SELL and (pos.sl > be_price or pos.sl == 0): update_hard_sl = True
@@ -4107,7 +4154,7 @@ async def monitor_positions():
                             tag_100 = "SABR_100_BE_60"
                             if tag_100 not in TRADES_PROCESSED_LEVELS[p.ticket]:
                                 # 1. BE (priorité absolue, comme avant)
-                                be_p = p.price_open
+                                be_p = compute_be_price(p.price_open, is_buy, sym)
                                 new_sl = None
                                 if is_buy:
                                     if current_sl < be_p: new_sl = be_p
@@ -4126,6 +4173,11 @@ async def monitor_positions():
                                                              f"Symbole: {sym} ({p_open_time})\n"
                                                              f"Source: {p_src_clean}\n"
                                                              f"Ticket: {p.ticket}", ACTIVE_TRADE_SOURCES.get(p.ticket, ""))
+                                            # Le SL suiveur ci-dessous compare a current_sl :
+                                            # sans cette mise a jour il repartirait de la
+                                            # valeur d'avant le BE et renverrait un ordre
+                                            # identique dans la foulee.
+                                            current_sl = new_sl
 
                                 # 2. Clôture 60% du volume initial
                                 deals = await run_mt5(mt5.history_deals_get, position=p.ticket)
@@ -4159,6 +4211,32 @@ async def monitor_positions():
                                         await run_bg(save_memory)
                                 else:
                                     TRADES_PROCESSED_LEVELS[p.ticket].add(tag_150)
+
+                        # --- (#73) SL SUIVEUR SABR (optionnel) ---
+                        # Les positions SABR n'avaient jusqu'ici aucun trailing : uniquement un
+                        # BE a +100p et deux prises partielles. Le SL ne se declenche qu'a
+                        # partir de SABR_TRAILING_PIPS de gain, ce qui garantit qu'il ne peut
+                        # jamais etre pose dans le rouge : a l'instant du declenchement il vaut
+                        # exactement le prix d'entree, puis il ne fait que suivre.
+                        if SABR_TRAILING_ACTIVE and SABR_TRAILING_PIPS > 0 and pips_indiv >= SABR_TRAILING_PIPS:
+                            dist_trail = SABR_TRAILING_PIPS * pt * div
+                            target_sl = curr_price - dist_trail if is_buy else curr_price + dist_trail
+                            target_sl = round(target_sl / pt) * pt
+                            # Un SL ne recule JAMAIS : on ne bouge que si la nouvelle valeur
+                            # protege davantage. current_sl == 0 signifie "aucun SL pose".
+                            better = (target_sl > current_sl) if is_buy else (target_sl < current_sl or current_sl == 0)
+                            if better and abs(target_sl - current_sl) > (pt / 2):
+                                req_tr = {"action": mt5.TRADE_ACTION_SLTP, "symbol": sym,
+                                          "position": p.ticket, "sl": target_sl, "tp": p.tp}
+                                res_tr = await run_mt5(_send_order_blocking, req_tr)
+                                if res_tr and res_tr.retcode == mt5.TRADE_RETCODE_DONE:
+                                    current_sl = target_sl
+                                    p_src_tr = ACTIVE_TRADE_SOURCES.get(p.ticket, "INCONNU").replace("CANAL ", "").replace("_", " ")
+                                    await send_channel_alert(
+                                        f"📈 **SABR : SL SUIVEUR** (+{int(pips_indiv)} pips)\n\n"
+                                        f"Symbole: {sym}\nSource: {p_src_tr}\n"
+                                        f"Ticket: {p.ticket}\nNouveau SL: {target_sl}",
+                                        ACTIVE_TRADE_SOURCES.get(p.ticket, ""))
 
         except Exception as e: 
             logger.error(f"Monitor Error: {e}")
@@ -5052,7 +5130,7 @@ async def main_handler(event):
                         if not pos_data: continue
                         pos = pos_data[0]
                         pt = get_cached_point(pos.symbol)
-                        be_price = pos.price_open
+                        be_price = compute_be_price(pos.price_open, pos.type == mt5.ORDER_TYPE_BUY, pos.symbol)
                         move_sl = (pos.type == mt5.ORDER_TYPE_BUY and pos.sl < be_price) or \
                                   (pos.type == mt5.ORDER_TYPE_SELL and (pos.sl > be_price or pos.sl == 0))
                         if move_sl:
@@ -5472,6 +5550,8 @@ async def get_current_state_for_firebase() -> dict:
             "sabr_forward": SABR_FORWARD_ACTIVE, "max_dd": MAX_DAILY_DRAWDOWN,
             "drawdown_active": DRAWDOWN_ACTIVE,
             "sl_suiveur": TRAILING_STOP_PIPS, "sl_sell": SOFT_SL_PERCENT,
+            "be_offset_pips": BE_OFFSET_PIPS,
+            "sabr_trailing_active": SABR_TRAILING_ACTIVE, "sabr_trailing_pips": SABR_TRAILING_PIPS,
             "sl_suiveur_active": SL_SUIVEUR_ACTIVE, "soft_sl_active": SOFT_SL_ACTIVE,
             "muted_channels": MUTED_CHANNELS, "allowed_channels": ALLOWED_CHANNELS,
             # (#pack) False = pack 100% SABR -> le dashboard masque les % globaux
@@ -5623,6 +5703,20 @@ async def handle_firebase_command(cmd_id: str, cmd_data: dict) -> None:
                 SABR_ANTI_DOUBLON_ACTIVE = not SABR_ANTI_DOUBLON_ACTIVE
                 await run_bg(save_settings)
                 await send_alert(f"🛡️ Anti-Doublon SABR : {'🟢 ACTIVÉ' if SABR_ANTI_DOUBLON_ACTIVE else '🔴 DÉSACTIVÉ'}")
+                set_status("done", {"success": True})
+
+        elif cmd_type == "toggle_sabr_trailing":
+            # (#73) Interrupteur du SL suiveur SABR. Même verrou de pack que l'anti-doublon :
+            # inutile d'exposer un réglage SABR à un client qui n'a pas ce canal.
+            global SABR_TRAILING_ACTIVE
+            if not (channel_allowed("CANAL SABR_VIP") or channel_allowed("CANAL SABR_FREE")
+                    or channel_allowed("CANAL SABR_COPIE")):
+                set_status("error", {"success": False, "message": "SABR hors de ton pack."})
+            else:
+                SABR_TRAILING_ACTIVE = not SABR_TRAILING_ACTIVE
+                await run_bg(save_settings)
+                await send_alert(f"📈 SL Suiveur SABR : {'🟢 ACTIVÉ' if SABR_TRAILING_ACTIVE else '🔴 DÉSACTIVÉ'}"
+                                 + (f" ({SABR_TRAILING_PIPS} pips)" if SABR_TRAILING_ACTIVE else ""))
                 set_status("done", {"success": True})
 
         elif cmd_type == "set_allowed_channels":

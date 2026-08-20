@@ -642,6 +642,13 @@ function App() {
     sendInstantToggle('toggle_sabr_doublon', {}, 'sabr_anti_doublon', !(dashboardData?.settings?.sabr_anti_doublon !== false));
   };
 
+  // (#73) Le SL suiveur SABR est le seul interrupteur dont le defaut est OFF : on teste donc
+  // `=== true` et non `!== false`, sinon un exe client anterieur (champ absent) l'afficherait
+  // allume alors qu'il ne l'est pas.
+  const toggleSabrTrailing = () => {
+    sendInstantToggle('toggle_sabr_trailing', {}, 'sabr_trailing_active', !(dashboardData?.settings?.sabr_trailing_active === true));
+  };
+
   // --- RENDU ---
   if (error) return <div style={{ color: '#ff4444', textAlign: 'center', padding: '50px', background: '#121212', minHeight: '100vh', boxSizing: 'border-box', overflowX: 'hidden' }}>{error}</div>
 
@@ -1439,11 +1446,24 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
                 // au dashboard, mais sans aucun moyen de le changer ailleurs qu'en tapant
                 // /doublon_sabr. Pas de valeur numérique -> ligne en ON/OFF seul (noValue).
                 { label: 'Anti-Doublon SABR', key: 'sabr_anti_doublon', noValue: true,
-                  toggleKey: 'sabr_anti_doublon', toggleFn: toggleSabrDoublon, sabrOnly: true }
+                  toggleKey: 'sabr_anti_doublon', toggleFn: toggleSabrDoublon, sabrOnly: true },
+                // (#73) SL suiveur propre a SABR : les positions SABR sont gerees a part et
+                // n'etaient pas concernees par le "SL Suiveur" ci-dessus. Defaut OFF.
+                { label: 'SL Suiveur SABR (pips)', key: 'sabr_trailing_pips',
+                  val: settings.sabr_trailing_pips ?? 100, step: '1', mult: 1,
+                  toggleKey: 'sabr_trailing_active', toggleFn: toggleSabrTrailing,
+                  defaultOff: true, sabrOnly: true },
+                // (#72) Decalage du SL lors d'une mise a BE. Valeur signee, donc pas
+                // d'interrupteur : 0 = SL pile au prix d'entree.
+                { label: 'Décalage BE (pips)', key: 'be_offset_pips',
+                  val: settings.be_offset_pips ?? 0, step: '1', mult: 1, noToggle: true }
               ].filter((item) => (!item.riskEngineOnly || usesRiskEngine)
                                  && (!item.sabrOnly || isChannelVisible('CANAL SABR_VIP')
                                      || isChannelVisible('CANAL SABR_FREE'))).map((item) => {
-                const active = settings[item.toggleKey] !== false;
+                // defaultOff : reglage dont l'etat par defaut est ETEINT -- il faut un `true`
+                // explicite, sinon un champ absent (exe client pas a jour) l'afficherait allume.
+                const active = item.defaultOff ? settings[item.toggleKey] === true
+                                               : settings[item.toggleKey] !== false;
                 return (
                   <div key={item.key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', background: item.warn && !active ? '#3a1f1f' : '#2a2a2a', padding: '10px', borderRadius: '8px', border: item.warn && !active ? '1px solid #ff4444' : '1px solid transparent' }}>
                     <span style={{ fontSize: '0.9rem', flex: 1 }}>
@@ -1453,9 +1473,11 @@ const { account, daily_stats, settings, active_trades, closed_trades = [] } = da
                     {!item.noValue && (
                       <input type="number" step={item.step} value={item.val} onChange={(e) => updateSetting(item.key, parseFloat(e.target.value) / item.mult, { debounce: false })} style={{ background: '#121212', border: '1px solid #444', color: '#fff', padding: '5px', width: '60px', borderRadius: '4px', textAlign: 'center', marginRight: '8px' }} />
                     )}
-                    <button onClick={item.toggleFn} style={{ padding: '6px 14px', borderRadius: '20px', border: 'none', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'bold', background: active ? '#00c853' : '#ff4444', color: '#fff', minWidth: '70px' }}>
-                      {active ? 'ON 🟢' : 'OFF 🔴'}
-                    </button>
+                    {!item.noToggle && (
+                      <button onClick={item.toggleFn} style={{ padding: '6px 14px', borderRadius: '20px', border: 'none', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'bold', background: active ? '#00c853' : '#ff4444', color: '#fff', minWidth: '70px' }}>
+                        {active ? 'ON 🟢' : 'OFF 🔴'}
+                      </button>
+                    )}
                   </div>
                 );
               })}

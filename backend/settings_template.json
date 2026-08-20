@@ -2,14 +2,11 @@
     "USER_LICENSE_KEY": "FTMO-XXXXXXXX",
     "FIREBASE_EMAIL": "",
     "FIREBASE_PASSWORD": "",
-
     "TELEGRAM_API_ID": 0,
     "TELEGRAM_API_HASH": "",
     "TELEGRAM_BOT_TOKEN": "",
     "TELEGRAM_DESTINATION_ID": 0,
-
     "MT5_PATH": "C:\\Program Files\\MetaTrader 5\\terminal64.exe",
-
     "RISK_PERCENT_GOLD": 0.008,
     "RISK_PERCENT_OTHER": 0.008,
     "RISK_PERCENT_VIP": 0.008,
@@ -20,24 +17,23 @@
     "RISK_PERCENT_INDICES": 0.008,
     "RISK_PERCENT_MDT_VIP": 0.008,
     "RISK_PERCENT_MDT_FREE": 0.008,
-
     "FIXED_LOT_SABR_FREE": 0.06,
     "FIXED_LOT_SABR_VIP": 0.06,
-
     "MAX_DAILY_DRAWDOWN": 0.05,
     "TRAILING_STOP_PIPS": 85,
     "SOFT_SL_PERCENT": 0.3,
-
     "SABR_TRAILING_ACTIVE": false,
     "SABR_ANTI_DOUBLON_ACTIVE": true,
     "SABR_FORWARD_ACTIVE": true,
-
     "MUTED_CHANNELS": [],
     "CHANNEL_TP1_PCT": {},
-
-    "TIME_PRIME_RANGES": [[8, 17]],
+    "TIME_PRIME_RANGES": [
+        [
+            8,
+            17
+        ]
+    ],
     "TIME_OFF_PEAK_FACTOR": 0.5,
-
     "DAY_RISK_FACTORS": {
         "0": 1.0,
         "1": 1.0,
@@ -46,5 +42,7 @@
         "4": 1.0,
         "5": 1.0,
         "6": 1.0
-    }
+    },
+    "BE_OFFSET_PIPS": 0.0,
+    "SABR_TRAILING_PIPS": 100
 }
