@@ -56,3 +56,9 @@ chaque partie : un suffixe (`-beta`, `_test`…) lève une `ValueError` avalée 
 - **V15.2.3** — zone SABR : un prix abrégé de 3 chiffres était mal reconstruit.
   `smart_adjust_price()` raisonnait toujours en centaines, donc « sell 4395-400 » donnait une
   borne à 4600 au lieu de 4400. Elle s'aligne désormais sur le nombre de chiffres écrits.
+- **V15.3.0** — décalage du SL à la mise à BE (`BE_OFFSET_PIPS`, signé : positif = SL dans le
+  gain), SL suiveur propre à SABR (interrupteur + distance ; `SABR_TRAILING_ACTIVE` existait
+  dans les configs distribuées mais n'était lu nulle part), et section « Historique Trades »
+  avec sélecteur de période calé sur des journées entières. Côté dashboard uniquement : thème
+  forcé en sombre — la palette suivait le thème du téléphone, d'où du texte noir sur fond noir
+  chez un client en mode clair.
