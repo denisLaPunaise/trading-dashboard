@@ -524,8 +524,18 @@ DASHBOARD_MSG_ID = None
 # 🛡️ GLOBAL SESSION POUR EVITER LE SEMAPHORE TIMEOUT
 http_session = None
 
-client = TelegramClient('ftmo_bot_session', API_ID, API_HASH)
-bot_user = TelegramClient('bot_session', API_ID, API_HASH)
+# (#79) Reconnexion durcie. Les logs montrent 272 "MESSAGE RATÉ ATTRAPÉ (coupure réseau)" en
+# un mois, soit 10 à 20 par jour : la connexion Telegram tombe souvent. Rien n'est perdu (le
+# filet de sécurité rattrape), mais il ne balaie que toutes les 15 s, donc un signal peut
+# partir avec autant de retard -- ce qui se paie en slippage sur l'or.
+# Par défaut Telethon abandonne après 5 tentatives de reconnexion ; sur une liaison instable,
+# le client peut alors rester déconnecté jusqu'au prochain événement. On lui laisse plus de
+# marge et un délai un peu plus long entre deux essais.
+# À noter : ceci limite les dégâts, la cause reste la qualité réseau du VPS.
+_TELETHON_KW = dict(connection_retries=10, retry_delay=2, timeout=20,
+                    request_retries=10, auto_reconnect=True)
+client = TelegramClient('ftmo_bot_session', API_ID, API_HASH, **_TELETHON_KW)
+bot_user = TelegramClient('bot_session', API_ID, API_HASH, **_TELETHON_KW)
 
 # URL du dashboard web (une seule source : bouton du message d'appairage + bouton de menu
 # permanent configuré au démarrage, cf. setup_bot_menu_button).
@@ -5283,12 +5293,25 @@ async def main_handler(event):
                         TRADES_PROCESSED_LEVELS.setdefault(tk, set()).add("VIP_BE_DONE")
 
             if not action_taken:
-                log_unclear_signal(event.raw_text, tickets_to_manage)
-                # Le cas le plus important à repérer en relecture : une instruction du canal
-                # reçue mais qu'aucune règle n'a su interpréter -> aucune action sur le trade.
-                if event.chat_id in (ID_MDT_VIP, ID_MDT_FREE):
-                    await run_bg(debug_mdt, "MDT_VIP" if event.chat_id == ID_MDT_VIP else "MDT_FREE",
-                                 f"⚠️ INSTRUCTION NON COMPRISE — aucune action sur {tickets_to_manage} :\n{event.raw_text}")
+                # (#82) Deux situations très différentes aboutissaient au même message alarmant.
+                # Si une règle a RECONNU l'instruction (partiel, moitié ou BE) mais qu'aucun
+                # ticket n'était encore ouvert, il n'y a aucun défaut d'analyse : la consigne
+                # est simplement arrivée après la clôture. Le correctif (#68) ne couvrait que
+                # les clôtures totales ; les partiels et les BE affichaient encore
+                # "INSTRUCTION NON COMPRISE" et faisaient soupçonner un bug inexistant.
+                comprise = is_half or is_generic_partial or is_be
+                if comprise:
+                    if event.chat_id in (ID_MDT_VIP, ID_MDT_FREE):
+                        await run_bg(debug_mdt, "MDT_VIP" if event.chat_id == ID_MDT_VIP else "MDT_FREE",
+                                     f"ℹ️ INSTRUCTION COMPRISE mais sans effet (plus aucune "
+                                     f"position ouverte parmi {tickets_to_manage}) :\n{event.raw_text}")
+                else:
+                    log_unclear_signal(event.raw_text, tickets_to_manage)
+                    # Le cas le plus important à repérer en relecture : une instruction du canal
+                    # reçue mais qu'aucune règle n'a su interpréter -> aucune action sur le trade.
+                    if event.chat_id in (ID_MDT_VIP, ID_MDT_FREE):
+                        await run_bg(debug_mdt, "MDT_VIP" if event.chat_id == ID_MDT_VIP else "MDT_FREE",
+                                     f"⚠️ INSTRUCTION NON COMPRISE — aucune action sur {tickets_to_manage} :\n{event.raw_text}")
 
             return # Fin de la gestion commande
     # ==================================================================
@@ -5487,8 +5510,21 @@ async def edit_handler(event):
     rsym, act, p_msg, sl, tp, format_detected = parse_signal(event.raw_text, event.chat_id)
     if not rsym: return 
 
-    new_sl = float(sl) if sl else 0.0
-    new_tp = float(tp) if tp else 0.0
+    # (#81) `sl`/`tp` sortent d'une expression régulière : ils peuvent valoir une chaîne non
+    # convertible ("." par exemple, vu deux fois le 2026-08-11), ce qui faisait remonter
+    # "Unhandled exception on edit_handler / ValueError: could not convert string to float".
+    # L'édition du message était alors purement ignorée -- un SL corrigé par le canal n'était
+    # donc pas appliqué.
+    def _to_price(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            logger.warning(f"⚠️ Édition ignorée pour la valeur illisible {v!r} "
+                           f"(message {event.id})")
+            return 0.0
+
+    new_sl = _to_price(sl) if sl else 0.0
+    new_tp = _to_price(tp) if tp else 0.0
 
     # ==========================================
     # 1. CAS DU SIGNAL AVEUGLE (BLIND -> PRECIS)
@@ -6261,7 +6297,16 @@ if __name__ == '__main__':
             
             # On maintient la boucle asyncio en vie via le client Telegram (Telethon)
             logger.info("🔄 Boucle principale active (Telegram + Firebase).")
-            loop.run_until_complete(client.run_until_disconnected())
+            # (#80) run_until_disconnected() renvoie None quand le client est DÉJÀ déconnecté,
+            # et run_until_complete(None) lève "An asyncio.Future, a coroutine or an awaitable
+            # is required" -- remontée en "Crash Fatal Worker". C'est ce qui se passait à chaque
+            # Ctrl+C : l'arrêt volontaire produisait un CRITICAL trompeur, et le watchdog
+            # relançait le worker au lieu de le laisser s'arrêter (observé le 2026-07-29).
+            _waiter = client.run_until_disconnected()
+            if _waiter is not None:
+                loop.run_until_complete(_waiter)
+            else:
+                logger.info("ℹ️ Client Telegram déjà déconnecté — arrêt propre.")
             
         except KeyboardInterrupt:
             pass

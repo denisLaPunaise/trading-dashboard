@@ -81,8 +81,18 @@ def publish_client_metadata(user_id: str, bot_token: str, license_key: str) -> N
             url1 = f"{_FS_BASE}/licenses/{license_key}?updateMask.fieldPaths=telegram_id"
             r1 = requests.patch(url1, headers=headers, json=_doc({"telegram_id": user_id}), timeout=10)
             if r1.status_code not in (200, 201):
-                ok = False
-                logger.warning(f"⚠️ publish telegram_id: {r1.status_code} {r1.text[:120]}")
+                # (#83) Un 403 ici est le comportement ATTENDU dès le 2e démarrage : la règle
+                # Firestore n'autorise l'écriture de telegram_id qu'une seule fois, à la
+                # première inscription, pour qu'un client actif ne puisse pas le réécrire vers
+                # l'ID d'un autre et s'approprier son compte (#30). Le champ est donc déjà
+                # correct -- il n'y a rien à corriger et surtout aucune règle à redéployer.
+                # Le message d'alerte apparaissait à 22 démarrages sur 24 et faisait croire à
+                # un problème de configuration inexistant.
+                if r1.status_code == 403:
+                    logger.info("ℹ️ telegram_id déjà lié à cette licence (écriture unique) — normal.")
+                else:
+                    ok = False
+                    logger.warning(f"⚠️ publish telegram_id: {r1.status_code} {r1.text[:120]}")
 
         # 2. bot_token dans le doc privé (lisible par l'Admin SDK serveur uniquement)
         if bot_token:
