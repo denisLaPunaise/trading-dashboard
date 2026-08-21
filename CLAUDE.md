@@ -56,6 +56,14 @@ chaque partie : un suffixe (`-beta`, `_test`…) lève une `ValueError` avalée 
 - **V15.2.3** — zone SABR : un prix abrégé de 3 chiffres était mal reconstruit.
   `smart_adjust_price()` raisonnait toujours en centaines, donc « sell 4395-400 » donnait une
   borne à 4600 au lieu de 4400. Elle s'aligne désormais sur le nombre de chiffres écrits.
+- **V15.4.0** — nouveau canal **INDODOG** (groupe à sujets, sujet 64 uniquement ; signaux
+  présentés en « menu » indonésien, 3 à 5 TP). Entrée en zone à 3 ordres comme SABR, échelle
+  de partiels 30 %/20 % calculée sur le volume TOTAL du signal, annulation des ordres en
+  attente au TP1. Plus les 9 correctifs issus de l'analyse des logs de production : partiels
+  fermés en totalité (« FERMETURE PARTIELLE » déclenchait une clôture complète), BE ignoré sur
+  « SL au NIVEAU d'entrée », symbole résolu avant d'annoncer un signal valide, lot plafonné à
+  la marge libre, reconnexion Telegram durcie, faux crash au Ctrl+C, `edit_handler`, journaux
+  trompeurs.
 - **V15.3.0** — décalage du SL à la mise à BE (`BE_OFFSET_PIPS`, signé : positif = SL dans le
   gain), SL suiveur propre à SABR (interrupteur + distance ; `SABR_TRAILING_ACTIVE` existait
   dans les configs distribuées mais n'était lu nulle part), et section « Historique Trades »

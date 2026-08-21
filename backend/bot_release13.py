@@ -150,7 +150,7 @@ SECURITY_PIN = str(secrets.randbelow(900000) + 100000)
 # ==========================================
 # 🔐 CONFIGURATION DISTRIBUTION (LICENCE)
 # ==========================================
-VERSION_BOT = "15.3.0"
+VERSION_BOT = "15.4.0"
 # (URL_LICENCE retire — licence verifiee via Firestore, Phase 4)
 
 # ==========================================
@@ -214,6 +214,10 @@ ID_MDT_FREE = -1001890808461
 # 3 a 5 TP numerotes. Gestion en echelle : 30 % au TP1, 20 % de la position INITIALE a chaque
 # TP suivant, et cloture du reliquat au dernier TP du signal.
 ID_INDODOG = -1003720161775
+# Le canal est un groupe A SUJETS (comme des salons Discord) : tous les salons partagent le
+# MEME identifiant de groupe, seul le numero de sujet les distingue. Sans ce filtre, le bot
+# lirait aussi le salon de discussion generale et tenterait d'y trouver des signaux.
+INDODOG_TOPIC_ID = 64
 
 # ⚠️ LISTE DES CANAUX SOURCES (MDT_VIP, MDT_FREE, PERSO, SPACE, LIGUE, SABR_FREE, SABR_VIP, SABR_COPIE, INDODOG)
 CHANNEL_LIST = [ID_MDT_VIP, ID_MDT_FREE, -5093508256, -1002684710444, -1001753570693, -1003639045748, ID_SABR_VIP, ID_CANAL_SABR_COPIE, ID_INDODOG]
@@ -5419,6 +5423,19 @@ async def main_handler(event):
     if event.id in PROCESSED_MSG_IDS:
         return
     PROCESSED_MSG_IDS.add(event.id)
+
+    # (#84) INDODOG est un groupe a SUJETS : seul le salon des signaux nous interesse. Dans
+    # Telegram, un message d'un sujet porte le numero de celui-ci dans reply_to_top_id ; quand
+    # il repond directement au message racine du sujet, c'est reply_to_msg_id qui le porte.
+    # On teste donc les deux. Un message sans reply_to vient de la discussion generale.
+    if event.chat_id == ID_INDODOG:
+        _r = getattr(event, "reply_to", None)
+        _topic = (getattr(_r, "reply_to_top_id", None) or
+                  getattr(_r, "reply_to_msg_id", None)) if _r else None
+        if _topic != INDODOG_TOPIC_ID:
+            logger.info(f"↩️ INDODOG : message du salon {_topic} ignoré "
+                        f"(seul le sujet {INDODOG_TOPIC_ID} est suivi).")
+            return
 
     # --- AJOUT DEBUG ---
     log(f"👀 J'ai vu un message ! ID: {event.id}")
