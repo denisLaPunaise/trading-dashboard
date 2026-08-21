@@ -8,7 +8,7 @@ import threading
 import zipfile
 import gspread
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from oauth2client.service_account import ServiceAccountCredentials
 from telethon import TelegramClient, events
 from telethon.tl.types import DocumentAttributeFilename
@@ -138,7 +138,10 @@ def fb_push_set_channels(telegram_id, channels):
             "payload": {"channels": list(channels)},
             "status": "pending",
             "created_at": fb_firestore.SERVER_TIMESTAMP,
-            "expire_at": datetime.utcnow() + timedelta(days=3),  # (#12) purge TTL Firestore
+            # (#12) purge TTL Firestore. datetime.utcnow() est deprecie depuis Python 3.12 :
+            # il renvoyait un datetime NAIF que le client Firestore reinterpretait en UTC.
+            # now(timezone.utc) donne le meme instant, mais explicitement date en UTC.
+            "expire_at": datetime.now(timezone.utc) + timedelta(days=3),
         })
         return True
     except Exception as e:
