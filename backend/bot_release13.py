@@ -5304,13 +5304,29 @@ async def main_handler(event):
         # ===============================
         
         if rsym and act:
-            log(f"✅ SIGNAL VALIDE: {act} {rsym}", important=True) # Confirmation visuelle
-            
+            # (#77) Le symbole est résolu AVANT d'annoncer un signal valide. L'ordre inverse
+            # affichait "✅ SIGNAL VALIDE: VENTE SUR" puis une erreur : un vrai signal perdu
+            # ressemblait donc à un succès et se noyait dans les 108 échecs de symbole du log.
             sym = find_tradable_symbol(rsym)
+
+            # Rattrapage : l'expression d'extraction prend le premier mot de 3 à 10 caractères
+            # après le verbe d'action, donc elle attrape parfois un mot de liaison ("SUR",
+            # "NOUVEAU") ou le prix lui-même. Si le message nomme l'or en toutes lettres, on
+            # sait quoi trader malgré tout. Vérifié sur "Je me replace en vente sur l'or now"
+            # (2026-08-06), signal complet avec SL et TP qui n'avait jamais été exécuté.
+            if not sym and re.search(r"\bL['’]?OR\b|\bGOLD\b|\bXAU", final_text, re.IGNORECASE):
+                sym = find_tradable_symbol("XAUUSD")
+                if sym:
+                    logger.warning(f"⚠️ Symbole '{rsym}' invalide, mais le message parle de "
+                                   f"l'or -> {sym}")
+
             if not sym:
                 # L'alerte Telegram a été retirée, on garde uniquement le log local
-                logger.error(f"❌ Erreur: Symbole {rsym} non trouvé dans MT5")
+                logger.error(f"❌ Signal ignoré — symbole '{rsym}' introuvable dans MT5. "
+                             f"Message : {final_text[:120].replace(chr(10), ' | ')}")
                 return
+
+            log(f"✅ SIGNAL VALIDE: {act} {sym}", important=True) # Confirmation visuelle
             
             log_p = p_msg if p_msg else "MARKET"
 
