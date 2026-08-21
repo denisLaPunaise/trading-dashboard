@@ -5095,11 +5095,28 @@ async def main_handler(event):
         # AU POINT D'ENTRÉE"). Avant, tout message contenant "PROFIT"/"MOITIÉ"/"PARTIEL"
         # était ignoré (y compris des clôtures totales du type "Fermeture totale avec
         # +10 pips de profit") -- corrigé ici.
-        is_full_close = any(k in txt_upper for k in keywords_stop)
         is_half = ("MOITI" in txt_upper) or ("50%" in txt_upper) or ("HALF" in txt_upper)
-        is_generic_partial = ("PARTIEL" in txt_upper) and not is_half
+        # (#75) Le canal écrit indifféremment "PARTIELLEMENT" et "UNE PARTIE". Seul "PARTIEL"
+        # était reconnu, donc "FERMEZ UNE PARTIE DE LA POSITION : PLUS DE 150 PIPS" ne
+        # déclenchait rien (observé 6 fois). On exige un verbe de clôture juste avant "PARTIE"
+        # pour ne pas confondre avec un "faire partie de" anodin.
+        _partie = re.search(r"(?:FERM|CL[OÔ]TUR|PREN|ENCAISS|S[EÉ]CURIS)\w*\s+(?:UNE\s+)?PARTIE",
+                            txt_upper)
+        is_generic_partial = (("PARTIEL" in txt_upper) or bool(_partie)) and not is_half
+        # (#75) Un ordre de PARTIEL prime sur la détection de clôture totale. "FERMETURE
+        # PARTIELLE" contient "FERMETURE", qui est un mot-clé de clôture : le bot fermait donc
+        # 100 % de la position alors que le canal demandait d'en garder une partie. Constaté
+        # deux fois en production (tickets 518280447 le 13/08 et 522831991 le 19/08), le
+        # reliquat qui devait continuer à courir étant liquidé à chaque fois.
+        is_full_close = (any(k in txt_upper for k in keywords_stop)
+                         and not (is_half or is_generic_partial))
+        # (#76) La détection exigeait littéralement le mot "POINT". Sur 64 consignes de BE
+        # relevées dans les logs, 53 disent "au POINT d'entrée", 9 "au NIVEAU d'entrée" et
+        # 1 "au PRIX d'entrée" : ces 10 dernières étaient ignorées, le partiel se faisait mais
+        # le stop restait en place. Les trois formulations sont désormais acceptées.
         is_be = ("BREAKEVEN" in txt_upper) or ("BE" == txt_upper.strip()) or \
-                ("POINT" in txt_upper and "ENTR" in txt_upper and "SL" in txt_upper)
+                (any(w in txt_upper for w in ("POINT", "NIVEAU", "PRIX"))
+                 and "ENTR" in txt_upper and "SL" in txt_upper)
 
         original_msg_id = event.reply_to_msg_id
 
