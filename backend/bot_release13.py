@@ -2139,6 +2139,49 @@ async def get_last_used_lot(symbol):
                 
     return None
 
+def cap_lot_to_free_margin(symbol, action, lot, price, otype=None):
+    """(#78) Réduit le lot pour qu'il tienne dans la marge libre du compte.
+
+    Sans SL, la taille vient d'une table de lots par symbole (BASE_LOTS_FOR_01_PCT) qui ne
+    consulte jamais le solde : le 2026-08-09, un signal BTCUSD sans SL a produit 0.04 lot et
+    MT5 a répondu `REJET (10019) : No money`. Le signal était alors perdu, alors qu'une taille
+    plus petite serait passée.
+
+    Retourne le lot d'origine s'il tient, une version réduite sinon, ou 0.0 si même le lot
+    minimum du broker ne rentre pas -- auquel cas il vaut mieux ne pas envoyer d'ordre du tout
+    plutôt que de se faire rejeter.
+    """
+    try:
+        acc = mt5.account_info()
+        info = mt5.symbol_info(symbol)
+        if not acc or not info or lot <= 0:
+            return lot
+        if otype is None:
+            otype = mt5.ORDER_TYPE_BUY if action == "ACHAT" else mt5.ORDER_TYPE_SELL
+        need = mt5.order_calc_margin(otype, symbol, lot, price)
+        if not need or need <= 0:
+            return lot
+        # 90 % de la marge libre : on ne colle pas au plafond, sinon la moindre variation de
+        # prix entre le calcul et l'exécution refait passer l'ordre en rejet.
+        usable = acc.margin_free * 0.90
+        if need <= usable:
+            return lot
+
+        step = info.volume_step if info.volume_step > 0 else 0.01
+        capped = math.floor((lot * (usable / need)) / step) * step
+        capped = round(min(capped, info.volume_max), 2)
+        if capped < info.volume_min:
+            logger.error(f"❌ Marge insuffisante sur {symbol} : même {info.volume_min} lot "
+                         f"ne passe pas (libre {acc.margin_free:.2f}). Ordre abandonné.")
+            return 0.0
+        logger.warning(f"⚠️ Lot réduit sur {symbol} : {lot:.2f} -> {capped:.2f} "
+                       f"(marge requise {need:.2f} > libre {acc.margin_free:.2f})")
+        return capped
+    except Exception as e:
+        logger.warning(f"⚠️ cap_lot_to_free_margin ({symbol}) : {e}")
+        return lot
+
+
 async def get_safe_lot_size(symbol, signal_type, sl_price, entry_price_ref, channel_source=None, risk_override=None):
     # 1. Sélection Symbole (SYNCHRONE)
     await run_mt5(mt5.symbol_select, "EURUSD", True)
@@ -2832,6 +2875,12 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
             else:
                 lot = target_lot
                 
+        if lot < 0.01: continue
+
+        # (#78) Dernier filtre avant l'envoi : la taille calculée doit tenir dans la marge
+        # libre. Sans ça, un lot trop gros partait quand même et MT5 le rejetait ("No money"),
+        # le signal étant alors purement perdu.
+        lot = await run_mt5(cap_lot_to_free_margin, symbol, action, lot, final_px, otype)
         if lot < 0.01: continue
 
         # --- 🧮 NOUVEAU : CALCUL ET LOG DU RISQUE EXACT ---
