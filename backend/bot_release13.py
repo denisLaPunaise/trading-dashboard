@@ -562,6 +562,10 @@ PARTIAL_PROFITS = {}
 TP1_PRICE_BY_TICKET = {}
 # (#84) Echelle de TP d'un trade INDODOG : { ticket: [tp1, tp2, ...] }, dans l'ordre du signal.
 INDO_TP_BY_TICKET = {}
+# (#84) Paliers deja pris et volume de reference, indexes par SIGNAL : une zone pose plusieurs
+# ordres, mais l'echelle de TP est commune a tout le signal.
+INDO_LEVELS_BY_SIGNAL = {}
+INDO_BASE_VOL_BY_SIGNAL = {}
 
 CACHE_SYMBOL_POINT = {}
 
@@ -959,13 +963,10 @@ def parse_signal(raw_text, channel_id=None):
             p_a = m_e.group(1).replace(",", ".")
             p_b = (m_e.group(2) or "").replace(",", ".")
             if p_b:
-                # Entree donnee en ZONE ("4516 - 4510") : on vise le MILIEU. Prendre la borne
-                # haute remplirait plus souvent mais au pire prix, la borne basse donnerait le
-                # meilleur prix mais raterait les entrees qui ne descendent pas jusqu'au bout.
-                try:
-                    price = str(round((float(p_a) + float(p_b)) / 2, 5))
-                except Exception:
-                    price = p_a
+                # Entree donnee en ZONE ("4516 - 4510") : meme traitement que SABR, on renvoie
+                # les DEUX bornes separees par "|". execute_trade se charge de repartir le lot
+                # sur trois ordres etages dans la zone.
+                price = "%s|%s" % (p_a, p_b)
             else:
                 price = p_a
 
@@ -1303,11 +1304,14 @@ def save_memory():
     # irait d'un coup jusqu'au TP final.
     try:
         with open(INDO_TP_FILENAME, "w") as f:
-            json.dump({str(k): v for k, v in INDO_TP_BY_TICKET.items()}, f)
+            json.dump({"tp": {str(k): v for k, v in INDO_TP_BY_TICKET.items()},
+                       "levels": {k: list(v) for k, v in INDO_LEVELS_BY_SIGNAL.items()},
+                       "base": INDO_BASE_VOL_BY_SIGNAL}, f)
     except Exception as e: logger.warning(f"⚠️ Save INDODOG TP Error: {e}")
 
 def load_memory():
     global TRADES_PROCESSED_LEVELS, MANAGED_MANUAL_TICKETS, PARTIAL_PROFITS, INDO_TP_BY_TICKET
+    global INDO_LEVELS_BY_SIGNAL, INDO_BASE_VOL_BY_SIGNAL
     
     # 1. Chargement des Niveaux
     if os.path.exists(MEMORY_FILENAME):
@@ -1344,7 +1348,15 @@ def load_memory():
     if os.path.exists(INDO_TP_FILENAME):
         try:
             with open(INDO_TP_FILENAME, "r") as f:
-                INDO_TP_BY_TICKET = {int(k): v for k, v in json.load(f).items()}
+                _d = json.load(f)
+            # Ancien format (dict plat ticket -> paliers) accepte pour ne rien perdre lors
+            # d'une mise a jour en cours de trade.
+            if "tp" in _d:
+                INDO_TP_BY_TICKET = {int(k): v for k, v in _d.get("tp", {}).items()}
+                INDO_LEVELS_BY_SIGNAL = {k: set(v) for k, v in _d.get("levels", {}).items()}
+                INDO_BASE_VOL_BY_SIGNAL = _d.get("base", {})
+            else:
+                INDO_TP_BY_TICKET = {int(k): v for k, v in _d.items()}
             logger.info(f"🍽 Paliers INDODOG restaurés ({len(INDO_TP_BY_TICKET)} trades)")
         except Exception as e: logger.warning(f"⚠️ Load INDODOG TP Error: {e}")
 
@@ -2802,7 +2814,58 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
     # 3. Préparation des Lots et Prix (SABR vs CLASSIC)
     trades_to_execute = [] # Liste de tuples (TargetPrice, FixedLot) -> Si TargetPrice est None = Market
     
-    if "SABR" in channel_source:
+    if channel_source == "CANAL INDODOG":
+        # (#84) Lot fixe, et entree en ZONE traitee comme SABR : trois ordres etages entre les
+        # deux bornes. Les paliers de TP porteront ensuite sur le volume TOTAL reellement pris
+        # (cf. gestion par signal dans monitor_positions), et non sur chaque ordre isolement.
+        total_vol = round(FIXED_LOT_INDODOG * custom_lot_modifier, 2)
+        if total_vol < 0.01: total_vol = 0.01
+
+        if price_signal and "|" in str(price_signal):
+            parts_i = str(price_signal).split("|")
+            try:
+                pa, pb = float(parts_i[0]), float(parts_i[1])
+            except Exception:
+                pa = pb = curr_price
+            # Normalisation : p1 = borne proche du marche (gros lot), p2 = borne eloignee.
+            hi_i, lo_i = max(pa, pb), min(pa, pb)
+            p1_i, p2_i = (hi_i, lo_i) if action == "ACHAT" else (lo_i, hi_i)
+            pmid_i = (p1_i + p2_i) / 2
+
+            step_i = s_info.volume_step if s_info.volume_step > 0 else 0.01
+            slots_i = round(total_vol / step_i)
+            if slots_i >= 3:
+                pct1_i = max(0.01, min(0.98, SABR_ZONE_PCT1))
+                pct2_i = max(0.01, min(0.98 - pct1_i, SABR_ZONE_PCT2))
+                l1 = round(total_vol * pct1_i, 2)
+                l2 = round(total_vol * pct2_i, 2)
+                l3 = round(total_vol - l1 - l2, 2)
+                for _v in (l1, l2, l3):
+                    if _v < step_i: _v = step_i
+            elif slots_i == 2:
+                l1, l2, l3 = step_i, round(total_vol - step_i, 2), 0.0
+            else:
+                l1, l2, l3 = round(total_vol, 2), 0.0, 0.0
+
+            # Premiere borne au marche si le prix y est deja (meme regle que SABR)
+            dist1_i = (abs(p1_i - curr_price) / pt) / div
+            px1_i = None if dist1_i <= 30 else p1_i
+            if l1 > 0: trades_to_execute.append((px1_i, l1))
+            if l2 > 0: trades_to_execute.append((pmid_i, l2))
+            if l3 > 0: trades_to_execute.append((p2_i, l3))
+        else:
+            tgt_i = None
+            if price_signal:
+                try: tgt_i = float(str(price_signal).replace(",", "."))
+                except Exception: pass
+            if tgt_i:
+                gap_i = (abs(tgt_i - curr_price) / pt) / div
+                if gap_i <= 5.0: tgt_i = None      # deja au prix : on prend au marche
+            trades_to_execute.append((tgt_i, total_vol))
+
+        logger.info("🍽 INDODOG : %.2f lot(s) -> %s" % (total_vol, trades_to_execute))
+
+    elif "SABR" in channel_source:
         # --- A. Détermination du volume TOTAL ---
         sym_up_sabr = symbol.upper()
         is_gold_sabr = "XAU" in sym_up_sabr or "GOLD" in sym_up_sabr
@@ -3373,6 +3436,10 @@ async def check_closed_positions():
             source = normalize_channel_source(raw_source)
 
             signal_id = ACTIVE_TRADE_SIGNALS.pop(t, "") or f"_tk{t}"
+            # Reste-t-il d'autres ordres/positions rattaches au MEME signal ? Sert au nettoyage
+            # de l'etat INDODOG plus bas : une zone pose plusieurs ordres, on ne purge qu'au
+            # dernier. Le ticket courant vient d'etre retire, la reponse est donc exacte.
+            still_open = any(sg == signal_id for sg in ACTIVE_TRADE_SIGNALS.values())
 
             # (#stats) Valeur d'un pip pour 1.00 lot : permet de repondérer proprement les pips
             # a posteriori, et d'expliquer un canal qui gagne en € tout en perdant en pips
@@ -3393,6 +3460,12 @@ async def check_closed_positions():
             ACTIVE_TRADE_SOURCES.pop(t, None)
             TP1_PRICE_BY_TICKET.pop(t, None)
             INDO_TP_BY_TICKET.pop(t, None)
+            # (#84) L'etat INDODOG est indexe par SIGNAL : on ne le purge qu'une fois le
+            # DERNIER ordre de ce signal referme, sinon les paliers deja pris seraient oublies
+            # et les partiels rejoues sur les positions encore ouvertes de la meme zone.
+            if not still_open:
+                INDO_LEVELS_BY_SIGNAL.pop(signal_id, None)
+                INDO_BASE_VOL_BY_SIGNAL.pop(signal_id, None)
             await run_bg(save_channel_data)
 
             # --- 👇 GENERATION DU FICHIER CSV DETAILLE 👇 ---
@@ -3916,6 +3989,65 @@ async def license_watchdog():
             # session, sans log ni alerte.
             logger.error(f"license_watchdog error: {e}")
 
+async def cancel_pending_of_signal(sig_key):
+    """(#84) Annule les ordres encore EN ATTENTE appartenant a ce signal.
+
+    Appele des le premier TP d'une entree en zone : les bornes non remplies n'ont plus lieu
+    d'etre, le mouvement est deja parti. Sans ca, un ordre restant pourrait se declencher plus
+    tard, a contre-courant, en rouvrant une position que le signal considere comme terminee.
+    """
+    annules = 0
+    try:
+        orders = await run_mt5(mt5.orders_get)
+        for o in (orders or []):
+            if o.magic != MAGIC_NUMBER:
+                continue
+            if ACTIVE_TRADE_SIGNALS.get(o.ticket) != sig_key:
+                continue
+            res = await run_mt5(_send_order_blocking,
+                                {"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket,
+                                 "magic": MAGIC_NUMBER})
+            if res and res.retcode == mt5.TRADE_RETCODE_DONE:
+                annules += 1
+                ACTIVE_TRADE_SIGNALS.pop(o.ticket, None)
+                ACTIVE_TRADE_SOURCES.pop(o.ticket, None)
+                logger.warning("🗑 Ordre %s annule (zone INDODOG terminee)" % o.ticket)
+    except Exception as e:
+        logger.warning("cancel_pending_of_signal : %s" % e)
+    return annules
+
+
+async def close_volume_across(positions, vol_target, label, pips):
+    """(#84) Ferme vol_target lots repartis sur plusieurs positions d'un meme signal.
+
+    Les paliers INDODOG portent sur le volume TOTAL du signal, pas sur une position : il faut
+    donc puiser dans les positions successives jusqu'a atteindre la quantite voulue. On sert
+    les plus GROSSES d'abord, pour eviter de reduire une petite position sous le volume minimum
+    du courtier et de la rendre infermable par tranches.
+
+    Retourne le volume reellement ferme.
+    """
+    restant = round(vol_target, 2)
+    ferme = 0.0
+    for p in sorted(positions, key=lambda x: x.volume, reverse=True):
+        if restant < 0.01:
+            break
+        info = mt5.symbol_info(p.symbol)
+        vmin = info.volume_min if info else 0.01
+        # On ne laisse jamais un residu inferieur au minimum du courtier : dans ce cas on
+        # prend la position entiere plutot que de la rendre inexploitable.
+        prise = min(p.volume, restant)
+        if round(p.volume - prise, 2) < vmin:
+            prise = p.volume
+        prise = round(prise, 2)
+        if prise < vmin:
+            continue
+        if await close_partial(p, 0.0, label, pips, fixed_lot=prise):
+            ferme = round(ferme + prise, 2)
+            restant = round(restant - prise, 2)
+    return ferme
+
+
 async def monitor_positions():
     global watched_tickets, PENDING_ORDER_TICKETS
 
@@ -4122,6 +4254,7 @@ async def monitor_positions():
             if all_positions is not None:
                 
                 sabr_groups = {} 
+                indo_groups = {}   # (#84) INDODOG groupe par SIGNAL, pas par symbole
                 
                 for pos in all_positions:
                     # 🛑 LE BOUCLIER WEEK-END ABSOLU
@@ -4146,6 +4279,14 @@ async def monitor_positions():
                     if "SABR" in src_trade:
                         if pos.symbol not in sabr_groups: sabr_groups[pos.symbol] = []
                         sabr_groups[pos.symbol].append(pos)
+                        continue
+
+                    # (#84) INDODOG : gestion PAR SIGNAL et non par position. Une entree en
+                    # zone pose 3 ordres ; les paliers de TP se calculent sur le volume TOTAL
+                    # reellement pris, donc il faut voir le groupe entier avant de decider.
+                    if src_trade == "CANAL INDODOG":
+                        sig_key = ACTIVE_TRADE_SIGNALS.get(pos.ticket) or f"_tk{pos.ticket}"
+                        indo_groups.setdefault(sig_key, []).append(pos)
                         continue 
                     
                     # --- LOGIQUE STANDARD ---
@@ -4260,61 +4401,6 @@ async def monitor_positions():
                                 processed.add("VIP_BE_DONE")
                             await run_bg(save_memory)
 
-                        continue
-
-                    # 🍽 STRATEGIE SPECIFIQUE : CANAL INDODOG (#84)
-                    # Echelle de TP lue dans le signal : 30 % de la position INITIALE au TP1,
-                    # puis 20 % a chaque palier suivant. Le DERNIER palier n'est pas traite ici
-                    # volontairement : il a ete envoye a MT5 comme TP de l'ordre, donc le
-                    # courtier ferme lui-meme le reliquat -- c'est ce qui garantit "on ferme
-                    # tout au TP final" meme si le bot est arrete a ce moment-la.
-                    if src_trade == "CANAL INDODOG":
-                        ladder = INDO_TP_BY_TICKET.get(pos.ticket) or []
-                        if len(ladder) >= 2:
-                            deals_i = await run_mt5(mt5.history_deals_get, position=pos.ticket)
-                            initial_vol = deals_i[0].volume if (deals_i and len(deals_i) > 0) else pos.volume
-
-                            for idx, tp_price in enumerate(ladder[:-1], start=1):
-                                tag = f"INDO_TP{idx}"
-                                if tag in processed:
-                                    continue
-                                atteint = (curr >= tp_price) if pos.type == mt5.ORDER_TYPE_BUY                                           else (curr <= tp_price)
-                                if not atteint:
-                                    break  # les paliers sont ordonnes : inutile de tester les suivants
-
-                                pct = INDO_TP1_PCT if idx == 1 else INDO_TP_NEXT_PCT
-                                vol_cible = round(initial_vol * pct, 2)
-                                if vol_cible < 0.01:
-                                    vol_cible = 0.01
-
-                                # Si le reliquat ne suffit plus, on laisse MT5 fermer au TP
-                                # final plutot que de tenter un partiel impossible.
-                                if round(pos.volume - vol_cible, 2) < 0.01:
-                                    processed.add(tag)
-                                    continue
-
-                                if await close_partial(pos, 0.0, f"INDODOG TP{idx} ({int(pct*100)}%)",
-                                                       pips, fixed_lot=vol_cible):
-                                    processed.add(tag)
-                                    await run_bg(save_memory)
-
-                                    # Le canal recommande lui-meme la mise a BE des le TP1
-                                    # ("boleh simpan piring dulu (BE)") : on l'applique.
-                                    if idx == 1 and "INDO_BE" not in processed:
-                                        be_p = compute_be_price(pos.price_open,
-                                                                pos.type == mt5.ORDER_TYPE_BUY, sym)
-                                        bouger = (pos.type == mt5.ORDER_TYPE_BUY and pos.sl < be_p) or                                                  (pos.type == mt5.ORDER_TYPE_SELL and (pos.sl > be_p or pos.sl == 0))
-                                        if bouger:
-                                            req_be = {"action": mt5.TRADE_ACTION_SLTP, "symbol": sym,
-                                                      "position": pos.ticket,
-                                                      "sl": round(be_p / pt) * pt, "tp": pos.tp}
-                                            res_be = await run_mt5(_send_order_blocking, req_be)
-                                            if res_be and res_be.retcode == mt5.TRADE_RETCODE_DONE:
-                                                await send_channel_alert(
-                                                f"🛡️ **INDODOG : SL AU BE** (TP1 atteint)\n\n"
-                                                f"Symbole: {sym}\nTicket: {pos.ticket}", src_trade)
-                                        processed.add("INDO_BE")
-                                break  # un seul palier par cycle, on relit les volumes au suivant
                         continue
 
                     # --- GESTION TP (CORRIGÉE) ---
@@ -4545,6 +4631,89 @@ async def monitor_positions():
                                         f"Symbole: {sym}\nSource: {p_src_tr}\n"
                                         f"Ticket: {p.ticket}\nNouveau SL: {target_sl}",
                                         ACTIVE_TRADE_SOURCES.get(p.ticket, ""))
+
+                # ==========================================
+                # 🍽 GESTION INDODOG PAR SIGNAL (#84)
+                # ==========================================
+                # Une entree en zone pose 3 ordres. Les paliers de TP se calculent sur le
+                # volume TOTAL reellement pris (donc seulement les ordres REMPLIS), et non
+                # position par position : c'est la regle voulue cote canal.
+                for sig_key, positions in indo_groups.items():
+                    if not positions: continue
+                    ladder = INDO_TP_BY_TICKET.get(positions[0].ticket) or []
+                    if len(ladder) < 2: continue
+
+                    ref = positions[0]
+                    sym_i = ref.symbol
+                    is_buy_i = (ref.type == mt5.ORDER_TYPE_BUY)
+                    tick_i = mt5.symbol_info_tick(sym_i)
+                    if not tick_i: continue
+                    curr_i = tick_i.bid if is_buy_i else tick_i.ask
+                    pt_i = get_cached_point(sym_i); div_i = get_pip_divisor(sym_i)
+
+                    # Les marqueurs de palier sont poses sur le SIGNAL, pas sur un ticket :
+                    # sinon chaque ordre de la zone reprendrait l'echelle depuis le debut.
+                    done = INDO_LEVELS_BY_SIGNAL.setdefault(sig_key, set())
+
+                    # Volume de reference = somme des positions ouvertes du signal, FIGEE au
+                    # premier palier. Sans ce gel, l'annulation des ordres en attente ferait
+                    # fondre la base et les 20 % suivants porteraient sur un total plus petit.
+                    base_vol = INDO_BASE_VOL_BY_SIGNAL.get(sig_key)
+                    if base_vol is None:
+                        base_vol = round(sum(p.volume for p in positions), 2)
+
+                    for idx, tp_price in enumerate(ladder[:-1], start=1):
+                        tag = "INDO_TP%d" % idx
+                        if tag in done: continue
+                        atteint = (curr_i >= tp_price) if is_buy_i else (curr_i <= tp_price)
+                        if not atteint: break   # paliers ordonnes : inutile de tester la suite
+
+                        # --- Au PREMIER palier : on fige la base et on annule le reste de la zone
+                        if idx == 1:
+                            base_vol = round(sum(p.volume for p in positions), 2)
+                            INDO_BASE_VOL_BY_SIGNAL[sig_key] = base_vol
+                            annules = await cancel_pending_of_signal(sig_key)
+                            if annules:
+                                await send_channel_alert(
+                                    "🗑 **INDODOG : ZONE NETTOYEE**" + chr(10) + chr(10) +
+                                    ("%d ordre(s) en attente annule(s) apres le TP1." % annules),
+                                    "CANAL INDODOG")
+
+                        pct_i = INDO_TP1_PCT if idx == 1 else INDO_TP_NEXT_PCT
+                        # Arrondi a l'INFERIEUR sur le pas du courtier. Avec un arrondi au plus
+                        # proche, 20 % de 0.08 donne 0.016 -> 0.02, et les quatre paliers
+                        # consommaient 100 % du volume : il ne restait plus rien a fermer au TP
+                        # final, alors que la regle veut qu'une part y arrive toujours.
+                        info_i = mt5.symbol_info(sym_i)
+                        step_z = info_i.volume_step if (info_i and info_i.volume_step > 0) else 0.01
+                        vol_cible = math.floor((base_vol * pct_i) / step_z) * step_z
+                        vol_cible = round(vol_cible, 2)
+                        if vol_cible < step_z: vol_cible = round(step_z, 2)
+
+                        pips_i = ((curr_i - ref.price_open) / pt_i) / div_i if is_buy_i                                  else ((ref.price_open - curr_i) / pt_i) / div_i
+
+                        ferme = await close_volume_across(positions, vol_cible,
+                                                          "INDODOG TP%d (%d%%)" % (idx, int(pct_i * 100)),
+                                                          pips_i)
+                        if ferme > 0:
+                            done.add(tag)
+                            await run_bg(save_memory)
+
+                            # BE au TP1 : recommande par le canal dans chaque message
+                            if idx == 1 and "INDO_BE" not in done:
+                                for p in positions:
+                                    be_i = compute_be_price(p.price_open, is_buy_i, sym_i)
+                                    besoin = (is_buy_i and p.sl < be_i) or                                              ((not is_buy_i) and (p.sl > be_i or p.sl == 0))
+                                    if besoin:
+                                        req_i = {"action": mt5.TRADE_ACTION_SLTP, "symbol": sym_i,
+                                                 "position": p.ticket,
+                                                 "sl": round(be_i / pt_i) * pt_i, "tp": p.tp}
+                                        await run_mt5(_send_order_blocking, req_i)
+                                done.add("INDO_BE")
+                                await send_channel_alert(
+                                    "🛡 **INDODOG : SL AU BE** (TP1 atteint)" + chr(10) + chr(10) +
+                                    ("Symbole: %s" % sym_i), "CANAL INDODOG")
+                        break   # un seul palier par cycle : on relit les volumes au suivant
 
         except Exception as e: 
             logger.error(f"Monitor Error: {e}")
