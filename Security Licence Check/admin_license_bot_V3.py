@@ -288,6 +288,8 @@ VALID_CHANNEL_TOKENS = {
     "MDT_VIP":    "CANAL MDT_VIP",
     "MDT_FREE":   "CANAL MDT_FREE",
     "SPACE":      "CANAL SPACE",
+    "INDODOG":    "CANAL INDODOG",
+    "INDO":       "CANAL INDODOG",
     "LIGUE":      "CANAL LIGUE",
     "PERSO":      "CANAL PERSO",
 }
@@ -297,15 +299,16 @@ CHANNEL_PROFILES = {
     "sabr":  ["CANAL SABR_VIP", "CANAL SABR_FREE"],
     "mdt":   ["CANAL MDT_VIP", "CANAL MDT_FREE"],
     "space": ["CANAL SPACE"],
+    "indodog": ["CANAL INDODOG"],
     "ligue": ["CANAL LIGUE"],
     "perso": ["CANAL PERSO"],
     # 'full' = tout SAUF SABR_COPIE (qui reste réservé à une assignation manuelle)
     "full":  ["CANAL SABR_VIP", "CANAL SABR_FREE", "CANAL MDT_VIP", "CANAL MDT_FREE",
-              "CANAL SPACE", "CANAL LIGUE", "CANAL PERSO"],
+              "CANAL SPACE", "CANAL LIGUE", "CANAL PERSO", "CANAL INDODOG"],
     # 'dev' = version complète : tous les canaux (SABR_COPIE inclus) + validité illimitée d'office
     "dev":   ["CANAL SABR_VIP", "CANAL SABR_FREE", "CANAL SABR_COPIE",
               "CANAL MDT_VIP", "CANAL MDT_FREE",
-              "CANAL SPACE", "CANAL LIGUE", "CANAL PERSO"],
+              "CANAL SPACE", "CANAL LIGUE", "CANAL PERSO", "CANAL INDODOG"],
 }
 
 
@@ -359,6 +362,7 @@ SETTINGS_TEMPLATE = {
     "RISK_PERCENT_VIP": 0.008,
     "RISK_PERCENT_FREE": 0.008,
     "RISK_PERCENT_SPACE": 0.008,
+    "FIXED_LOT_INDODOG": 0.10,
     "RISK_PERCENT_LIGUE": 0.008,
     "RISK_PERCENT_PERSO": 0.008,
     "RISK_PERCENT_INDICES": 0.008,
@@ -1708,7 +1712,7 @@ async def main_handler(event):
                           "Profils : sabr, mdt, space, ligue, perso, full, none\n"
                           "⚠️ `dev` : profil réservé/interne -- inclut SABR_COPIE (seule exception) + validité illimitée. "
                           "Ne l'assigne JAMAIS à un vrai client payant via /channels.\n"
-                          "Canaux : SABR_VIP, SABR_FREE, SABR_COPIE, MDT_VIP, MDT_FREE, SPACE, LIGUE, PERSO\n"
+                          "Canaux : SABR_VIP, SABR_FREE, SABR_COPIE, MDT_VIP, MDT_FREE, INDODOG, SPACE, LIGUE, PERSO\n"
                           "⚠️ SABR_COPIE jamais dans un pack normal (à mettre à la main, sauf dev)\n\n\n"
                           "🔧 **GESTION**\n\n"
                           "`/info Clé` : Voir détails (PC, Date...)\n"

@@ -209,8 +209,14 @@ ID_CANAL_SABR_COPIE = -1003738415220
 ID_MDT_VIP = -1002139883659
 ID_MDT_FREE = -1001890808461
 
-# ⚠️ LISTE DES CANAUX SOURCES (MDT_VIP, MDT_FREE, PERSO, SPACE, LIGUE, SABR_FREE, SABR_VIP, SABR_COPIE)
-CHANNEL_LIST = [ID_MDT_VIP, ID_MDT_FREE, -5093508256, -1002684710444, -1001753570693, -1003639045748, ID_SABR_VIP, ID_CANAL_SABR_COPIE]
+# (#84) INDODOG -- signaux presentes sous forme de "menu de restaurant" indonesien, mais de
+# structure tres reguliere : action + symbole, prix d'entree (parfois une zone), SL, puis de
+# 3 a 5 TP numerotes. Gestion en echelle : 30 % au TP1, 20 % de la position INITIALE a chaque
+# TP suivant, et cloture du reliquat au dernier TP du signal.
+ID_INDODOG = -1003720161775
+
+# ⚠️ LISTE DES CANAUX SOURCES (MDT_VIP, MDT_FREE, PERSO, SPACE, LIGUE, SABR_FREE, SABR_VIP, SABR_COPIE, INDODOG)
+CHANNEL_LIST = [ID_MDT_VIP, ID_MDT_FREE, -5093508256, -1002684710444, -1001753570693, -1003639045748, ID_SABR_VIP, ID_CANAL_SABR_COPIE, ID_INDODOG]
 
 # Ton Groupe de Logs
 ADMIN_ID = 0 #-1003692316672
@@ -252,6 +258,15 @@ RISK_PERCENT_PERSO = 0.006         # 0.6% par défaut
 
 FIXED_LOT_SABR_FREE = 0.06         # Lot TOTAL par défaut pour SABR Free (OR uniquement)
 FIXED_LOT_SABR_VIP = 0.06          # Lot TOTAL par défaut pour SABR VIP (OR uniquement)
+# (#84) INDODOG : lot fixe, comme SABR. 0.10 par defaut et non 0.06, parce que l'echelle de TP
+# retire 20 % de la position INITIALE a chaque palier : sous 0.10, avec un pas de volume de
+# 0.01, les arrondis consomment tout le reliquat avant le dernier TP.
+FIXED_LOT_INDODOG = 0.10
+# Repartition de l'echelle : 30 % au TP1 puis 20 % aux suivants. Le DERNIER TP du signal ferme
+# tout ce qui reste, quel que soit le nombre de paliers -- c'est ce qui evite de depasser
+# 100 % quand un signal comporte 5 TP (30 + 20x4 = 110 %).
+INDO_TP1_PCT = 0.30
+INDO_TP_NEXT_PCT = 0.20
 # (#3) SABR hors-or : sizing par risque % (basé sur le SL du signal), réglable au dashboard.
 RISK_PERCENT_SABR_OTHER = 0.006    # 0.6% par défaut pour les paires SABR autres que l'or
 # False = répartition manuelle (SABR_ZONE_PCT1/PCT2 ci-dessous, 45%/35%/20% par défaut,
@@ -279,7 +294,8 @@ ALLOWED_CHANNELS = []
 # (recompute_pack_lock()) -- jamais modifié à la main, distinct de MUTED_CHANNELS pour
 # qu'un /unmute ne puisse jamais lever un verrouillage imposé par le pack.
 ALL_PACK_CHANNELS = ["CANAL SABR_VIP", "CANAL SABR_FREE", "CANAL SABR_COPIE",
-                     "CANAL MDT_VIP", "CANAL MDT_FREE", "CANAL SPACE", "CANAL LIGUE", "CANAL PERSO"]
+                     "CANAL MDT_VIP", "CANAL MDT_FREE", "CANAL SPACE", "CANAL LIGUE", "CANAL PERSO",
+                     "CANAL INDODOG"]
 PACK_LOCKED_CHANNELS = []
 # (#26) Pack source de vérité = Firestore (licenses/{key}.allowed_channels), pas le
 # settings.json local (sinon un client peut éditer le fichier pour tout débloquer).
@@ -426,6 +442,7 @@ SETTINGS_FILENAME = "settings.json"
 # unique des stats par canal. Un fichier résiduel sur un poste client est simplement ignoré.
 SOURCES_MEMORY_FILE = "active_sources.json"
 SIGNALS_MEMORY_FILE = "active_signals.json"
+INDO_TP_FILENAME = "indodog_tp.json"
 DETAILED_HISTORY_FILE = "trades_detailed.csv"
 # (#stats) Historique agrégé repris d'avant la refonte des stats. Optionnel : absent chez un
 # nouveau client, il ne fait qu'ajouter un total aux périodes qui couvrent sa plage de dates.
@@ -453,6 +470,37 @@ REGEX_F3_ENTRY = re.compile(r"#?([A-Z0-9]{3,10})\s+(ACHAT|VENTE|BUY|SELL|ACH[EÈ
 # SL et TP (Universel)
 REGEX_SL = re.compile(r"(?:SL|STOP)\s*[:=]?\s*([\d\.,]+)", re.IGNORECASE)
 REGEX_TP = re.compile(r"(?:TP|TARGET)\s*[:=]?\s*([\d\.,]+)", re.IGNORECASE)
+
+# --- REGEX INDODOG (#84) ---
+# Le canal presente ses signaux comme un menu de restaurant indonesien. Les libelles changent
+# d'un plat a l'autre ("Lauk 1", "Lauk Spesial", "Paket Sultan", "Menu Sultan"...) : on
+# s'accroche donc au marqueur "(TPn)" en fin de ligne, qui lui ne bouge jamais, plutot qu'aux
+# noms de plats.
+REGEX_INDO_ACTION = re.compile(
+    r"Menu\s+Utama\s*:?\s*(BUY|SELL|ACHAT|VENTE)(?:\s+NOW)?\s+#?([A-Z0-9]{3,10})", re.IGNORECASE)
+# "Harga Makan : 4585" ou une ZONE "4516 - 4510" (le canal ecrit un tiret long)
+REGEX_INDO_ENTRY = re.compile(
+    r"Harga\s+Makan\s*:?\s*([\d.,]+)(?:\s*[-‐-―]\s*([\d.,]+))?", re.IGNORECASE)
+REGEX_INDO_SL = re.compile(r"Warteg\s+Tutup\s*:?\s*([\d.,]+)", re.IGNORECASE)
+REGEX_INDO_TP = re.compile(r":?\s*([\d.,]+)\s*\(\s*TP\s*(\d+)\s*\)", re.IGNORECASE)
+
+
+def parse_indodog_tps(raw_text):
+    """(#84) Renvoie les TP du signal, tries par numero : [(1, 4588.0), (2, 4591.0), ...].
+
+    Le nombre de paliers varie d'un signal a l'autre (3, 4 ou 5 observes), d'ou le tri par
+    l'index ecrit dans "(TPn)" plutot qu'un ordre d'apparition suppose."""
+    out = {}
+    for m in REGEX_INDO_TP.finditer(raw_text or ""):
+        try:
+            idx = int(m.group(2))
+            val = float(m.group(1).replace(",", "."))
+            if val > 0:
+                out[idx] = val
+        except Exception:
+            continue
+    return [out[k] for k in sorted(out)]
+
 
 # --- REGEX SPACE ---
 REGEX_SPACE_ENTRY = re.compile(r"Entrée\s*[:]\s*([\d\.,]+)", re.IGNORECASE)
@@ -512,6 +560,8 @@ PARTIAL_PROFITS = {}
 # (#22) Prix TP1 réel lu dans le signal MDT_FREE (ticket_id: prix) -- permet de fermer
 # la partielle exactement au TP1 annoncé par l'admin plutôt qu'à un seuil de pips fixe.
 TP1_PRICE_BY_TICKET = {}
+# (#84) Echelle de TP d'un trade INDODOG : { ticket: [tp1, tp2, ...] }, dans l'ordre du signal.
+INDO_TP_BY_TICKET = {}
 
 CACHE_SYMBOL_POINT = {}
 
@@ -886,6 +936,48 @@ def parse_signal(raw_text, channel_id=None):
     text = clean_text(raw_text)
 
     # ==========================================
+    # 🧠 PARTIE 0 : MODULE INDODOG (#84)
+    # ==========================================
+    # Branche fermee : elle retourne TOUJOURS, meme en cas d'echec. Un canal dedie ne doit
+    # jamais retomber sur les formats generiques MDT -- c'est exactement ce qui faisait lire
+    # "SUR" ou "4392" comme un symbole et perdait de vrais signaux (#77).
+    if channel_id == ID_INDODOG:
+        m_act = REGEX_INDO_ACTION.search(raw_text or "")
+        if not m_act:
+            return None, None, None, None, None, None
+
+        act_raw = m_act.group(1).upper()
+        action = "ACHAT" if act_raw in ("BUY", "ACHAT") else "VENTE"
+        rsym = m_act.group(2).replace("#", "").upper()
+
+        m_sl = REGEX_INDO_SL.search(raw_text)
+        sl = m_sl.group(1).replace(",", ".") if m_sl else "0.0"
+
+        price = None
+        m_e = REGEX_INDO_ENTRY.search(raw_text)
+        if m_e:
+            p_a = m_e.group(1).replace(",", ".")
+            p_b = (m_e.group(2) or "").replace(",", ".")
+            if p_b:
+                # Entree donnee en ZONE ("4516 - 4510") : on vise le MILIEU. Prendre la borne
+                # haute remplirait plus souvent mais au pire prix, la borne basse donnerait le
+                # meilleur prix mais raterait les entrees qui ne descendent pas jusqu'au bout.
+                try:
+                    price = str(round((float(p_a) + float(p_b)) / 2, 5))
+                except Exception:
+                    price = p_a
+            else:
+                price = p_a
+
+        # Le TP envoye a MT5 est le DERNIER palier du signal : c'est le seul qui doit fermer
+        # la position dans son entier. Les paliers intermediaires sont geres en partiels par
+        # monitor_positions, a partir de INDO_TP_BY_TICKET.
+        tps = parse_indodog_tps(raw_text)
+        tp = str(tps[-1]) if tps else "0.0"
+
+        return rsym, action, price, sl, tp, "CANAL INDODOG"
+
+    # ==========================================
     # 🧠 PARTIE 1 : MODULE SABR (INTELLIGENT)
     # ==========================================
 
@@ -1206,8 +1298,16 @@ def save_memory():
             json.dump(PARTIAL_PROFITS, f)
     except Exception as e: logger.warning(f"⚠️ Save Partials Error: {e}")
 
+    # 4. (#84) Echelle de TP INDODOG. Sans persistance, un redemarrage en cours de trade
+    # perdrait les paliers : les partiels restants ne seraient jamais pris et la position
+    # irait d'un coup jusqu'au TP final.
+    try:
+        with open(INDO_TP_FILENAME, "w") as f:
+            json.dump({str(k): v for k, v in INDO_TP_BY_TICKET.items()}, f)
+    except Exception as e: logger.warning(f"⚠️ Save INDODOG TP Error: {e}")
+
 def load_memory():
-    global TRADES_PROCESSED_LEVELS, MANAGED_MANUAL_TICKETS, PARTIAL_PROFITS
+    global TRADES_PROCESSED_LEVELS, MANAGED_MANUAL_TICKETS, PARTIAL_PROFITS, INDO_TP_BY_TICKET
     
     # 1. Chargement des Niveaux
     if os.path.exists(MEMORY_FILENAME):
@@ -1238,6 +1338,16 @@ def load_memory():
             logger.info(f"💰 Mémoire Partiels restaurée ({len(PARTIAL_PROFITS)} en cours)")
         except Exception as e: logger.warning(f"⚠️ Load Partials Error: {e}")
 
+    # 4. (#84) Échelle de TP INDODOG. Sans elle, un redémarrage en cours de trade perdrait les
+    # paliers : les partiels restants ne seraient jamais pris et la position irait d'un seul
+    # coup jusqu'au TP final.
+    if os.path.exists(INDO_TP_FILENAME):
+        try:
+            with open(INDO_TP_FILENAME, "r") as f:
+                INDO_TP_BY_TICKET = {int(k): v for k, v in json.load(f).items()}
+            logger.info(f"🍽 Paliers INDODOG restaurés ({len(INDO_TP_BY_TICKET)} trades)")
+        except Exception as e: logger.warning(f"⚠️ Load INDODOG TP Error: {e}")
+
 def save_settings():
     """Sauvegarde les réglages de manière 100% sécurisée (Anti-Spam & Anti-Crash)"""
     # Le Videur : On force les requêtes à passer une par une
@@ -1262,6 +1372,7 @@ def save_settings():
                 "RISK_PERCENT_MDT_FREE": RISK_PERCENT_MDT_FREE,
                 "FIXED_LOT_SABR_FREE": FIXED_LOT_SABR_FREE,
                 "FIXED_LOT_SABR_VIP": FIXED_LOT_SABR_VIP,
+                "FIXED_LOT_INDODOG": FIXED_LOT_INDODOG,
                 "RISK_PERCENT_SABR_OTHER": RISK_PERCENT_SABR_OTHER,
                 "SABR_ZONE_EQUAL_SPLIT": SABR_ZONE_EQUAL_SPLIT,
                 "SABR_ZONE_PCT1": SABR_ZONE_PCT1,
@@ -1309,7 +1420,7 @@ FIREBASE_PASSWORD = ""
 
 def load_settings():
     """Charge les réglages au démarrage"""
-    global RISK_PERCENT_GOLD, SABR_FORWARD_ACTIVE, RISK_PERCENT_OTHER, RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE, MAX_DAILY_DRAWDOWN, DRAWDOWN_ACTIVE, TRAILING_STOP_PIPS, RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO, SOFT_SL_PERCENT, MUTED_CHANNELS, ALLOWED_CHANNELS, CHANNEL_TP1_PCT, TELEGRAM_DESTINATION_ID, ADMIN_ID, RISK_PERCENT_INDICES, PRIME_HOURS, TIME_OFF_PEAK_FACTOR, DAY_RISK_FACTORS, FIXED_LOT_SABR_FREE, FIXED_LOT_SABR_VIP, RISK_PERCENT_SABR_OTHER, SABR_ZONE_EQUAL_SPLIT, SABR_ZONE_PCT1, SABR_ZONE_PCT2, SL_SUIVEUR_ACTIVE, SOFT_SL_ACTIVE, FIREBASE_EMAIL, FIREBASE_PASSWORD, SERVER_PACK_CHANNELS, BE_OFFSET_PIPS, SABR_TRAILING_ACTIVE, SABR_TRAILING_PIPS
+    global RISK_PERCENT_GOLD, SABR_FORWARD_ACTIVE, RISK_PERCENT_OTHER, RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE, MAX_DAILY_DRAWDOWN, DRAWDOWN_ACTIVE, TRAILING_STOP_PIPS, RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO, SOFT_SL_PERCENT, MUTED_CHANNELS, ALLOWED_CHANNELS, CHANNEL_TP1_PCT, TELEGRAM_DESTINATION_ID, ADMIN_ID, RISK_PERCENT_INDICES, PRIME_HOURS, TIME_OFF_PEAK_FACTOR, DAY_RISK_FACTORS, FIXED_LOT_SABR_FREE, FIXED_LOT_SABR_VIP, RISK_PERCENT_SABR_OTHER, SABR_ZONE_EQUAL_SPLIT, SABR_ZONE_PCT1, SABR_ZONE_PCT2, SL_SUIVEUR_ACTIVE, SOFT_SL_ACTIVE, FIREBASE_EMAIL, FIREBASE_PASSWORD, SERVER_PACK_CHANNELS, BE_OFFSET_PIPS, SABR_TRAILING_ACTIVE, SABR_TRAILING_PIPS, FIXED_LOT_INDODOG
 
     if os.path.exists(SETTINGS_FILENAME):
         try:
@@ -1340,6 +1451,7 @@ def load_settings():
                 if "SOFT_SL_PERCENT" in data: SOFT_SL_PERCENT = data["SOFT_SL_PERCENT"]
                 if "SL_SUIVEUR_ACTIVE" in data: SL_SUIVEUR_ACTIVE = data["SL_SUIVEUR_ACTIVE"]
                 if "BE_OFFSET_PIPS" in data: BE_OFFSET_PIPS = float(data["BE_OFFSET_PIPS"])
+                if "FIXED_LOT_INDODOG" in data: FIXED_LOT_INDODOG = float(data["FIXED_LOT_INDODOG"])
                 if "SABR_TRAILING_ACTIVE" in data: SABR_TRAILING_ACTIVE = bool(data["SABR_TRAILING_ACTIVE"])
                 if "SABR_TRAILING_PIPS" in data: SABR_TRAILING_PIPS = int(float(data["SABR_TRAILING_PIPS"]))
                 if "SOFT_SL_ACTIVE" in data: SOFT_SL_ACTIVE = data["SOFT_SL_ACTIVE"]
@@ -2204,6 +2316,9 @@ async def get_safe_lot_size(symbol, signal_type, sl_price, entry_price_ref, chan
     if channel_source:
         if "SABR_VIP" in channel_source or "SABR_COPIE" in channel_source: return FIXED_LOT_SABR_VIP, 0.0
         if "SABR" in channel_source: return FIXED_LOT_SABR_FREE, 0.0
+        # (#84) INDODOG : lot fixe, comme SABR. L'echelle de TP retire des pourcentages de la
+        # position INITIALE, donc la taille ne doit pas dependre du solde du compte.
+        if "INDODOG" in channel_source: return FIXED_LOT_INDODOG, 0.0
 
     # 1. CALCUL DU RISQUE DE BASE PROPRE
     base_risk_pct = 0.006 
@@ -2476,7 +2591,7 @@ def distribute_lots(total_vol, n_orders):
         
     return lots
 
-async def execute_trade(symbol, action, sl, tp, price_signal, message_date, channel_source, custom_lot_modifier=1.0, tp1_price=None):
+async def execute_trade(symbol, action, sl, tp, price_signal, message_date, channel_source, custom_lot_modifier=1.0, tp1_price=None, tp_ladder=None):
     # (#32) Verrou de pack centralisé : execute_trade() est le SEUL point d'entrée vers un vrai
     # ordre MT5, quel que soit l'appelant (main_handler, edit_handler, /reactivate, UPDATE_SL...).
     # Avant, ce check n'existait que dans main_handler -- edit_handler (signal "blind" complété
@@ -3021,6 +3136,13 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
         for tk in tickets_opened:
             TP1_PRICE_BY_TICKET[tk] = tp1_price
 
+    # (#84) Echelle de TP INDODOG : memorisee par ticket pour que monitor_positions puisse
+    # fermer 30 % au TP1 puis 20 % a chaque palier suivant, sur la position INITIALE.
+    if tp_ladder:
+        for tk in tickets_opened:
+            INDO_TP_BY_TICKET[tk] = list(tp_ladder)
+        await run_bg(save_memory)
+
     return tickets_opened
 
 async def send_alert(msg, buttons=None):
@@ -3119,6 +3241,7 @@ def resolve_channel_arg(target):
         "VIP": "CANAL MDT_VIP", "MDT_VIP": "CANAL MDT_VIP",
         "FREE": "CANAL MDT_FREE", "GRATUIT": "CANAL MDT_FREE", "MDT_FREE": "CANAL MDT_FREE",
         "SPACE": "CANAL SPACE", "LIGUE": "CANAL LIGUE", "PERSO": "CANAL PERSO",
+        "INDODOG": "CANAL INDODOG", "INDO": "CANAL INDODOG",
     }
     return mapping.get(target, f"CANAL {target}")
 
@@ -3269,6 +3392,7 @@ async def check_closed_positions():
             # laissait auparavant traîner son entrée dans TP1_PRICE_BY_TICKET.
             ACTIVE_TRADE_SOURCES.pop(t, None)
             TP1_PRICE_BY_TICKET.pop(t, None)
+            INDO_TP_BY_TICKET.pop(t, None)
             await run_bg(save_channel_data)
 
             # --- 👇 GENERATION DU FICHIER CSV DETAILLE 👇 ---
@@ -3677,7 +3801,7 @@ async def api_update_setting(data: SettingUpdate):
     global RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE, RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO
     global FIXED_LOT_SABR_VIP, FIXED_LOT_SABR_FREE, RISK_PERCENT_SABR_OTHER, SABR_ZONE_EQUAL_SPLIT, SABR_ZONE_PCT1, SABR_ZONE_PCT2
     global MAX_DAILY_DRAWDOWN, TRAILING_STOP_PIPS, SOFT_SL_PERCENT
-    global BE_OFFSET_PIPS, SABR_TRAILING_PIPS
+    global BE_OFFSET_PIPS, SABR_TRAILING_PIPS, FIXED_LOT_INDODOG
     global PRIME_HOURS, TIME_OFF_PEAK_FACTOR
 
     k = data.key
@@ -3719,6 +3843,7 @@ async def api_update_setting(data: SettingUpdate):
     # le SL tres loin du prix et rendrait la position ingerable.
     elif k == "be_offset_pips": BE_OFFSET_PIPS = max(-500.0, min(500.0, float(v)))
     elif k == "sabr_trailing_pips": SABR_TRAILING_PIPS = max(1, int(float(v)))
+    elif k == "lot_indodog": FIXED_LOT_INDODOG = max(0.01, float(v))
     elif k == "sl_sell": SOFT_SL_PERCENT = float(v)
     
     # 👇 CE QU'ON AJOUTE POUR LE PLANNING 👇
@@ -4136,7 +4261,62 @@ async def monitor_positions():
                             await run_bg(save_memory)
 
                         continue
-                    
+
+                    # 🍽 STRATEGIE SPECIFIQUE : CANAL INDODOG (#84)
+                    # Echelle de TP lue dans le signal : 30 % de la position INITIALE au TP1,
+                    # puis 20 % a chaque palier suivant. Le DERNIER palier n'est pas traite ici
+                    # volontairement : il a ete envoye a MT5 comme TP de l'ordre, donc le
+                    # courtier ferme lui-meme le reliquat -- c'est ce qui garantit "on ferme
+                    # tout au TP final" meme si le bot est arrete a ce moment-la.
+                    if src_trade == "CANAL INDODOG":
+                        ladder = INDO_TP_BY_TICKET.get(pos.ticket) or []
+                        if len(ladder) >= 2:
+                            deals_i = await run_mt5(mt5.history_deals_get, position=pos.ticket)
+                            initial_vol = deals_i[0].volume if (deals_i and len(deals_i) > 0) else pos.volume
+
+                            for idx, tp_price in enumerate(ladder[:-1], start=1):
+                                tag = f"INDO_TP{idx}"
+                                if tag in processed:
+                                    continue
+                                atteint = (curr >= tp_price) if pos.type == mt5.ORDER_TYPE_BUY                                           else (curr <= tp_price)
+                                if not atteint:
+                                    break  # les paliers sont ordonnes : inutile de tester les suivants
+
+                                pct = INDO_TP1_PCT if idx == 1 else INDO_TP_NEXT_PCT
+                                vol_cible = round(initial_vol * pct, 2)
+                                if vol_cible < 0.01:
+                                    vol_cible = 0.01
+
+                                # Si le reliquat ne suffit plus, on laisse MT5 fermer au TP
+                                # final plutot que de tenter un partiel impossible.
+                                if round(pos.volume - vol_cible, 2) < 0.01:
+                                    processed.add(tag)
+                                    continue
+
+                                if await close_partial(pos, 0.0, f"INDODOG TP{idx} ({int(pct*100)}%)",
+                                                       pips, fixed_lot=vol_cible):
+                                    processed.add(tag)
+                                    await run_bg(save_memory)
+
+                                    # Le canal recommande lui-meme la mise a BE des le TP1
+                                    # ("boleh simpan piring dulu (BE)") : on l'applique.
+                                    if idx == 1 and "INDO_BE" not in processed:
+                                        be_p = compute_be_price(pos.price_open,
+                                                                pos.type == mt5.ORDER_TYPE_BUY, sym)
+                                        bouger = (pos.type == mt5.ORDER_TYPE_BUY and pos.sl < be_p) or                                                  (pos.type == mt5.ORDER_TYPE_SELL and (pos.sl > be_p or pos.sl == 0))
+                                        if bouger:
+                                            req_be = {"action": mt5.TRADE_ACTION_SLTP, "symbol": sym,
+                                                      "position": pos.ticket,
+                                                      "sl": round(be_p / pt) * pt, "tp": pos.tp}
+                                            res_be = await run_mt5(_send_order_blocking, req_be)
+                                            if res_be and res_be.retcode == mt5.TRADE_RETCODE_DONE:
+                                                await send_channel_alert(
+                                                f"🛡️ **INDODOG : SL AU BE** (TP1 atteint)\n\n"
+                                                f"Symbole: {sym}\nTicket: {pos.ticket}", src_trade)
+                                        processed.add("INDO_BE")
+                                break  # un seul palier par cycle, on relit les volumes au suivant
+                        continue
+
                     # --- GESTION TP (CORRIGÉE) ---
                     # On ne marque "Done" que si close_partial retourne True
 
@@ -4627,7 +4807,20 @@ async def admin_commands(event):
             await run_bg(save_settings); await event.reply(f"🎁 Risque MDT FREE : **{val_raw}%**")
         except: await event.reply("❌ Usage: /risk_mdt_free 1.0 (ou 'auto')")
 
-    # SABR VIP (Lots Fixes)
+
+    # (#84) INDODOG : lot fixe, comme SABR (pas de division par 100, c'est un volume)
+    elif text.startswith("/lot_indodog"):
+        global FIXED_LOT_INDODOG
+        if not channel_allowed("CANAL INDODOG"):
+            await event.reply("❌ INDODOG ne fait pas partie de ton pack."); return
+        try:
+            FIXED_LOT_INDODOG = max(0.01, float(text.split()[1]))
+            await run_bg(save_settings)
+            await event.reply(f"🍽 Lot Fixe INDODOG : **{FIXED_LOT_INDODOG} lots**\n"
+                              f"Échelle : 30 % au TP1, 20 % aux paliers suivants, "
+                              f"reliquat fermé au dernier TP du signal.")
+        except: await event.reply("❌ Usage: /lot_indodog 0.10")
+
     elif text.startswith("/risk_sabr_vip"):
         if not channel_allowed("CANAL SABR_VIP"): await event.reply("❌ SABR_VIP ne fait pas partie de ton pack."); return
         try:
@@ -4992,6 +5185,7 @@ async def admin_commands(event):
             ("CANAL MDT_FREE", "`/risk_mdt_free 0.5`"),
             ("CANAL SABR_VIP", "`/risk_sabr_vip 0.06` (Lots Fixes)"),
             ("CANAL SABR_FREE", "`/risk_sabr_free 0.06` (Lots Fixes)"),
+            ("CANAL INDODOG", "`/lot_indodog 0.10` (Lots Fixes)"),
             ("CANAL SPACE", "`/risk_space 1.0`"),
             ("CANAL LIGUE", "`/risk_ligue 1.0`"),
             ("CANAL PERSO", "`/risk_perso 1.0`"),
@@ -5484,7 +5678,12 @@ async def main_handler(event):
                         try: tp1_price = float(m_tp1.group(1).replace(',', '.'))
                         except: pass
 
-                opened_tickets = await execute_trade(sym, act, sl, tp, p_msg, event.date, final_source, tp1_price=tp1_price)
+                # (#84) INDODOG : on transmet l'echelle complete des TP du signal (3 a 5
+                # paliers selon les jours) pour la gestion en partiels.
+                tp_ladder = parse_indodog_tps(final_text) if final_source == "CANAL INDODOG" else None
+
+                opened_tickets = await execute_trade(sym, act, sl, tp, p_msg, event.date, final_source,
+                                                     tp1_price=tp1_price, tp_ladder=tp_ladder)
 
                 if opened_tickets:
                     TELEGRAM_TO_TICKET[event.id] = opened_tickets
@@ -5738,6 +5937,7 @@ async def get_current_state_for_firebase() -> dict:
             "drawdown_active": DRAWDOWN_ACTIVE,
             "sl_suiveur": TRAILING_STOP_PIPS, "sl_sell": SOFT_SL_PERCENT,
             "be_offset_pips": BE_OFFSET_PIPS,
+            "lot_indodog": FIXED_LOT_INDODOG,
             "sabr_trailing_active": SABR_TRAILING_ACTIVE, "sabr_trailing_pips": SABR_TRAILING_PIPS,
             "sl_suiveur_active": SL_SUIVEUR_ACTIVE, "soft_sl_active": SOFT_SL_ACTIVE,
             "muted_channels": MUTED_CHANNELS, "allowed_channels": ALLOWED_CHANNELS,

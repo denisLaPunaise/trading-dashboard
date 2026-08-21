@@ -44,5 +44,6 @@
         "6": 1.0
     },
     "BE_OFFSET_PIPS": 0.0,
-    "SABR_TRAILING_PIPS": 100
+    "SABR_TRAILING_PIPS": 100,
+    "FIXED_LOT_INDODOG": 0.1
 }
