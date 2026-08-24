@@ -389,6 +389,19 @@ BE_OFFSET_PIPS = 0.0
 # de configuration distribués mais n'était lu nulle part.
 SABR_TRAILING_ACTIVE = False   # False -> aucun SL suiveur sur SABR (comportement historique)
 SABR_TRAILING_PIPS = 100       # distance en pips entre le prix courant et le SL suiveur
+# (#93) Deux facons de gerer le "breakeven" SABR a +100 pips :
+#   False = BE CLASSIQUE (historique) : le SL remonte au prix d'entree. Le trade ne peut plus
+#           perdre, mais un simple retour sur l'entree le sort avant que le mouvement reparte.
+#   True  = BE PARTIEL : le SL ne bouge PAS, on laisse le trade respirer avec son stop
+#           d'origine. En echange, si le prix revient toucher le prix d'entree, on vend
+#           SABR_BE_PARTIEL_PCT du volume INITIAL pour alleger le risque.
+# Dans les deux cas, la cloture des 60 % a +100 pips reste inchangee.
+# ATTENTION au reglage du pourcentage : il porte sur le volume INITIAL, mais 60 % ont deja
+# ete clotures a +100 pips. Il ne reste donc que 40 % en position -- toute valeur >= 40 %
+# solde la position entiere au retour sur l'entree. D'ou un defaut a 20 %, soit la moitie de
+# ce qui reste.
+SABR_BE_PARTIEL_ACTIVE = False
+SABR_BE_PARTIEL_PCT = 0.20
 BTC_ENTRY_OFFSET = 70
 DEFAULT_TP1_PCT = 0.50
 
@@ -1579,6 +1592,8 @@ def save_settings():
                 "FIXED_LOT_FTS": FIXED_LOT_FTS,
                 "RISK_PERCENT_SABR_OTHER": RISK_PERCENT_SABR_OTHER,
                 "SABR_ZONE_EQUAL_SPLIT": SABR_ZONE_EQUAL_SPLIT,
+                "SABR_BE_PARTIEL_ACTIVE": SABR_BE_PARTIEL_ACTIVE,
+                "SABR_BE_PARTIEL_PCT": SABR_BE_PARTIEL_PCT,
                 "SABR_ZONE_PCT1": SABR_ZONE_PCT1,
                 "SABR_ZONE_PCT2": SABR_ZONE_PCT2,
                 "RISK_PERCENT_SPACE": RISK_PERCENT_SPACE,
@@ -1624,7 +1639,7 @@ FIREBASE_PASSWORD = ""
 
 def load_settings():
     """Charge les réglages au démarrage"""
-    global RISK_PERCENT_GOLD, SABR_FORWARD_ACTIVE, RISK_PERCENT_OTHER, RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE, MAX_DAILY_DRAWDOWN, DRAWDOWN_ACTIVE, TRAILING_STOP_PIPS, RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO, SOFT_SL_PERCENT, MUTED_CHANNELS, ALLOWED_CHANNELS, CHANNEL_TP1_PCT, TELEGRAM_DESTINATION_ID, ADMIN_ID, RISK_PERCENT_INDICES, PRIME_HOURS, TIME_OFF_PEAK_FACTOR, DAY_RISK_FACTORS, FIXED_LOT_SABR_FREE, FIXED_LOT_SABR_VIP, RISK_PERCENT_SABR_OTHER, SABR_ZONE_EQUAL_SPLIT, SABR_ZONE_PCT1, SABR_ZONE_PCT2, SL_SUIVEUR_ACTIVE, SOFT_SL_ACTIVE, FIREBASE_EMAIL, FIREBASE_PASSWORD, SERVER_PACK_CHANNELS, BE_OFFSET_PIPS, SABR_TRAILING_ACTIVE, SABR_TRAILING_PIPS, FIXED_LOT_INDODOG, FIXED_LOT_FTS
+    global RISK_PERCENT_GOLD, SABR_FORWARD_ACTIVE, RISK_PERCENT_OTHER, RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE, MAX_DAILY_DRAWDOWN, DRAWDOWN_ACTIVE, TRAILING_STOP_PIPS, RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO, SOFT_SL_PERCENT, MUTED_CHANNELS, ALLOWED_CHANNELS, CHANNEL_TP1_PCT, TELEGRAM_DESTINATION_ID, ADMIN_ID, RISK_PERCENT_INDICES, PRIME_HOURS, TIME_OFF_PEAK_FACTOR, DAY_RISK_FACTORS, FIXED_LOT_SABR_FREE, FIXED_LOT_SABR_VIP, RISK_PERCENT_SABR_OTHER, SABR_ZONE_EQUAL_SPLIT, SABR_ZONE_PCT1, SABR_ZONE_PCT2, SL_SUIVEUR_ACTIVE, SOFT_SL_ACTIVE, FIREBASE_EMAIL, FIREBASE_PASSWORD, SERVER_PACK_CHANNELS, BE_OFFSET_PIPS, SABR_TRAILING_ACTIVE, SABR_TRAILING_PIPS, FIXED_LOT_INDODOG, FIXED_LOT_FTS, SABR_BE_PARTIEL_ACTIVE, SABR_BE_PARTIEL_PCT
 
     if os.path.exists(SETTINGS_FILENAME):
         try:
@@ -1644,6 +1659,8 @@ def load_settings():
                 if "FIXED_LOT_SABR_VIP" in data: FIXED_LOT_SABR_VIP = data["FIXED_LOT_SABR_VIP"]
                 if "RISK_PERCENT_SABR_OTHER" in data: RISK_PERCENT_SABR_OTHER = data["RISK_PERCENT_SABR_OTHER"]
                 if "SABR_ZONE_EQUAL_SPLIT" in data: SABR_ZONE_EQUAL_SPLIT = data["SABR_ZONE_EQUAL_SPLIT"]
+                if "SABR_BE_PARTIEL_ACTIVE" in data: SABR_BE_PARTIEL_ACTIVE = bool(data["SABR_BE_PARTIEL_ACTIVE"])
+                if "SABR_BE_PARTIEL_PCT" in data: SABR_BE_PARTIEL_PCT = float(data["SABR_BE_PARTIEL_PCT"])
                 if "SABR_ZONE_PCT1" in data: SABR_ZONE_PCT1 = data["SABR_ZONE_PCT1"]
                 if "SABR_ZONE_PCT2" in data: SABR_ZONE_PCT2 = data["SABR_ZONE_PCT2"]
                 if "RISK_PERCENT_SPACE" in data: RISK_PERCENT_SPACE = data["RISK_PERCENT_SPACE"]
@@ -4331,6 +4348,7 @@ async def api_update_setting(data: SettingUpdate):
     global FIXED_LOT_SABR_VIP, FIXED_LOT_SABR_FREE, RISK_PERCENT_SABR_OTHER, SABR_ZONE_EQUAL_SPLIT, SABR_ZONE_PCT1, SABR_ZONE_PCT2
     global MAX_DAILY_DRAWDOWN, TRAILING_STOP_PIPS, SOFT_SL_PERCENT
     global BE_OFFSET_PIPS, SABR_TRAILING_PIPS, FIXED_LOT_INDODOG, FIXED_LOT_FTS
+    global SABR_BE_PARTIEL_ACTIVE, SABR_BE_PARTIEL_PCT
     global PRIME_HOURS, TIME_OFF_PEAK_FACTOR
 
     k = data.key
@@ -4347,7 +4365,8 @@ async def api_update_setting(data: SettingUpdate):
     }
     if k in CHANNEL_SETTING_KEYS and not channel_allowed(CHANNEL_SETTING_KEYS[k]):
         return {"status": "error", "message": f"{k} : canal hors de ton pack."}
-    if k in ("risk_sabr_other", "sabr_zone_equal_split", "sabr_zone_pct1", "sabr_zone_pct2") and not (
+    if k in ("risk_sabr_other", "sabr_zone_equal_split", "sabr_zone_pct1", "sabr_zone_pct2",
+             "sabr_be_partiel", "sabr_be_partiel_pct") and not (
         channel_allowed("CANAL SABR_VIP") or channel_allowed("CANAL SABR_FREE") or channel_allowed("CANAL SABR_COPIE")
     ):
         return {"status": "error", "message": f"{k} : SABR hors de ton pack."}
@@ -4364,6 +4383,8 @@ async def api_update_setting(data: SettingUpdate):
     elif k == "sabr_lot_free": FIXED_LOT_SABR_FREE = float(v)
     elif k == "risk_sabr_other": RISK_PERCENT_SABR_OTHER = float(v)
     elif k == "sabr_zone_equal_split": SABR_ZONE_EQUAL_SPLIT = bool(v)
+    elif k == "sabr_be_partiel": SABR_BE_PARTIEL_ACTIVE = bool(v)
+    elif k == "sabr_be_partiel_pct": SABR_BE_PARTIEL_PCT = max(0.01, min(1.0, float(v)))
     elif k == "sabr_zone_pct1": SABR_ZONE_PCT1 = max(0.01, min(0.98, float(v)))
     elif k == "sabr_zone_pct2": SABR_ZONE_PCT2 = max(0.01, min(0.98, float(v)))
     elif k == "max_dd": MAX_DAILY_DRAWDOWN = float(v)
@@ -5114,12 +5135,18 @@ async def monitor_positions():
                             tag_100 = "SABR_100_BE_60"
                             if tag_100 not in TRADES_PROCESSED_LEVELS[p.ticket]:
                                 # 1. BE (priorité absolue, comme avant)
+                                # (#93) En mode BE PARTIEL, on ne touche PAS au SL : on se
+                                # contente d'armer le retour sur l'entrée, traité plus bas.
+                                # La clôture des 60 % ci-dessous, elle, a lieu dans les deux modes.
                                 be_p = compute_be_price(p.price_open, is_buy, sym)
                                 new_sl = None
-                                if is_buy:
-                                    if current_sl < be_p: new_sl = be_p
+                                if SABR_BE_PARTIEL_ACTIVE:
+                                    TRADES_PROCESSED_LEVELS[p.ticket].add("SABR_BE_ARME")
                                 else:
-                                    if current_sl > be_p or current_sl == 0: new_sl = be_p
+                                    if is_buy:
+                                        if current_sl < be_p: new_sl = be_p
+                                    else:
+                                        if current_sl > be_p or current_sl == 0: new_sl = be_p
 
                                 if new_sl:
                                     new_sl = round(new_sl / pt) * pt
@@ -5153,6 +5180,44 @@ async def monitor_positions():
                                         await run_bg(save_memory)
                                 else:
                                     TRADES_PROCESSED_LEVELS[p.ticket].add(tag_100)
+
+                        # --- (#93) BE PARTIEL : RETOUR SUR LE PRIX D'ENTRÉE ---
+                        # Armé à +100 pips (le SL n'a pas bougé). Si le prix revient toucher
+                        # l'entrée, on vend une part du volume INITIAL et on laisse courir le
+                        # reste avec son stop d'origine. Une seule fois par position.
+                        # Le seuil est le prix d'entrée BRUT : BE_OFFSET_PIPS décale le SL lors
+                        # d'une mise à BE, or ici on n'en fait pas -- l'y appliquer déplacerait
+                        # silencieusement le déclencheur.
+                        if (SABR_BE_PARTIEL_ACTIVE
+                                and "SABR_BE_ARME" in TRADES_PROCESSED_LEVELS[p.ticket]
+                                and "SABR_BE_PARTIEL_FAIT" not in TRADES_PROCESSED_LEVELS[p.ticket]):
+                            revenu = (curr_price <= p.price_open) if is_buy else (curr_price >= p.price_open)
+                            if revenu:
+                                deals = await run_mt5(mt5.history_deals_get, position=p.ticket)
+                                initial_vol = deals[0].volume if (deals and len(deals) > 0) else p.volume
+                                pct_be = max(0.01, min(1.0, SABR_BE_PARTIEL_PCT))
+                                vol_be = round(initial_vol * pct_be, 2)
+                                if vol_be < 0.01: vol_be = 0.01
+
+                                if round(p.volume - vol_be, 2) >= 0.01:
+                                    ok_be = await close_partial(p, 0.0,
+                                                                "SABR retour BE (%d%%)" % int(pct_be * 100),
+                                                                pips_indiv, fixed_lot=vol_be)
+                                else:
+                                    # Le reliquat serait sous le lot minimum du courtier : on
+                                    # solde la position plutôt que de la rendre inexploitable.
+                                    ok_be = await close_partial(p, 0.0,
+                                                                "SABR retour BE (solde)",
+                                                                pips_indiv, fixed_lot=p.volume)
+                                if ok_be:
+                                    TRADES_PROCESSED_LEVELS[p.ticket].add("SABR_BE_PARTIEL_FAIT")
+                                    await run_bg(save_memory)
+                                    await send_channel_alert(
+                                        f"🩹 **SABR : RETOUR SUR L'ENTRÉE**\n\n"
+                                        f"Symbole: {sym}\nTicket: {p.ticket}\n"
+                                        f"Vendu: **{vol_be:.2f}** lot(s) ({int(pct_be * 100)} % du volume initial)\n\n"
+                                        f"_Le SL d'origine est conservé sur le reste._",
+                                        ACTIVE_TRADE_SOURCES.get(p.ticket, ""))
 
                         # --- 150 PIPS : +10% SUPPLÉMENTAIRES DU VOLUME INITIAL ---
                         if pips_indiv >= 150:
@@ -5563,6 +5628,40 @@ async def admin_commands(event):
                               f"{int(INDO_TP_NEXT_PCT * 100)} % aux paliers suivants, "
                               f"reliquat fermé au dernier TP du signal.")
         except: await event.reply("❌ Usage: /lot_indodog 0.10")
+
+    # (#93) Mode de mise a BE pour SABR : classique (SL au BE) ou partiel (SL inchange, on
+    # vend une part si le prix revient sur l'entree).
+    elif text.startswith("/be_partiel"):
+        global SABR_BE_PARTIEL_ACTIVE, SABR_BE_PARTIEL_PCT
+        if not (channel_allowed("CANAL SABR_VIP") or channel_allowed("CANAL SABR_FREE")
+                or channel_allowed("CANAL SABR_COPIE")):
+            await event.reply("❌ SABR ne fait pas partie de ton pack."); return
+        arg = text.split()[1].lower() if len(text.split()) > 1 else ""
+        if arg in ("off", "classique", "0"):
+            SABR_BE_PARTIEL_ACTIVE = False
+        elif arg in ("on", "partiel"):
+            SABR_BE_PARTIEL_ACTIVE = True
+        elif arg:
+            try:
+                SABR_BE_PARTIEL_PCT = max(0.01, min(1.0, float(arg.replace(",", ".")) / 100.0))
+                SABR_BE_PARTIEL_ACTIVE = True
+            except Exception:
+                await event.reply("❌ Usage: `/be_partiel on|off` ou `/be_partiel 50` (%)"); return
+        if arg:
+            await run_bg(save_settings)
+        if SABR_BE_PARTIEL_ACTIVE:
+            _reste = "⚠️ ≥ 40 % solde la position entière" if SABR_BE_PARTIEL_PCT >= 0.40 else ""
+            await event.reply(f"🩹 **BE SABR : PARTIEL**\n\n"
+                              f"À +100 pips le SL **ne bouge pas**.\n"
+                              f"Si le prix revient sur l'entrée, on vend "
+                              f"**{int(SABR_BE_PARTIEL_PCT * 100)} %** du volume initial.\n\n"
+                              f"_Rappel : 60 % ont déjà été clôturés à +100 pips, il ne reste "
+                              f"que 40 % en position._ {_reste}\n\n"
+                              f"_Changer la part : `/be_partiel 20`_")
+        else:
+            await event.reply("☄️ **BE SABR : CLASSIQUE**\n\n"
+                              "À +100 pips le SL remonte au prix d'entrée (comportement "
+                              "historique).\n\n_Passer en partiel : `/be_partiel on`_")
 
     elif text.startswith("/lot_fts"):
         global FIXED_LOT_FTS
@@ -6059,6 +6158,7 @@ async def admin_commands(event):
             (show_risk_engine, "`/sl_suiveur 85` : Trailing Pips (ou '0' pour paliers)"),
             (show_risk_engine, "`/sl_sell 30` : % Vente Soft SL"),
             (True,             "`/sell_lot VIP 50` : % Vente TP1 (Tous canaux)"),
+            (has_sabr,         "`/be_partiel on|off|50` : Mode BE SABR (classique / partiel)"),
             (has_sabr,         "`/reactivate 1 50` : Relancer signal SABR (ID: 1, 50%)"),
             (has_sabr,         "`/doublon_sabr on/off` : Anti-Doublon SABR"),
             (channel_allowed("CANAL SABR_COPIE"), "`/forward_sabr on/off` : Transfert msg SABR"),
@@ -6811,6 +6911,8 @@ async def get_current_state_for_firebase() -> dict:
             "sabr_lot_vip": FIXED_LOT_SABR_VIP, "sabr_lot_free": FIXED_LOT_SABR_FREE,
             "risk_sabr_other": RISK_PERCENT_SABR_OTHER,
             "sabr_zone_equal_split": SABR_ZONE_EQUAL_SPLIT,
+            "sabr_be_partiel": SABR_BE_PARTIEL_ACTIVE,
+            "sabr_be_partiel_pct": SABR_BE_PARTIEL_PCT,
             "sabr_zone_pct1": SABR_ZONE_PCT1, "sabr_zone_pct2": SABR_ZONE_PCT2,
             "sabr_anti_doublon": SABR_ANTI_DOUBLON_ACTIVE,
             "sabr_forward": SABR_FORWARD_ACTIVE, "max_dd": MAX_DAILY_DRAWDOWN,

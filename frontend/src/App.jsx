@@ -1376,6 +1376,49 @@ const { account, daily_stats, settings, active_trades } = dashboardData
                   </div>
                 </div>
               )}
+
+              {/* (#93) Mode de mise à BE SABR. Classique = le SL remonte à l'entrée à +100p.
+                  Partiel = le SL ne bouge pas, mais un retour sur l'entrée vend une part du
+                  volume initial. Le champ % n'apparaît que dans ce second mode : il n'a aucun
+                  effet en classique, l'afficher laisserait croire le contraire. */}
+              {(isChannelVisible('CANAL SABR_VIP') || isChannelVisible('CANAL SABR_FREE')) && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#2a2a2a', padding: '10px', borderRadius: '8px' }}>
+                  <span style={{ fontSize: '0.85rem' }}>Mise à BE SABR</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    {settings.sabr_be_partiel === true && (
+                      <NumField
+                        value={Math.round((settings.sabr_be_partiel_pct ?? 0.5) * 100)}
+                        step="1" min="1" max="100" width="45px"
+                        onCommit={(n) => updateSetting('sabr_be_partiel_pct', n / 100)}
+                      />
+                    )}
+                    <div style={{ display: 'flex', background: '#121212', padding: '3px', borderRadius: '7px', border: '1px solid #444' }}>
+                      <button
+                        onClick={() => updateSetting('sabr_be_partiel', false, { debounce: false })}
+                        style={{
+                          padding: '5px 10px', borderRadius: '5px', border: 'none', cursor: 'pointer',
+                          fontWeight: 'bold', fontSize: '0.7rem', transition: '0.2s',
+                          background: settings.sabr_be_partiel !== true ? '#333' : 'transparent',
+                          color: settings.sabr_be_partiel !== true ? '#00e676' : '#666',
+                        }}
+                      >
+                        Classique
+                      </button>
+                      <button
+                        onClick={() => updateSetting('sabr_be_partiel', true, { debounce: false })}
+                        style={{
+                          padding: '5px 10px', borderRadius: '5px', border: 'none', cursor: 'pointer',
+                          fontWeight: 'bold', fontSize: '0.7rem', transition: '0.2s',
+                          background: settings.sabr_be_partiel === true ? '#333' : 'transparent',
+                          color: settings.sabr_be_partiel === true ? '#00e676' : '#666',
+                        }}
+                      >
+                        Partiel %
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Mode Manuel : les 3 ordres tiennent sur la même ligne (cellules flex:1, pas de
