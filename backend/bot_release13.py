@@ -2607,6 +2607,60 @@ def distribute_lots(total_vol, n_orders):
         
     return lots
 
+def split_zone_lots(total_vol, step, equal, pct1, pct2):
+    """(#85) Decoupe un volume total en 3 ordres etages sur une zone (SABR et INDODOG).
+
+    INVARIANT : la somme des 3 lots vaut TOUJOURS exactement total_vol. On raisonne en
+    UNITES du pas broker (jamais en flottants), on arrondit chaque part vers le BAS, puis
+    on donne les unites restantes aux PREMIERS ordres (debut > milieu > fin).
+    Ex. 0.13 lot, pas 0.01 : 0.05 / 0.04 / 0.04 -- jamais 0.05 / 0.05 / 0.05.
+
+    Avant, le mode manuel remontait au pas minimum tout ordre trop petit APRES le calcul,
+    ce qui gonflait le total : 0.03 lot reparti en 90/5/5 posait 0.03 + 0.01 + 0.01 = 0.05,
+    soit 66 % de plus que le lot regle au dashboard.
+
+    L'arrondi suit le nombre de decimales du pas broker : un `round(x, 2)` en dur perdait
+    ou inventait du volume chez un courtier au pas de 0.001.
+    """
+    if step <= 0:
+        step = 0.01
+    dec = len(str(step).split(".")[1]) if "." in str(step) else 0
+    dec = max(0, min(8, dec))
+    n_units = int(round(total_vol / step))
+
+    if n_units <= 0:
+        return [0.0, 0.0, 0.0]
+    if n_units == 1:
+        return [round(total_vol, dec), 0.0, 0.0]
+    if n_units == 2:
+        return [round(step, dec), round(total_vol - step, dec), 0.0]
+
+    if equal:
+        base_u, rest_u = divmod(n_units, 3)
+        units = [base_u + (1 if i < rest_u else 0) for i in range(3)]
+    else:
+        # Securite : 3 pourcentages valides et positifs (>= 1 % chacun) meme si un reglage
+        # dashboard mal saisi a ete sauvegarde.
+        p1 = max(0.01, min(0.98, pct1))
+        p2 = max(0.01, min(0.98 - p1, pct2))
+        p3 = max(0.0, 1.0 - p1 - p2)
+        units = [int(n_units * p1), int(n_units * p2), int(n_units * p3)]
+        # 1. Chaque ordre doit valoir au moins une unite.
+        units = [u if u > 0 else 1 for u in units]
+        # 2. Si ce plancher a fait deborder, on REPREND sur le plus gros -- jamais en
+        #    laissant le total depasser le lot demande.
+        while sum(units) > n_units:
+            j = units.index(max(units))
+            if units[j] <= 1:
+                break
+            units[j] -= 1
+        # 3. Le reliquat d'arrondi va aux PREMIERS ordres (debut > milieu > fin).
+        i = 0
+        while sum(units) < n_units:
+            units[i % 3] += 1
+            i += 1
+    return [round(u * step, dec) for u in units]
+
 async def execute_trade(symbol, action, sl, tp, price_signal, message_date, channel_source, custom_lot_modifier=1.0, tp1_price=None, tp_ladder=None):
     # (#32) Verrou de pack centralisé : execute_trade() est le SEUL point d'entrée vers un vrai
     # ordre MT5, quel que soit l'appelant (main_handler, edit_handler, /reactivate, UPDATE_SL...).
@@ -2836,20 +2890,12 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
             p1_i, p2_i = (hi_i, lo_i) if action == "ACHAT" else (lo_i, hi_i)
             pmid_i = (p1_i + p2_i) / 2
 
+            # (#85) Meme decoupage que SABR, toggle Manuel/Egal du dashboard compris. L'ancien
+            # bloc reassignait la variable de boucle (`for _v in (...)`), donc le garde-fou
+            # "au moins un pas par ordre" ne s'appliquait a rien du tout.
             step_i = s_info.volume_step if s_info.volume_step > 0 else 0.01
-            slots_i = round(total_vol / step_i)
-            if slots_i >= 3:
-                pct1_i = max(0.01, min(0.98, SABR_ZONE_PCT1))
-                pct2_i = max(0.01, min(0.98 - pct1_i, SABR_ZONE_PCT2))
-                l1 = round(total_vol * pct1_i, 2)
-                l2 = round(total_vol * pct2_i, 2)
-                l3 = round(total_vol - l1 - l2, 2)
-                for _v in (l1, l2, l3):
-                    if _v < step_i: _v = step_i
-            elif slots_i == 2:
-                l1, l2, l3 = step_i, round(total_vol - step_i, 2), 0.0
-            else:
-                l1, l2, l3 = round(total_vol, 2), 0.0, 0.0
+            l1, l2, l3 = split_zone_lots(total_vol, step_i, SABR_ZONE_EQUAL_SPLIT,
+                                         SABR_ZONE_PCT1, SABR_ZONE_PCT2)
 
             # Premiere borne au marche si le prix y est deja (meme regle que SABR)
             dist1_i = (abs(p1_i - curr_price) / pt) / div
@@ -2953,44 +2999,12 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
                 sl_val = p2 - dist_sl if action == "ACHAT" else p2 + dist_sl
 
             # --- RÉPARTITION : MANUELLE (% réglables au dashboard) OU ÉGALE (toggle) ---
-            # (#27) Si le lot total ne permet pas de financer les 3 ordres à au moins
-            # le pas minimum du broker chacun, on ne finance QUE les premiers ordres
-            # (début > milieu > fin, par priorité) plutôt que de forcer chaque montant
-            # à la hausse -- l'ancien comportement sur-allouait (ex: lot réglé à 0.01
-            # posait 3 ordres de 0.01 = 0.03 au total au lieu d'un seul 0.01).
+            # (#85) Découpage centralisé dans split_zone_lots() : la somme des 3 ordres vaut
+            # toujours EXACTEMENT le lot réglé, en mode égal comme en mode manuel. Les unités
+            # qui ne tombent pas juste vont aux premiers ordres (début > milieu > fin).
             min_step_zone = s_info.volume_step if s_info.volume_step > 0 else 0.01
-            n_slots = round(total_vol / min_step_zone)
-
-            if n_slots >= 3:
-                if SABR_ZONE_EQUAL_SPLIT:
-                    # Répartition ÉGALE (ou la plus proche possible si le nombre de pas
-                    # minimum du broker n'est pas un multiple de 3 -- les unités en trop
-                    # vont sur les premiers ordres, début > milieu > fin).
-                    n_units = int(n_slots)
-                    base_units, remainder_units = divmod(n_units, 3)
-                    units = [base_units + (1 if i < remainder_units else 0) for i in range(3)]
-                    lot1 = round(units[0] * min_step_zone, 2)
-                    lot2 = round(units[1] * min_step_zone, 2)
-                    lot3 = round(units[2] * min_step_zone, 2)
-                else:
-                    # Sécurité : on clampe pour garantir 3 pourcentages valides et positifs
-                    # (>= 1% chacun) même si un réglage dashboard mal saisi a été sauvegardé.
-                    pct1 = max(0.01, min(0.98, SABR_ZONE_PCT1))
-                    pct2 = max(0.01, min(0.98 - pct1, SABR_ZONE_PCT2))
-                    lot1 = round(total_vol * pct1, 2)
-                    lot2 = round(total_vol * pct2, 2)
-                    lot3 = round(total_vol - lot1 - lot2, 2)
-                    if lot1 < min_step_zone: lot1 = min_step_zone
-                    if lot2 < min_step_zone: lot2 = min_step_zone
-                    if lot3 < min_step_zone: lot3 = min_step_zone
-            elif n_slots == 2:
-                lot1 = min_step_zone
-                lot2 = round(total_vol - lot1, 2)
-                lot3 = 0.0
-            else:
-                lot1 = round(total_vol, 2)
-                lot2 = 0.0
-                lot3 = 0.0
+            lot1, lot2, lot3 = split_zone_lots(total_vol, min_step_zone, SABR_ZONE_EQUAL_SPLIT,
+                                               SABR_ZONE_PCT1, SABR_ZONE_PCT2)
 
             # Vérification distance pour le premier ordre (P1)
             dist_p1_pips = (abs(p1 - curr_price) / pt) / div

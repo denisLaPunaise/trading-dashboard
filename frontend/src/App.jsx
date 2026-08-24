@@ -36,6 +36,56 @@ const getTelegramUserId = () => {
   }
 };
 
+// --- CHAMP NUMÉRIQUE DE RÉGLAGE (#86) ---------------------------------------
+// Avant, chaque champ était un input contrôlé branché DIRECTEMENT sur la valeur du bot :
+// effacer le chiffre présent envoyait un NaN, et la valeur par défaut se réaffichait
+// aussitôt dans le champ, en plein milieu de la frappe. Impossible de taper "12" sans se
+// battre avec le "5" qui revenait.
+//
+// On garde donc un BROUILLON local (texte libre) tant que le champ a le focus : l'affichage
+// suit exactement ce qui est tapé, et on ne remonte au bot que les valeurs réellement
+// numériques. Au blur, le brouillon est jeté et le champ se resynchronise sur le bot.
+//
+// `signed` ajoute un bouton ± : sur mobile, le pavé numérique n'a pas de touche moins, donc
+// une valeur négative (SL de BE placé AVANT l'entrée) était tout simplement impossible à saisir.
+const NumField = ({ value, step, onCommit, signed = false, width = '70px', min, max }) => {
+  const [draft, setDraft] = useState(null);
+  const shown = draft !== null ? draft : (value ?? '');
+
+  const commit = (raw) => {
+    const n = parseFloat(raw);
+    if (Number.isFinite(n)) onCommit(n);
+  };
+
+  const flipSign = () => {
+    const n = parseFloat(shown);
+    const next = Number.isFinite(n) ? -n : 0;
+    setDraft(String(next));
+    onCommit(next);
+  };
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+      {signed && (
+        <button
+          type="button" onClick={flipSign} title="Inverser le signe"
+          style={{ background: '#2f2f2f', border: '1px solid #555', color: '#fff', borderRadius: '4px',
+                   width: '26px', height: '28px', cursor: 'pointer', fontWeight: 'bold', fontSize: '0.85rem',
+                   lineHeight: 1, padding: 0, flexShrink: 0 }}
+        >±</button>
+      )}
+      <input
+        type="number" step={step} min={min} max={max} value={shown}
+        onChange={(e) => { setDraft(e.target.value); commit(e.target.value); }}
+        onFocus={(e) => e.target.select()}
+        onBlur={() => setDraft(null)}
+        style={{ background: '#121212', border: '1px solid #444', color: '#fff', padding: '5px',
+                 width, borderRadius: '4px', textAlign: 'center' }}
+      />
+    </div>
+  );
+};
+
 // --- COMPOSANT ODOMÈTRE (ÉTAPE 5) ---
 const AnimatedNumber = ({ value, duration = 800, prefix = '' }) => {
   const [displayValue, setDisplayValue] = useState(value);
@@ -575,6 +625,9 @@ function App() {
   // (#15) Le debounce ne concerne QUE les vraies sliders (drag continu, { debounce: true } par défaut) :
   // les champs numériques / clics ponctuels passent { debounce: false } pour un envoi immédiat.
   const updateSetting = (key, value, { debounce = true } = {}) => {
+    // (#86) Garde-fou : un champ vidé produisait parseFloat('') = NaN, poussé tel quel dans
+    // l'état optimiste PUIS envoyé au bot (?? ne rattrape que null/undefined, jamais NaN).
+    if (typeof value === 'number' && !Number.isFinite(value)) return;
     isUpdating.current = true;
     if (updateTimeout.current) clearTimeout(updateTimeout.current);
     // 1. Affichage optimiste immédiat (curseur fluide)
@@ -1282,10 +1335,9 @@ const { account, daily_stats, settings, active_trades } = dashboardData
                 return (
                   <div key={item.key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#2a2a2a', padding: '10px', borderRadius: '8px' }}>
                     <span style={{ fontSize: '0.85rem' }}>{item.label}</span>
-                    <input
-                      type="number" step={item.step} value={displayVal}
-                      onChange={(e) => updateSetting(item.key, item.mult ? parseFloat(e.target.value) / item.mult : parseFloat(e.target.value), { debounce: false })}
-                      style={{ background: '#121212', border: '1px solid #444', color: '#fff', padding: '5px', width: '70px', borderRadius: '4px', textAlign: 'center' }}
+                    <NumField
+                      value={displayVal} step={item.step}
+                      onCommit={(n) => updateSetting(item.key, item.mult ? n / item.mult : n)}
                     />
                   </div>
                 );
@@ -1334,21 +1386,17 @@ const { account, daily_stats, settings, active_trades } = dashboardData
                 <div style={{ display: 'flex', gap: '8px', marginTop: '15px' }}>
                   <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', background: '#2a2a2a', padding: '8px 4px', borderRadius: '8px' }}>
                     <span style={{ fontSize: '0.7rem', color: '#888' }}>O1</span>
-                    <input
-                      type="number" min="1" max="98" step="1"
-                      value={Math.round(pct1 * 100)}
-                      onChange={(e) => updateSetting('sabr_zone_pct1', parseFloat(e.target.value) / 100, { debounce: false })}
-                      style={{ background: '#121212', border: '1px solid #444', color: '#fff', padding: '4px', width: '40px', borderRadius: '4px', textAlign: 'center' }}
+                    <NumField
+                      value={Math.round(pct1 * 100)} step="1" min="1" max="98" width="40px"
+                      onCommit={(n) => updateSetting('sabr_zone_pct1', n / 100)}
                     />
                     <span style={{ fontSize: '0.7rem', color: '#666' }}>%</span>
                   </div>
                   <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', background: '#2a2a2a', padding: '8px 4px', borderRadius: '8px' }}>
                     <span style={{ fontSize: '0.7rem', color: '#888' }}>O2</span>
-                    <input
-                      type="number" min="1" max="98" step="1"
-                      value={Math.round(pct2 * 100)}
-                      onChange={(e) => updateSetting('sabr_zone_pct2', parseFloat(e.target.value) / 100, { debounce: false })}
-                      style={{ background: '#121212', border: '1px solid #444', color: '#fff', padding: '4px', width: '40px', borderRadius: '4px', textAlign: 'center' }}
+                    <NumField
+                      value={Math.round(pct2 * 100)} step="1" min="1" max="98" width="40px"
+                      onCommit={(n) => updateSetting('sabr_zone_pct2', n / 100)}
                     />
                     <span style={{ fontSize: '0.7rem', color: '#666' }}>%</span>
                   </div>
@@ -1516,8 +1564,10 @@ const { account, daily_stats, settings, active_trades } = dashboardData
                   defaultOff: true, sabrOnly: true },
                 // (#72) Decalage du SL lors d'une mise a BE. Valeur signee, donc pas
                 // d'interrupteur : 0 = SL pile au prix d'entree.
+                // (#86) signed -> bouton ± : le pave numerique du mobile n'a pas de touche
+                // moins, une valeur negative etait donc impossible a saisir au doigt.
                 { label: 'Décalage BE (pips)', key: 'be_offset_pips',
-                  val: settings.be_offset_pips ?? 0, step: '1', mult: 1, noToggle: true }
+                  val: settings.be_offset_pips ?? 0, step: '1', mult: 1, noToggle: true, signed: true }
               ].filter((item) => (!item.riskEngineOnly || usesRiskEngine)
                                  && (!item.sabrOnly || isChannelVisible('CANAL SABR_VIP')
                                      || isChannelVisible('CANAL SABR_FREE'))).map((item) => {
@@ -1532,7 +1582,12 @@ const { account, daily_stats, settings, active_trades } = dashboardData
                       {item.warn && !active && <span style={{ color: '#ff6b6b', fontSize: '0.7rem', display: 'block' }}>⚠️ Protection désactivée</span>}
                     </span>
                     {!item.noValue && (
-                      <input type="number" step={item.step} value={item.val} onChange={(e) => updateSetting(item.key, parseFloat(e.target.value) / item.mult, { debounce: false })} style={{ background: '#121212', border: '1px solid #444', color: '#fff', padding: '5px', width: '60px', borderRadius: '4px', textAlign: 'center', marginRight: '8px' }} />
+                      <div style={{ marginRight: '8px' }}>
+                        <NumField
+                          value={item.val} step={item.step} width="60px" signed={item.signed}
+                          onCommit={(n) => updateSetting(item.key, n / item.mult)}
+                        />
+                      </div>
                     )}
                     {!item.noToggle && (
                       <button onClick={item.toggleFn} style={{ padding: '6px 14px', borderRadius: '20px', border: 'none', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'bold', background: active ? '#00c853' : '#ff4444', color: '#fff', minWidth: '70px' }}>
