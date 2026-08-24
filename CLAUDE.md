@@ -1,5 +1,19 @@
 # Conventions du projet Kairos
 
+## Refactorisation en cours — lire avant d'y toucher
+
+Un plan de refactorisation en 7 étapes existe : **[`REFACTOR_PLAN.md`](REFACTOR_PLAN.md)** à la
+racine. Issues GitHub #63 à #68 plus #1, suivi dans l'issue chapeau **#69**.
+
+**L'ordre des étapes n'est pas indicatif** — chacune rend la suivante plus sûre, et le
+découpage en modules (#1) passe de 5/5 à 3/5 en risque selon qu'il est fait en premier ou en
+dernier.
+
+Avant de commencer n'importe laquelle de ces étapes : lire `REFACTOR_PLAN.md` en entier, puis
+**refaire l'analyse complète de la zone concernée**. Le plan date de la V15.7.0 et le code
+bouge vite (51 commits en 30 jours) ; les comptages et numéros de ligne qu'il cite sont à
+revérifier systématiquement. Le plan a déjà contenu deux erreurs factuelles.
+
 ## Versionnage de l'exe (validé le 2026-08-12)
 
 Format : `Kairos_V<MAJEUR>.<MINEUR>.<PATCH>.exe` — SemVer, où le niveau est choisi
