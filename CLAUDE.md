@@ -99,6 +99,15 @@ chaque partie : un suffixe (`-beta`, `_test`…) lève une `ValueError` avalée 
   - **Comptage** : `indodog_stats.json` et `fts_stats.json`, une ligne par signal (jamais par
     ordre), paliers cumulatifs = taux de survie direct. Commandes `/stats_indodog` et
     `/stats_fts`. INDODOG passe de 30 % à **10 %** au TP1.
+- **V15.6.0** — `/reset_stats <CANAL>` : remise à zéro des stats par canal, **non
+  destructive**. `trades_detailed.csv` étant aussi la source de l'historique des trades et de
+  la courbe du portefeuille, on n'y supprime rien : `stats_reset.json` mémorise une date de
+  coupure par canal et les stats ignorent ce qui est clôturé avant. `annuler` retire la date
+  et tout revient, à n'importe quel moment. Deux pièges traités : la coupure est testée
+  *après* le rattachement des trades manuels à PERSO (sinon un reset PERSO ne toucherait
+  rien), et un seed étant un agrégat indécoupable, il est largué en entier dès que la coupure
+  tombe après le début de sa plage. Les libellés acceptés sont ceux des **stats** — SABR y est
+  regroupé sous « CANAL SABR VIP », avec une espace, pas sous son nom de pack.
 - **V15.3.0** — décalage du SL à la mise à BE (`BE_OFFSET_PIPS`, signé : positif = SL dans le
   gain), SL suiveur propre à SABR (interrupteur + distance ; `SABR_TRAILING_ACTIVE` existait
   dans les configs distribuées mais n'était lu nulle part), et section « Historique Trades »
