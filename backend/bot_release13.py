@@ -281,6 +281,13 @@ INDO_TP_NEXT_PCT = 0.20
 # non plus : apres un rebond violent, le prix peut avoir touche la zone puis s'en eloigner.
 INDO_MARKET_MAX_PIPS = 50.0
 INDO_MARKET_LOOKBACK_MIN = 5
+# (#89) Peremption d'un ordre INDODOG encore EN ATTENTE. Deux motifs independants :
+#   - le prix s'est approche a moins de INDO_APPROACH_PIPS du prix d'entree SANS nous
+#     declencher, puis est alle jusqu'au TP2 : le mouvement a eu lieu sans nous, l'ordre
+#     n'attend plus qu'un retour qui, s'il vient, se fera a contre-courant.
+#   - l'ordre dort depuis plus de INDO_ORDER_EXPIRY_H heures : le signal n'est plus frais.
+INDO_APPROACH_PIPS = 30.0
+INDO_ORDER_EXPIRY_H = 24.0
 # (#3) SABR hors-or : sizing par risque % (basé sur le SL du signal), réglable au dashboard.
 RISK_PERCENT_SABR_OTHER = 0.006    # 0.6% par défaut pour les paires SABR autres que l'or
 # False = répartition manuelle (SABR_ZONE_PCT1/PCT2 ci-dessous, 45%/35%/20% par défaut,
@@ -586,6 +593,10 @@ INDO_LEVELS_BY_SIGNAL = {}
 INDO_BASE_VOL_BY_SIGNAL = {}
 # (#87) Comptage par signal : { signal_id: {...} }, cf. indodog_stats.json.
 INDO_STATS = {}
+# (#89) Tickets d'ordres INDODOG en attente ayant deja vu le prix passer a moins de
+# INDO_APPROACH_PIPS. C'est un fait HISTORIQUE : il ne se deduit pas du prix courant, donc il
+# doit etre memorise au moment ou on l'observe, et survivre a un redemarrage.
+INDO_APPROACHED = set()
 
 CACHE_SYMBOL_POINT = {}
 
@@ -1326,12 +1337,13 @@ def save_memory():
         with open(INDO_TP_FILENAME, "w") as f:
             json.dump({"tp": {str(k): v for k, v in INDO_TP_BY_TICKET.items()},
                        "levels": {k: list(v) for k, v in INDO_LEVELS_BY_SIGNAL.items()},
-                       "base": INDO_BASE_VOL_BY_SIGNAL}, f)
+                       "base": INDO_BASE_VOL_BY_SIGNAL,
+                       "approached": list(INDO_APPROACHED)}, f)
     except Exception as e: logger.warning(f"⚠️ Save INDODOG TP Error: {e}")
 
 def load_memory():
     global TRADES_PROCESSED_LEVELS, MANAGED_MANUAL_TICKETS, PARTIAL_PROFITS, INDO_TP_BY_TICKET
-    global INDO_LEVELS_BY_SIGNAL, INDO_BASE_VOL_BY_SIGNAL
+    global INDO_LEVELS_BY_SIGNAL, INDO_BASE_VOL_BY_SIGNAL, INDO_APPROACHED
     
     # 1. Chargement des Niveaux
     if os.path.exists(MEMORY_FILENAME):
@@ -1375,6 +1387,7 @@ def load_memory():
                 INDO_TP_BY_TICKET = {int(k): v for k, v in _d.get("tp", {}).items()}
                 INDO_LEVELS_BY_SIGNAL = {k: set(v) for k, v in _d.get("levels", {}).items()}
                 INDO_BASE_VOL_BY_SIGNAL = _d.get("base", {})
+                INDO_APPROACHED = set(int(t) for t in _d.get("approached", []))
             else:
                 INDO_TP_BY_TICKET = {int(k): v for k, v in _d.items()}
             logger.info(f"🍽 Paliers INDODOG restaurés ({len(INDO_TP_BY_TICKET)} trades)")
@@ -3648,6 +3661,7 @@ async def check_closed_positions():
             ACTIVE_TRADE_SOURCES.pop(t, None)
             TP1_PRICE_BY_TICKET.pop(t, None)
             INDO_TP_BY_TICKET.pop(t, None)
+            INDO_APPROACHED.discard(t)   # (#89) l'ordre a fini par se declencher
             # (#84) L'etat INDODOG est indexe par SIGNAL : on ne le purge qu'une fois le
             # DERNIER ordre de ce signal referme, sinon les paliers deja pris seraient oublies
             # et les partiels rejoues sur les positions encore ouvertes de la meme zone.
@@ -4215,6 +4229,101 @@ async def cancel_pending_of_signal(sig_key):
     return annules
 
 
+async def cancel_indo_stale_orders():
+    """(#89) Annule les ordres INDODOG encore EN ATTENTE devenus caducs.
+
+    Deux motifs independants :
+      1. Le prix s'est approche a moins de INDO_APPROACH_PIPS du prix d'entree SANS nous
+         declencher, puis est alle jusqu'au TP2. Le mouvement a eu lieu sans nous : garder
+         l'ordre, c'est esperer un retour qui se ferait a contre-courant du signal.
+      2. L'ordre attend depuis plus de INDO_ORDER_EXPIRY_H heures.
+
+    L'approche est un fait HISTORIQUE (INDO_APPROACHED) : au moment ou le TP2 est atteint, le
+    prix est deja loin de l'entree, on ne peut plus la constater. Il faut donc la noter quand
+    on la voit.
+
+    Cadencee a 10 s : la boucle appelante tourne chaque seconde, et interroger orders_get()
+    aussi souvent n'apporte rien sur une bande de 30 pips.
+    """
+    maintenant = time.time()
+    if maintenant - getattr(cancel_indo_stale_orders, "_dernier", 0.0) < 10.0:
+        return
+    cancel_indo_stale_orders._dernier = maintenant
+
+    try:
+        orders = await run_mt5(mt5.orders_get)
+    except Exception as e:
+        logger.warning("cancel_indo_stale_orders : %s" % e)
+        return
+
+    # L'age se calcule en heure SERVEUR : o.time_setup est date par le broker, alors que
+    # time.time() est de l'UTC local. Chez un broker en UTC+3, les comparer directement
+    # vieillirait chaque ordre de 3 h d'un coup.
+    _srv = await run_mt5(get_server_time_tick)
+    ref_horloge = float(_srv.time) if _srv else maintenant
+
+    touche_memoire = False
+    for o in (orders or []):
+        if o.magic != MAGIC_NUMBER:
+            continue
+        if ACTIVE_TRADE_SOURCES.get(o.ticket) != "CANAL INDODOG":
+            continue
+
+        motif = None
+
+        # --- 1. Peremption pure
+        age_h = (ref_horloge - float(getattr(o, "time_setup", ref_horloge))) / 3600.0
+        if age_h >= INDO_ORDER_EXPIRY_H:
+            motif = "en attente depuis %.0f h" % age_h
+
+        # --- 2. Approche sans declenchement, puis TP2 atteint
+        if motif is None:
+            ladder = INDO_TP_BY_TICKET.get(o.ticket) or []
+            tick = await run_mt5(mt5.symbol_info_tick, o.symbol) if len(ladder) >= 2 else None
+            if tick:
+                is_buy = o.type in (mt5.ORDER_TYPE_BUY_LIMIT, mt5.ORDER_TYPE_BUY_STOP)
+                curr = tick.bid if is_buy else tick.ask
+                pt_o = get_cached_point(o.symbol)
+                div_o = get_pip_divisor(o.symbol)
+                ecart = (abs(o.price_open - curr) / pt_o) / div_o
+                if ecart <= INDO_APPROACH_PIPS and o.ticket not in INDO_APPROACHED:
+                    INDO_APPROACHED.add(o.ticket)
+                    touche_memoire = True
+                    logger.info("🍽 INDODOG : ordre %s frole a %.1f pips sans declencher."
+                                % (o.ticket, ecart))
+                tp2 = ladder[1]
+                tp2_atteint = (curr >= tp2) if is_buy else (curr <= tp2)
+                if o.ticket in INDO_APPROACHED and tp2_atteint:
+                    motif = ("approche a moins de %.0f pips sans declencher, puis TP2 atteint"
+                             % INDO_APPROACH_PIPS)
+
+        if not motif:
+            continue
+
+        res = await run_mt5(_send_order_blocking,
+                            {"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket,
+                             "magic": MAGIC_NUMBER})
+        if res and res.retcode == mt5.TRADE_RETCODE_DONE:
+            ACTIVE_TRADE_SIGNALS.pop(o.ticket, None)
+            ACTIVE_TRADE_SOURCES.pop(o.ticket, None)
+            INDO_TP_BY_TICKET.pop(o.ticket, None)
+            INDO_APPROACHED.discard(o.ticket)
+            touche_memoire = True
+            logger.warning("🗑 INDODOG : ordre %s annule -- %s" % (o.ticket, motif))
+            await send_channel_alert(
+                "🗑 **INDODOG : ORDRE ANNULE**" + chr(10) + chr(10) +
+                ("%s @ %s" % (o.symbol, o.price_open)) + chr(10) +
+                ("Motif : %s" % motif) + chr(10) + chr(10) +
+                "Le signal n'est plus valide.", "CANAL INDODOG")
+            await run_bg(save_channel_data)
+        else:
+            logger.warning("🗑 INDODOG : annulation refusee sur %s (%s)"
+                           % (o.ticket, getattr(res, "retcode", "?")))
+
+    if touche_memoire:
+        await run_bg(save_memory)
+
+
 async def close_volume_across(positions, vol_target, label, pips):
     """(#84) Ferme vol_target lots repartis sur plusieurs positions d'un meme signal.
 
@@ -4446,6 +4555,11 @@ async def monitor_positions():
                                 await run_mt5(_send_order_blocking, {"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
                 await asyncio.sleep(60)
                 continue
+
+            # (#89) Peremption des ordres INDODOG en attente. Hors de la boucle sur les
+            # positions : un ordre non declenche n'a justement PAS de position associee.
+            # La fonction se cadence elle-meme (10 s).
+            await cancel_indo_stale_orders()
 
             # 4. BOUCLE PRINCIPALE
             all_positions = await run_mt5(mt5.positions_get)
