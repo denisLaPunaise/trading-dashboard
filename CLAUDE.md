@@ -79,6 +79,26 @@ chaque partie : un suffixe (`-beta`, `_test`…) lève une `ValueError` avalée 
      désormais les décimales du pas broker au lieu d'un `round(x, 2)` en dur.
   Rappel utile trouvé à cette occasion : le champ « Lots SABR VIP/Free » ne s'applique
   **qu'à l'or**. Tout autre symbole passe par « Risque SABR autres (%) ».
+- **V15.5.0** — nouveau canal **FTS** (« Forex VIP SpaceFX »), et généralisation du moteur
+  INDODOG en *canaux à échelle de TP*.
+  - FTS : prix d'entrée unique, un SL, 3 TP ou plus **non numérotés** — leur ordre
+    d'apparition fait foi, un tri par valeur inverserait l'échelle d'un SELL. Le format
+    « Sl : 4606 ( 80 pip ) » contient deux nombres : la regex exige que le prix suive
+    immédiatement le mot SL, sinon la taille du stop serait lue comme un second prix (même
+    piège qu'en V15.2.2). Échelle uniforme 20 % par palier, reliquat au dernier TP.
+  - Moteur mutualisé (`is_ladder_channel`, `ladder_pcts`, `ladder_fixed_lot`,
+    `ladder_be_at_tp1`) plutôt que dupliqué : un correctif profite aux deux canaux. La mise
+    à BE au TP1 reste propre à INDODOG, seul canal qui la recommande dans ses messages.
+  - Entrée au **marché** si — et seulement si — on est à moins de 50 pips du prix d'entrée
+    **et** que le cours l'a touché dans les 5 dernières minutes (lu sur les bougies M1, pas
+    sur le tick courant). Historique indisponible = ordre en attente, jamais de marché par
+    défaut.
+  - **Péremption** d'un ordre en attente : prix passé à moins de 30 pips sans déclencher
+    puis TP2 atteint (l'approche est un fait historique, mémorisé quand on l'observe), ou
+    24 h d'attente — âge calculé en heure **serveur**, `time_setup` étant daté par le broker.
+  - **Comptage** : `indodog_stats.json` et `fts_stats.json`, une ligne par signal (jamais par
+    ordre), paliers cumulatifs = taux de survie direct. Commandes `/stats_indodog` et
+    `/stats_fts`. INDODOG passe de 30 % à **10 %** au TP1.
 - **V15.3.0** — décalage du SL à la mise à BE (`BE_OFFSET_PIPS`, signé : positif = SL dans le
   gain), SL suiveur propre à SABR (interrupteur + distance ; `SABR_TRAILING_ACTIVE` existait
   dans les configs distribuées mais n'était lu nulle part), et section « Historique Trades »
