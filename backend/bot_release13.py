@@ -396,12 +396,12 @@ SABR_TRAILING_PIPS = 100       # distance en pips entre le prix courant et le SL
 #           d'origine. En echange, si le prix revient toucher le prix d'entree, on vend
 #           SABR_BE_PARTIEL_PCT du volume INITIAL pour alleger le risque.
 # Dans les deux cas, la cloture des 60 % a +100 pips reste inchangee.
-# ATTENTION au reglage du pourcentage : il porte sur le volume INITIAL, mais 60 % ont deja
-# ete clotures a +100 pips. Il ne reste donc que 40 % en position -- toute valeur >= 40 %
-# solde la position entiere au retour sur l'entree. D'ou un defaut a 20 %, soit la moitie de
-# ce qui reste.
+# Le pourcentage porte sur le volume ENCORE OUVERT au moment du retour, pas sur le volume
+# initial : a ce stade 60 % sont deja partis a +100 pips, et raisonner sur l'initial rendait
+# le reglage trompeur (toute valeur >= 40 % soldait la position sans le dire). 100 % = tout
+# fermer, 50 % = la moitie de ce qui reste.
 SABR_BE_PARTIEL_ACTIVE = False
-SABR_BE_PARTIEL_PCT = 0.20
+SABR_BE_PARTIEL_PCT = 0.50
 BTC_ENTRY_OFFSET = 70
 DEFAULT_TP1_PCT = 0.50
 
@@ -5193,30 +5193,38 @@ async def monitor_positions():
                                 and "SABR_BE_PARTIEL_FAIT" not in TRADES_PROCESSED_LEVELS[p.ticket]):
                             revenu = (curr_price <= p.price_open) if is_buy else (curr_price >= p.price_open)
                             if revenu:
-                                deals = await run_mt5(mt5.history_deals_get, position=p.ticket)
-                                initial_vol = deals[0].volume if (deals and len(deals) > 0) else p.volume
+                                # Le pourcentage porte sur le volume ENCORE OUVERT (p.volume),
+                                # pas sur le volume initial : les 60 % de +100 pips sont deja
+                                # partis, et raisonner sur l'initial rendait tout reglage
+                                # >= 40 % equivalent a une cloture totale, sans le dire.
                                 pct_be = max(0.01, min(1.0, SABR_BE_PARTIEL_PCT))
-                                vol_be = round(initial_vol * pct_be, 2)
+                                vol_be = round(p.volume * pct_be, 2)
                                 if vol_be < 0.01: vol_be = 0.01
 
                                 if round(p.volume - vol_be, 2) >= 0.01:
                                     ok_be = await close_partial(p, 0.0,
                                                                 "SABR retour BE (%d%%)" % int(pct_be * 100),
                                                                 pips_indiv, fixed_lot=vol_be)
+                                    reste_be = round(p.volume - vol_be, 2)
                                 else:
                                     # Le reliquat serait sous le lot minimum du courtier : on
                                     # solde la position plutôt que de la rendre inexploitable.
+                                    vol_be = p.volume
                                     ok_be = await close_partial(p, 0.0,
                                                                 "SABR retour BE (solde)",
-                                                                pips_indiv, fixed_lot=p.volume)
+                                                                pips_indiv, fixed_lot=vol_be)
+                                    reste_be = 0.0
                                 if ok_be:
                                     TRADES_PROCESSED_LEVELS[p.ticket].add("SABR_BE_PARTIEL_FAIT")
                                     await run_bg(save_memory)
+                                    _suite = (f"_Le SL d'origine est conservé sur les "
+                                              f"{reste_be:.2f} lot(s) restants._" if reste_be > 0
+                                              else "_Position soldée._")
                                     await send_channel_alert(
                                         f"🩹 **SABR : RETOUR SUR L'ENTRÉE**\n\n"
                                         f"Symbole: {sym}\nTicket: {p.ticket}\n"
-                                        f"Vendu: **{vol_be:.2f}** lot(s) ({int(pct_be * 100)} % du volume initial)\n\n"
-                                        f"_Le SL d'origine est conservé sur le reste._",
+                                        f"Vendu: **{vol_be:.2f}** lot(s) ({int(pct_be * 100)} % du volume restant)\n\n"
+                                        f"{_suite}",
                                         ACTIVE_TRADE_SOURCES.get(p.ticket, ""))
 
                         # --- 150 PIPS : +10% SUPPLÉMENTAIRES DU VOLUME INITIAL ---
@@ -5650,14 +5658,12 @@ async def admin_commands(event):
         if arg:
             await run_bg(save_settings)
         if SABR_BE_PARTIEL_ACTIVE:
-            _reste = "⚠️ ≥ 40 % solde la position entière" if SABR_BE_PARTIEL_PCT >= 0.40 else ""
             await event.reply(f"🩹 **BE SABR : PARTIEL**\n\n"
                               f"À +100 pips le SL **ne bouge pas**.\n"
                               f"Si le prix revient sur l'entrée, on vend "
-                              f"**{int(SABR_BE_PARTIEL_PCT * 100)} %** du volume initial.\n\n"
-                              f"_Rappel : 60 % ont déjà été clôturés à +100 pips, il ne reste "
-                              f"que 40 % en position._ {_reste}\n\n"
-                              f"_Changer la part : `/be_partiel 20`_")
+                              f"**{int(SABR_BE_PARTIEL_PCT * 100)} %** de ce qui est **encore "
+                              f"ouvert** à ce moment-là.\n\n"
+                              f"_Changer la part : `/be_partiel 50` · 100 % = tout fermer_")
         else:
             await event.reply("☄️ **BE SABR : CLASSIQUE**\n\n"
                               "À +100 pips le SL remonte au prix d'entrée (comportement "
