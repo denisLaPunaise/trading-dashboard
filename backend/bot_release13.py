@@ -489,6 +489,11 @@ DETAILED_HISTORY_FILE = "trades_detailed.csv"
 # (#stats) Historique agrégé repris d'avant la refonte des stats. Optionnel : absent chez un
 # nouveau client, il ne fait qu'ajouter un total aux périodes qui couvrent sa plage de dates.
 STATS_SEED_FILE = "stats_seed.json"
+# (#91) Remise a zero des stats par canal. On n'efface RIEN : trades_detailed.csv sert aussi
+# a l'historique des trades et a la courbe du portefeuille, y supprimer des lignes detruirait
+# ces deux-la. On memorise juste une date de coupure par canal, et les stats ignorent ce qui
+# est anterieur. Reversible : retirer la date fait tout revenir.
+STATS_RESET_FILE = "stats_reset.json"
 
 BLACKLIST_WORDS = [
     "FERMEZ", "CLOSE", "MOITIÉ", "DÉPLACEZ", "BREAKEVEN", "RESULTAT", "ANNULEZ",
@@ -1900,6 +1905,45 @@ def get_trades_history(period="1", max_rows=100):
     return out[:max_rows]
 
 
+# (#91) { canal normalise : "YYYY-MM-DD HH:MM:SS" } -- tout ce qui est CLOTURE avant cette
+# date est ignore dans les stats par canal.
+STATS_RESET = {}
+
+
+def load_stats_reset():
+    global STATS_RESET
+    if not os.path.exists(STATS_RESET_FILE):
+        return
+    try:
+        with open(STATS_RESET_FILE, "r", encoding="utf-8") as f:
+            STATS_RESET = json.load(f) or {}
+        if STATS_RESET:
+            logger.info("📊 Coupures de stats actives : %s"
+                        % ", ".join(c.replace("CANAL ", "") for c in STATS_RESET))
+    except Exception as e:
+        logger.warning(f"⚠️ Lecture {STATS_RESET_FILE} : {e}")
+        STATS_RESET = {}
+
+
+def save_stats_reset():
+    try:
+        with open(STATS_RESET_FILE, "w", encoding="utf-8") as f:
+            json.dump(STATS_RESET, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"⚠️ Ecriture {STATS_RESET_FILE} : {e}")
+
+
+def stats_reset_cutoff(src):
+    """Date de coupure d'un canal, ou None. `src` doit deja etre normalise."""
+    txt = STATS_RESET.get(src)
+    if not txt:
+        return None
+    try:
+        return datetime.strptime(txt, "%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return None
+
+
 def _merge_stats_seed(out, cutoff):
     """(#stats) Injecte un historique REPRIS d'avant la refonte des stats (stats_seed.json).
 
@@ -1933,6 +1977,12 @@ def _merge_stats_seed(out, cutoff):
         # exclu de quelques heures si on comparait les datetime bruts.
         if cutoff.date() > date_from.date():
             continue  # la période demandée ne remonte pas assez loin
+        # (#91) Un seed est un AGREGAT : impossible d'en retirer la partie anterieure à une
+        # remise à zéro. Si le canal a été remis à zéro après le début du seed, on le laisse
+        # donc entièrement de côté -- c'est bien ce que veut dire "repartir de zéro".
+        _rst = stats_reset_cutoff(normalize_channel_source(chan))
+        if _rst and _rst.date() > date_from.date():
+            continue
         entry = out.setdefault(normalize_channel_source(chan),
                                {"count": 0, "positions": 0, "profit": 0.0, "pips": 0.0,
                                 "avg_pips": 0.0})
@@ -1978,6 +2028,11 @@ def get_channel_stats_period(days=30, start_date_custom=None):
                 # vrai résultat, elles doivent apparaître quelque part.
                 if src == "MANUEL/INCONNU":
                     src = "CANAL PERSO"
+                # (#91) Coupure testee APRES le rattachement a PERSO, sinon une remise a zero
+                # de PERSO ne s'appliquerait pas aux trades manuels, qui en sont l'essentiel.
+                _rst = stats_reset_cutoff(src)
+                if _rst and closed_at < _rst:
+                    continue
                 entry = out.setdefault(src, {"count": 0, "positions": 0, "profit": 0.0,
                                              "pips": 0.0, "avg_pips": 0.0})
                 entry["positions"] += 1
@@ -5498,6 +5553,71 @@ async def admin_commands(event):
             f"**Issues**\n{issues_txt}\n\n"
             f"_Échelle actuelle : {echelle}._")
 
+    # (#91) Remise a zero des stats par canal du dashboard. NON DESTRUCTIF : on pose une date
+    # de coupure, trades_detailed.csv n'est jamais touche -- il sert aussi a l'historique des
+    # trades et a la courbe du portefeuille, y supprimer des lignes casserait les deux.
+    elif text.startswith("/reset_stats"):
+        # Libelles tels qu'ils apparaissent DANS LES STATS : SABR y est regroupe sous
+        # "CANAL SABR VIP" / "CANAL SABR FREE" (avec une espace), pas sous son nom de pack.
+        libelles = {
+            "MDT_VIP": "CANAL MDT_VIP", "VIP": "CANAL MDT_VIP",
+            "MDT_FREE": "CANAL MDT_FREE", "FREE": "CANAL MDT_FREE",
+            "SABR_VIP": "CANAL SABR VIP", "SABR": "CANAL SABR VIP",
+            "SABR_FREE": "CANAL SABR FREE",
+            "INDODOG": "CANAL INDODOG", "INDO": "CANAL INDODOG", "FTS": "CANAL FTS",
+            "SPACE": "CANAL SPACE", "LIGUE": "CANAL LIGUE", "PERSO": "CANAL PERSO",
+        }
+        parts_rs = text.split()
+        if len(parts_rs) < 2:
+            actifs = "\n".join(f"  {c.replace('CANAL ', '')} : depuis le {d}"
+                               for c, d in sorted(STATS_RESET.items())) or "  _aucune_"
+            await event.reply(
+                "📊 **REMISE À ZÉRO DES STATS PAR CANAL**\n\n"
+                "`/reset_stats CANAL` : ce canal repart de zéro\n"
+                "`/reset_stats CANAL annuler` : rétablit tout son historique\n"
+                "`/reset_stats TOUS` : tous les canaux de ton pack\n\n"
+                f"Canaux : {', '.join(sorted(set(libelles)))}\n\n"
+                f"**Coupures actives**\n{actifs}\n\n"
+                "_Aucun trade n'est supprimé : l'historique et la courbe du portefeuille "
+                "restent complets, seul l'onglet « Par Canal » ignore l'avant._")
+            return
+
+        jeton = parts_rs[1].upper()
+        annule = len(parts_rs) > 2 and parts_rs[2].lower() in ("annuler", "annule", "undo")
+
+        if jeton in ("TOUS", "TOUT", "ALL"):
+            cibles = sorted({c for c in libelles.values() if channel_allowed(c)})
+            if not cibles:
+                await event.reply("❌ Aucun canal dans ton pack."); return
+        elif jeton in libelles:
+            if not channel_allowed(libelles[jeton]):
+                await event.reply(f"❌ {jeton} ne fait pas partie de ton pack."); return
+            cibles = [libelles[jeton]]
+        else:
+            await event.reply(f"❌ Canal inconnu : `{jeton}`\n"
+                              f"Canaux : {', '.join(sorted(set(libelles)))}")
+            return
+
+        horodatage = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for c in cibles:
+            if annule:
+                STATS_RESET.pop(c, None)
+            else:
+                STATS_RESET[c] = horodatage
+        await run_bg(save_stats_reset)
+
+        noms = ", ".join(c.replace("CANAL ", "") for c in cibles)
+        if annule:
+            await event.reply(f"↩️ **HISTORIQUE RÉTABLI** — {noms}\n\n"
+                              f"Les stats réaffichent la totalité des trades.")
+        else:
+            await event.reply(f"📊 **STATS REMISES À ZÉRO** — {noms}\n\n"
+                              f"Coupure posée au {horodatage}. Tout ce qui est clôturé avant "
+                              f"est désormais ignoré dans l'onglet « Par Canal ».\n\n"
+                              f"Rien n'a été supprimé : l'historique des trades et la courbe "
+                              f"du portefeuille restent complets.\n\n"
+                              f"↩️ Pour revenir en arrière : `/reset_stats {jeton} annuler`")
+
     elif text.startswith("/risk_sabr_vip"):
         if not channel_allowed("CANAL SABR_VIP"): await event.reply("❌ SABR_VIP ne fait pas partie de ton pack."); return
         try:
@@ -5883,6 +6003,7 @@ async def admin_commands(event):
         # afficher une commande inopérante (ex: SL suiveur sur un pack SABR) donne l'illusion
         # d'un réglage disponible et génère des questions au support.
         gestion_lines = [
+            (True,             "`/reset_stats` : Remettre à zéro les stats d'un canal"),
             (True,             "`/max_dd 4` : Max Drawdown 4%"),
             (show_risk_engine, "`/sl_suiveur 85` : Trailing Pips (ou '0' pour paliers)"),
             (show_risk_engine, "`/sl_sell 30` : % Vente Soft SL"),
@@ -6979,6 +7100,7 @@ async def main():
     load_settings()
     load_channel_data()
     load_ladder_stats()   # (#87/#90)
+    load_stats_reset()    # (#91)
 
     if not await init_daily_stats(): 
         logger.error("❌ Erreur de chargement des statistiques.")
