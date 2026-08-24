@@ -273,6 +273,14 @@ FIXED_LOT_INDODOG = 0.10
 # vont reellement les signaux, de quoi regler ces deux valeurs sur des donnees et non au doigt.
 INDO_TP1_PCT = 0.10
 INDO_TP_NEXT_PCT = 0.20
+# (#88) Entree au MARCHE plutot qu'en ordre en attente. Les DEUX conditions sont requises :
+#   - moins de INDO_MARKET_MAX_PIPS du prix d'entree annonce  (garde-fou de proximite)
+#   - le cours a REELLEMENT touche ce prix dans les INDO_MARKET_LOOKBACK_MIN dernieres minutes
+# La proximite seule ne suffit pas : a 45 pips d'une zone jamais atteinte, entrer au marche
+# revient a prendre un prix que le canal n'a pas donne. Le contact recent seul ne suffit pas
+# non plus : apres un rebond violent, le prix peut avoir touche la zone puis s'en eloigner.
+INDO_MARKET_MAX_PIPS = 50.0
+INDO_MARKET_LOOKBACK_MIN = 5
 # (#3) SABR hors-or : sizing par risque % (basé sur le SL du signal), réglable au dashboard.
 RISK_PERCENT_SABR_OTHER = 0.006    # 0.6% par défaut pour les paires SABR autres que l'or
 # False = répartition manuelle (SABR_ZONE_PCT1/PCT2 ci-dessous, 45%/35%/20% par défaut,
@@ -2760,6 +2768,59 @@ def indo_stats_close(sig_key, issue):
     if issue == "TP_FINAL":
         s["tp_atteint"] = int(s.get("nb_tp") or s.get("tp_atteint") or 0)
 
+
+def _price_touched_recently_blocking(symbol, target, minutes):
+    """(#88) True si une bougie M1 des `minutes` dernieres minutes a englobe `target`.
+
+    On lit les BOUGIES et pas le tick courant : entre deux passages du bot, le prix peut
+    parfaitement avoir touche le niveau et en etre reparti sans qu'aucun tick observe ne le
+    montre. Le high/low d'une M1 capture ce passage, un tick ponctuel non.
+
+    Retourne None si MT5 ne fournit pas l'historique -- l'appelant traite ce cas comme
+    "pas de contact", donc en ordre en attente : on ne prend jamais un marche par defaut.
+    """
+    try:
+        rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 0, int(minutes) + 1)
+    except Exception as e:
+        logger.warning(f"⚠️ Historique M1 indisponible sur {symbol} : {e}")
+        return None
+    if rates is None or len(rates) == 0:
+        return None
+    for r in rates:
+        if float(r["low"]) <= target <= float(r["high"]):
+            return True
+    return False
+
+
+async def indo_should_market(symbol, target, curr_price, pt, div):
+    """(#88) INDODOG : faut-il entrer au MARCHE plutot qu'en ordre en attente ?
+
+    Les deux conditions doivent etre vraies (cf. INDO_MARKET_MAX_PIPS / _LOOKBACK_MIN).
+    Retourne (marche: bool, ecart_pips: float, contact: bool|None) -- les deux dernieres
+    valeurs ne servent qu'au journal, pour comprendre apres coup pourquoi le bot a tranche
+    dans un sens ou dans l'autre.
+    """
+    ecart = (abs(target - curr_price) / pt) / div
+    if ecart > INDO_MARKET_MAX_PIPS:
+        return False, ecart, None          # trop loin : inutile d'interroger l'historique
+    contact = await run_mt5(_price_touched_recently_blocking, symbol, target,
+                            INDO_MARKET_LOOKBACK_MIN)
+    return (contact is True), ecart, contact
+
+
+def _indo_log_entree(target, ecart, contact, marche):
+    """Journal d'une decision d'entree INDODOG, en clair."""
+    if contact is None and ecart > INDO_MARKET_MAX_PIPS:
+        motif = "trop loin (> %.0f pips)" % INDO_MARKET_MAX_PIPS
+    elif contact is None:
+        motif = "historique M1 indisponible"
+    elif contact:
+        motif = "contact < %d min" % INDO_MARKET_LOOKBACK_MIN
+    else:
+        motif = "aucun contact < %d min" % INDO_MARKET_LOOKBACK_MIN
+    logger.info("🍽 INDODOG entree %s : ecart %.1f pips, %s -> %s"
+                % (target, ecart, motif, "MARCHE" if marche else "ORDRE EN ATTENTE"))
+
 async def execute_trade(symbol, action, sl, tp, price_signal, message_date, channel_source, custom_lot_modifier=1.0, tp1_price=None, tp_ladder=None):
     # (#32) Verrou de pack centralisé : execute_trade() est le SEUL point d'entrée vers un vrai
     # ordre MT5, quel que soit l'appelant (main_handler, edit_handler, /reactivate, UPDATE_SL...).
@@ -2996,9 +3057,11 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
             l1, l2, l3 = split_zone_lots(total_vol, step_i, SABR_ZONE_EQUAL_SPLIT,
                                          SABR_ZONE_PCT1, SABR_ZONE_PCT2)
 
-            # Premiere borne au marche si le prix y est deja (meme regle que SABR)
-            dist1_i = (abs(p1_i - curr_price) / pt) / div
-            px1_i = None if dist1_i <= 30 else p1_i
+            # (#88) Premiere borne au marche seulement si on est proche ET que le cours a
+            # reellement touche ce prix recemment. Les deux autres bornes restent en attente.
+            marche_i, ecart_i, contact_i = await indo_should_market(symbol, p1_i, curr_price, pt, div)
+            _indo_log_entree(p1_i, ecart_i, contact_i, marche_i)
+            px1_i = None if marche_i else p1_i
             if l1 > 0: trades_to_execute.append((px1_i, l1))
             if l2 > 0: trades_to_execute.append((pmid_i, l2))
             if l3 > 0: trades_to_execute.append((p2_i, l3))
@@ -3008,8 +3071,10 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
                 try: tgt_i = float(str(price_signal).replace(",", "."))
                 except Exception: pass
             if tgt_i:
-                gap_i = (abs(tgt_i - curr_price) / pt) / div
-                if gap_i <= 5.0: tgt_i = None      # deja au prix : on prend au marche
+                # (#88) Meme regle que pour la zone : proximite ET contact recent.
+                marche_s, ecart_s, contact_s = await indo_should_market(symbol, tgt_i, curr_price, pt, div)
+                _indo_log_entree(tgt_i, ecart_s, contact_s, marche_s)
+                if marche_s: tgt_i = None          # None = ordre au marche
             trades_to_execute.append((tgt_i, total_vol))
 
         logger.info("🍽 INDODOG : %.2f lot(s) -> %s" % (total_vol, trades_to_execute))
