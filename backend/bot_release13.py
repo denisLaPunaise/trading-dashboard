@@ -219,8 +219,19 @@ ID_INDODOG = -1003720161775
 # lirait aussi le salon de discussion generale et tenterait d'y trouver des signaux.
 INDODOG_TOPIC_ID = 64
 
-# ⚠️ LISTE DES CANAUX SOURCES (MDT_VIP, MDT_FREE, PERSO, SPACE, LIGUE, SABR_FREE, SABR_VIP, SABR_COPIE, INDODOG)
-CHANNEL_LIST = [ID_MDT_VIP, ID_MDT_FREE, -5093508256, -1002684710444, -1001753570693, -1003639045748, ID_SABR_VIP, ID_CANAL_SABR_COPIE, ID_INDODOG]
+# (#90) FTS -- "Forex VIP SpaceFX". Signaux simples et tres reguliers :
+#     XAUUSD BUY NOW 4635
+#     Sl : 4606  ( 80 pip )
+#     Tp : 4620
+#     Tp : 4625
+#     Tp : 4630
+# Prix d'entree UNIQUE (jamais de zone), un SL, puis 3 TP ou plus NON numerotes : c'est leur
+# ordre d'apparition qui donne le palier. Meme moteur d'echelle qu'INDODOG (FTS_TP_PCT a
+# chaque palier, reliquat ferme au dernier TP) et memes regles d'entree / de peremption.
+ID_FTS = -1001957768371
+
+# ⚠️ LISTE DES CANAUX SOURCES (MDT_VIP, MDT_FREE, PERSO, SPACE, LIGUE, SABR_FREE, SABR_VIP, SABR_COPIE, INDODOG, FTS)
+CHANNEL_LIST = [ID_MDT_VIP, ID_MDT_FREE, -5093508256, -1002684710444, -1001753570693, -1003639045748, ID_SABR_VIP, ID_CANAL_SABR_COPIE, ID_INDODOG, ID_FTS]
 
 # Ton Groupe de Logs
 ADMIN_ID = 0 #-1003692316672
@@ -288,6 +299,11 @@ INDO_MARKET_LOOKBACK_MIN = 5
 #   - l'ordre dort depuis plus de INDO_ORDER_EXPIRY_H heures : le signal n'est plus frais.
 INDO_APPROACH_PIPS = 30.0
 INDO_ORDER_EXPIRY_H = 24.0
+# (#90) FTS : lot fixe et echelle UNIFORME -- 20 % de la position initiale a chaque palier,
+# reliquat ferme au dernier TP. Les regles d'entree au marche et de peremption des ordres en
+# attente sont partagees avec INDODOG (constantes INDO_* ci-dessus).
+FIXED_LOT_FTS = 0.10
+FTS_TP_PCT = 0.20
 # (#3) SABR hors-or : sizing par risque % (basé sur le SL du signal), réglable au dashboard.
 RISK_PERCENT_SABR_OTHER = 0.006    # 0.6% par défaut pour les paires SABR autres que l'or
 # False = répartition manuelle (SABR_ZONE_PCT1/PCT2 ci-dessous, 45%/35%/20% par défaut,
@@ -316,7 +332,7 @@ ALLOWED_CHANNELS = []
 # qu'un /unmute ne puisse jamais lever un verrouillage imposé par le pack.
 ALL_PACK_CHANNELS = ["CANAL SABR_VIP", "CANAL SABR_FREE", "CANAL SABR_COPIE",
                      "CANAL MDT_VIP", "CANAL MDT_FREE", "CANAL SPACE", "CANAL LIGUE", "CANAL PERSO",
-                     "CANAL INDODOG"]
+                     "CANAL INDODOG", "CANAL FTS"]
 PACK_LOCKED_CHANNELS = []
 # (#26) Pack source de vérité = Firestore (licenses/{key}.allowed_channels), pas le
 # settings.json local (sinon un client peut éditer le fichier pour tout débloquer).
@@ -468,6 +484,7 @@ INDO_TP_FILENAME = "indodog_tp.json"
 # Sert a regler INDO_TP1_PCT / INDO_TP_NEXT_PCT sur des donnees. Un signal = une ligne, jamais
 # une par ordre : une entree en zone en pose trois, les compter separement tripleraient tout.
 INDO_STATS_FILENAME = "indodog_stats.json"
+FTS_STATS_FILENAME = "fts_stats.json"
 DETAILED_HISTORY_FILE = "trades_detailed.csv"
 # (#stats) Historique agrégé repris d'avant la refonte des stats. Optionnel : absent chez un
 # nouveau client, il ne fait qu'ajouter un total aux périodes qui couvrent sa plage de dates.
@@ -508,6 +525,67 @@ REGEX_INDO_ENTRY = re.compile(
     r"Harga\s+Makan\s*:?\s*([\d.,]+)(?:\s*[-‐-―]\s*([\d.,]+))?", re.IGNORECASE)
 REGEX_INDO_SL = re.compile(r"Warteg\s+Tutup\s*:?\s*([\d.,]+)", re.IGNORECASE)
 REGEX_INDO_TP = re.compile(r":?\s*([\d.,]+)\s*\(\s*TP\s*(\d+)\s*\)", re.IGNORECASE)
+
+# --- REGEX FTS (#90) ---
+# "XAUUSD BUY NOW 4635", parfois suivi d'un emoji. Le symbole precede l'action.
+REGEX_FTS_ACTION = re.compile(
+    r"#?([A-Za-z0-9]{3,12})\s+(BUY|SELL)\s*(?:NOW)?\s*[:=]?\s*([\d]+(?:[.,]\d+)?)", re.IGNORECASE)
+# "Sl : 4606  ( 80 pip )" -- le nombre doit suivre IMMEDIATEMENT le mot SL. Sans cette
+# contrainte, la taille du stop entre parentheses serait lue comme un second prix, et la
+# vieille regle "garder la derniere valeur" aurait pose un SL a 80 sur un or a 4606 (#68).
+REGEX_FTS_SL = re.compile(r"\bSL\s*[:=]?\s*([\d]+(?:[.,]\d+)?)", re.IGNORECASE)
+# "Tp : 4620" repete, sans numero.
+REGEX_FTS_TP = re.compile(r"\bTP\s*\d*\s*[:=]?\s*([\d]+(?:[.,]\d+)?)", re.IGNORECASE)
+
+
+def parse_fts_tps(raw_text):
+    """(#90) TP d'un signal FTS, dans leur ORDRE D'APPARITION.
+
+    Le canal ne les numerote pas : trois lignes "Tp : ..." de suite. C'est la position dans
+    le message qui donne le palier. On ne trie donc surtout pas par valeur -- sur un SELL,
+    les TP sont decroissants (4610, 4605, 4600) et un tri croissant inverserait l'echelle.
+    """
+    out = []
+    for m in REGEX_FTS_TP.finditer(raw_text or ""):
+        try:
+            v = float(m.group(1).replace(",", "."))
+        except Exception:
+            continue
+        if v > 0 and v not in out:
+            out.append(v)
+    return out
+
+
+# ==========================================
+# 🪜 CANAUX A ECHELLE DE TP (#90)
+# ==========================================
+# INDODOG et FTS partagent le meme moteur : lot fixe, entree au marche sous conditions,
+# partiels par palier sur le volume INITIAL du signal, peremption des ordres en attente.
+# Seuls changent les pourcentages, le lot et la mise a BE. Tout le reste est mutualise --
+# dupliquer ce moteur serait la garantie de ne corriger un bug que d'un cote.
+
+def is_ladder_channel(src):
+    """True si ce canal se gere en echelle de TP par signal."""
+    s = src or ""
+    return ("INDODOG" in s) or ("FTS" in s)
+
+
+def ladder_pcts(src):
+    """(pct_du_TP1, pct_des_paliers_suivants) pour ce canal."""
+    if "FTS" in (src or ""):
+        return FTS_TP_PCT, FTS_TP_PCT     # echelle uniforme
+    return INDO_TP1_PCT, INDO_TP_NEXT_PCT
+
+
+def ladder_fixed_lot(src):
+    """Lot fixe du canal, avant multiplicateur de reactivation."""
+    return FIXED_LOT_FTS if "FTS" in (src or "") else FIXED_LOT_INDODOG
+
+
+def ladder_be_at_tp1(src):
+    """Mise a BE au TP1. Vrai pour INDODOG seulement : c'est SON canal qui la recommande
+    dans chaque message. FTS n'en parle pas, on ne l'impose donc pas d'office."""
+    return "INDODOG" in (src or "")
 
 
 def parse_indodog_tps(raw_text):
@@ -591,8 +669,9 @@ INDO_TP_BY_TICKET = {}
 # ordres, mais l'echelle de TP est commune a tout le signal.
 INDO_LEVELS_BY_SIGNAL = {}
 INDO_BASE_VOL_BY_SIGNAL = {}
-# (#87) Comptage par signal : { signal_id: {...} }, cf. indodog_stats.json.
-INDO_STATS = {}
+# (#87/#90) Comptage par signal, un dictionnaire par canal a echelle :
+# { "CANAL INDODOG": { signal_id: {...} }, "CANAL FTS": {...} }.
+LADDER_STATS = {"CANAL INDODOG": {}, "CANAL FTS": {}}
 # (#89) Tickets d'ordres INDODOG en attente ayant deja vu le prix passer a moins de
 # INDO_APPROACH_PIPS. C'est un fait HISTORIQUE : il ne se deduit pas du prix courant, donc il
 # doit etre memorise au moment ou on l'observe, et survivre a un redemarrage.
@@ -1010,6 +1089,29 @@ def parse_signal(raw_text, channel_id=None):
         return rsym, action, price, sl, tp, "CANAL INDODOG"
 
     # ==========================================
+    # 🚀 CANAL FTS (#90)
+    # ==========================================
+    # Branche fermee elle aussi : un canal dedie ne retombe jamais sur les formats generiques.
+    if channel_id == ID_FTS:
+        m_act = REGEX_FTS_ACTION.search(raw_text or "")
+        if not m_act:
+            return None, None, None, None, None, None
+
+        rsym = m_act.group(1).replace("#", "").upper()
+        action = "ACHAT" if m_act.group(2).upper() == "BUY" else "VENTE"
+        price = m_act.group(3).replace(",", ".")
+
+        m_sl = REGEX_FTS_SL.search(raw_text or "")
+        sl = m_sl.group(1).replace(",", ".") if m_sl else "0.0"
+
+        # Le TP transmis a MT5 est le DERNIER palier : lui seul ferme la position en entier.
+        # Les paliers intermediaires sont pris en partiels par monitor_positions.
+        tps = parse_fts_tps(raw_text)
+        tp = str(tps[-1]) if tps else "0.0"
+
+        return rsym, action, price, sl, tp, "CANAL FTS"
+
+    # ==========================================
     # 🧠 PARTIE 1 : MODULE SABR (INTELLIGENT)
     # ==========================================
 
@@ -1418,6 +1520,7 @@ def save_settings():
                 "FIXED_LOT_SABR_FREE": FIXED_LOT_SABR_FREE,
                 "FIXED_LOT_SABR_VIP": FIXED_LOT_SABR_VIP,
                 "FIXED_LOT_INDODOG": FIXED_LOT_INDODOG,
+                "FIXED_LOT_FTS": FIXED_LOT_FTS,
                 "RISK_PERCENT_SABR_OTHER": RISK_PERCENT_SABR_OTHER,
                 "SABR_ZONE_EQUAL_SPLIT": SABR_ZONE_EQUAL_SPLIT,
                 "SABR_ZONE_PCT1": SABR_ZONE_PCT1,
@@ -1465,7 +1568,7 @@ FIREBASE_PASSWORD = ""
 
 def load_settings():
     """Charge les réglages au démarrage"""
-    global RISK_PERCENT_GOLD, SABR_FORWARD_ACTIVE, RISK_PERCENT_OTHER, RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE, MAX_DAILY_DRAWDOWN, DRAWDOWN_ACTIVE, TRAILING_STOP_PIPS, RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO, SOFT_SL_PERCENT, MUTED_CHANNELS, ALLOWED_CHANNELS, CHANNEL_TP1_PCT, TELEGRAM_DESTINATION_ID, ADMIN_ID, RISK_PERCENT_INDICES, PRIME_HOURS, TIME_OFF_PEAK_FACTOR, DAY_RISK_FACTORS, FIXED_LOT_SABR_FREE, FIXED_LOT_SABR_VIP, RISK_PERCENT_SABR_OTHER, SABR_ZONE_EQUAL_SPLIT, SABR_ZONE_PCT1, SABR_ZONE_PCT2, SL_SUIVEUR_ACTIVE, SOFT_SL_ACTIVE, FIREBASE_EMAIL, FIREBASE_PASSWORD, SERVER_PACK_CHANNELS, BE_OFFSET_PIPS, SABR_TRAILING_ACTIVE, SABR_TRAILING_PIPS, FIXED_LOT_INDODOG
+    global RISK_PERCENT_GOLD, SABR_FORWARD_ACTIVE, RISK_PERCENT_OTHER, RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE, MAX_DAILY_DRAWDOWN, DRAWDOWN_ACTIVE, TRAILING_STOP_PIPS, RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO, SOFT_SL_PERCENT, MUTED_CHANNELS, ALLOWED_CHANNELS, CHANNEL_TP1_PCT, TELEGRAM_DESTINATION_ID, ADMIN_ID, RISK_PERCENT_INDICES, PRIME_HOURS, TIME_OFF_PEAK_FACTOR, DAY_RISK_FACTORS, FIXED_LOT_SABR_FREE, FIXED_LOT_SABR_VIP, RISK_PERCENT_SABR_OTHER, SABR_ZONE_EQUAL_SPLIT, SABR_ZONE_PCT1, SABR_ZONE_PCT2, SL_SUIVEUR_ACTIVE, SOFT_SL_ACTIVE, FIREBASE_EMAIL, FIREBASE_PASSWORD, SERVER_PACK_CHANNELS, BE_OFFSET_PIPS, SABR_TRAILING_ACTIVE, SABR_TRAILING_PIPS, FIXED_LOT_INDODOG, FIXED_LOT_FTS
 
     if os.path.exists(SETTINGS_FILENAME):
         try:
@@ -1497,6 +1600,7 @@ def load_settings():
                 if "SL_SUIVEUR_ACTIVE" in data: SL_SUIVEUR_ACTIVE = data["SL_SUIVEUR_ACTIVE"]
                 if "BE_OFFSET_PIPS" in data: BE_OFFSET_PIPS = float(data["BE_OFFSET_PIPS"])
                 if "FIXED_LOT_INDODOG" in data: FIXED_LOT_INDODOG = float(data["FIXED_LOT_INDODOG"])
+                if "FIXED_LOT_FTS" in data: FIXED_LOT_FTS = float(data["FIXED_LOT_FTS"])
                 if "SABR_TRAILING_ACTIVE" in data: SABR_TRAILING_ACTIVE = bool(data["SABR_TRAILING_ACTIVE"])
                 if "SABR_TRAILING_PIPS" in data: SABR_TRAILING_PIPS = int(float(data["SABR_TRAILING_PIPS"]))
                 if "SOFT_SL_ACTIVE" in data: SOFT_SL_ACTIVE = data["SOFT_SL_ACTIVE"]
@@ -2689,28 +2793,46 @@ def split_zone_lots(total_vol, step, equal, pct1, pct2):
             units[i % 3] += 1
             i += 1
     return [round(u * step, dec) for u in units]
-
 # ==========================================
-# 🍽 COMPTAGE INDODOG (#87)
+# 🪜 COMPTAGE DES CANAUX A ECHELLE (#87/#90)
 # ==========================================
 # Une ligne par SIGNAL (jamais par ordre : une entree en zone en pose trois). On note jusqu'ou
 # le prix est reellement alle -- palier le plus loin atteint -- et comment le signal s'est
-# termine. C'est la matiere pour regler INDO_TP1_PCT / INDO_TP_NEXT_PCT sur des donnees :
-# si 90 % des signaux touchent le TP1 mais 20 % seulement le TP3, vendre gros au TP1 se
-# defend ; si la plupart vont au bout, c'est l'inverse.
+# termine. C'est la matiere pour regler les pourcentages de l'echelle sur des donnees : si
+# 90 % des signaux touchent le TP1 mais 20 % seulement le TP3, vendre gros au TP1 se defend ;
+# si la plupart vont au bout, c'est l'inverse.
+# Un fichier par canal : INDODOG et FTS n'ont ni le meme rythme ni la meme echelle, les
+# melanger rendrait les deux illisibles.
 
-def _indo_stats_resume():
-    """Agrege INDO_STATS : combien de signaux ont atteint TP1, TP2... et comment ils finissent.
+LADDER_STATS_FILES = {
+    "CANAL INDODOG": INDO_STATS_FILENAME,
+    "CANAL FTS": FTS_STATS_FILENAME,
+}
+
+
+def _ladder_key(src):
+    """Normalise une source en cle de canal a echelle. None si ce n'est pas l'un d'eux."""
+    s = src or ""
+    if "FTS" in s:
+        return "CANAL FTS"
+    if "INDODOG" in s:
+        return "CANAL INDODOG"
+    return None
+
+
+def _ladder_stats_resume(src):
+    """Agrege les signaux d'un canal : combien ont atteint TP1, TP2... et comment ils finissent.
 
     Les paliers sont CUMULATIFS (un signal qui atteint le TP3 compte aussi dans TP1 et TP2),
     c'est ce qui donne directement le taux de survie palier par palier.
     """
-    sigs = [s for s in INDO_STATS.values() if isinstance(s, dict)]
+    cle = _ladder_key(src)
+    sigs = [s for s in LADDER_STATS.get(cle, {}).values() if isinstance(s, dict)]
     paliers, issues, en_cours = {}, {}, 0
     for s in sigs:
         for n in range(1, int(s.get("tp_atteint") or 0) + 1):
-            cle = "tp%d" % n
-            paliers[cle] = paliers.get(cle, 0) + 1
+            k = "tp%d" % n
+            paliers[k] = paliers.get(k, 0) + 1
         issue = s.get("issue")
         if not issue:
             en_cours += 1
@@ -2725,34 +2847,42 @@ def _indo_stats_resume():
     }
 
 
-def save_indo_stats():
-    try:
-        with open(INDO_STATS_FILENAME, "w", encoding="utf-8") as f:
-            json.dump({"resume": _indo_stats_resume(), "signaux": INDO_STATS},
-                      f, indent=2, ensure_ascii=False)
-    except Exception as e:
-        logger.error(f"⚠️ Ecriture {INDO_STATS_FILENAME} : {e}")
-
-
-def load_indo_stats():
-    global INDO_STATS
-    if not os.path.exists(INDO_STATS_FILENAME):
+def save_ladder_stats(src):
+    cle = _ladder_key(src)
+    if not cle:
         return
+    chemin = LADDER_STATS_FILES[cle]
     try:
-        with open(INDO_STATS_FILENAME, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        INDO_STATS = data.get("signaux", {}) or {}
-        logger.info("🍽 Comptage INDODOG restaure (%d signaux)" % len(INDO_STATS))
+        with open(chemin, "w", encoding="utf-8") as f:
+            json.dump({"canal": cle.replace("CANAL ", ""),
+                       "resume": _ladder_stats_resume(cle),
+                       "signaux": LADDER_STATS[cle]}, f, indent=2, ensure_ascii=False)
     except Exception as e:
-        logger.error(f"⚠️ Lecture {INDO_STATS_FILENAME} : {e}")
-        INDO_STATS = {}
+        logger.error(f"⚠️ Ecriture {chemin} : {e}")
 
 
-def indo_stats_open(sig_key, symbol, nb_tp):
+def load_ladder_stats():
+    """Recharge les deux fichiers au demarrage. Un fichier absent est normal (canal jamais
+    utilise, ou client qui n'a pas ce pack)."""
+    for cle, chemin in LADDER_STATS_FILES.items():
+        if not os.path.exists(chemin):
+            continue
+        try:
+            with open(chemin, "r", encoding="utf-8") as f:
+                LADDER_STATS[cle] = json.load(f).get("signaux", {}) or {}
+            logger.info("🪜 Comptage %s restaure (%d signaux)"
+                        % (cle.replace("CANAL ", ""), len(LADDER_STATS[cle])))
+        except Exception as e:
+            logger.error(f"⚠️ Lecture {chemin} : {e}")
+            LADDER_STATS[cle] = {}
+
+
+def ladder_stats_open(src, sig_key, symbol, nb_tp):
     """Nouveau signal. Idempotent : les 3 ordres d'une zone partagent le meme signal_id."""
-    if not sig_key or str(sig_key) in INDO_STATS:
+    cle = _ladder_key(src)
+    if not cle or not sig_key or str(sig_key) in LADDER_STATS[cle]:
         return
-    INDO_STATS[str(sig_key)] = {
+    LADDER_STATS[cle][str(sig_key)] = {
         "symbole": symbol,
         "ouvert": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "nb_tp": int(nb_tp),
@@ -2762,16 +2892,18 @@ def indo_stats_open(sig_key, symbol, nb_tp):
     }
 
 
-def indo_stats_tp(sig_key, idx):
+def ladder_stats_tp(src, sig_key, idx):
     """Palier franchi. On ne retient que le plus loin : les paliers sont ordonnes."""
-    s = INDO_STATS.get(str(sig_key))
+    cle = _ladder_key(src)
+    s = LADDER_STATS.get(cle, {}).get(str(sig_key)) if cle else None
     if s and int(idx) > int(s.get("tp_atteint") or 0):
         s["tp_atteint"] = int(idx)
 
 
-def indo_stats_close(sig_key, issue):
+def ladder_stats_close(src, sig_key, issue):
     """Issue definitive du signal, ecrite une seule fois (le premier appel fait foi)."""
-    s = INDO_STATS.get(str(sig_key))
+    cle = _ladder_key(src)
+    s = LADDER_STATS.get(cle, {}).get(str(sig_key)) if cle else None
     if not s or s.get("issue"):
         return
     s["issue"] = issue
@@ -2821,8 +2953,8 @@ async def indo_should_market(symbol, target, curr_price, pt, div):
     return (contact is True), ecart, contact
 
 
-def _indo_log_entree(target, ecart, contact, marche):
-    """Journal d'une decision d'entree INDODOG, en clair."""
+def _indo_log_entree(canal, target, ecart, contact, marche):
+    """Journal d'une decision d'entree sur un canal a paliers, en clair."""
     if contact is None and ecart > INDO_MARKET_MAX_PIPS:
         motif = "trop loin (> %.0f pips)" % INDO_MARKET_MAX_PIPS
     elif contact is None:
@@ -2831,8 +2963,8 @@ def _indo_log_entree(target, ecart, contact, marche):
         motif = "contact < %d min" % INDO_MARKET_LOOKBACK_MIN
     else:
         motif = "aucun contact < %d min" % INDO_MARKET_LOOKBACK_MIN
-    logger.info("🍽 INDODOG entree %s : ecart %.1f pips, %s -> %s"
-                % (target, ecart, motif, "MARCHE" if marche else "ORDRE EN ATTENTE"))
+    logger.info("🪜 %s entree %s : ecart %.1f pips, %s -> %s"
+                % (canal, target, ecart, motif, "MARCHE" if marche else "ORDRE EN ATTENTE"))
 
 async def execute_trade(symbol, action, sl, tp, price_signal, message_date, channel_source, custom_lot_modifier=1.0, tp1_price=None, tp_ladder=None):
     # (#32) Verrou de pack centralisé : execute_trade() est le SEUL point d'entrée vers un vrai
@@ -3045,11 +3177,14 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
     # 3. Préparation des Lots et Prix (SABR vs CLASSIC)
     trades_to_execute = [] # Liste de tuples (TargetPrice, FixedLot) -> Si TargetPrice est None = Market
     
-    if channel_source == "CANAL INDODOG":
-        # (#84) Lot fixe, et entree en ZONE traitee comme SABR : trois ordres etages entre les
-        # deux bornes. Les paliers de TP porteront ensuite sur le volume TOTAL reellement pris
-        # (cf. gestion par signal dans monitor_positions), et non sur chaque ordre isolement.
-        total_vol = round(FIXED_LOT_INDODOG * custom_lot_modifier, 2)
+    if is_ladder_channel(channel_source):
+        # (#84/#90) Canaux a echelle de TP : lot fixe. INDODOG peut donner une ZONE, traitee
+        # comme SABR (trois ordres etages) ; FTS donne toujours un prix unique, la branche zone
+        # ci-dessous lui est donc naturellement inerte. Les paliers de TP porteront ensuite sur
+        # le volume TOTAL reellement pris (cf. gestion par signal dans monitor_positions), et
+        # non sur chaque ordre isolement.
+        _nom_canal = channel_source.replace("CANAL ", "")
+        total_vol = round(ladder_fixed_lot(channel_source) * custom_lot_modifier, 2)
         if total_vol < 0.01: total_vol = 0.01
 
         if price_signal and "|" in str(price_signal):
@@ -3073,7 +3208,7 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
             # (#88) Premiere borne au marche seulement si on est proche ET que le cours a
             # reellement touche ce prix recemment. Les deux autres bornes restent en attente.
             marche_i, ecart_i, contact_i = await indo_should_market(symbol, p1_i, curr_price, pt, div)
-            _indo_log_entree(p1_i, ecart_i, contact_i, marche_i)
+            _indo_log_entree(_nom_canal, p1_i, ecart_i, contact_i, marche_i)
             px1_i = None if marche_i else p1_i
             if l1 > 0: trades_to_execute.append((px1_i, l1))
             if l2 > 0: trades_to_execute.append((pmid_i, l2))
@@ -3086,11 +3221,11 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
             if tgt_i:
                 # (#88) Meme regle que pour la zone : proximite ET contact recent.
                 marche_s, ecart_s, contact_s = await indo_should_market(symbol, tgt_i, curr_price, pt, div)
-                _indo_log_entree(tgt_i, ecart_s, contact_s, marche_s)
+                _indo_log_entree(_nom_canal, tgt_i, ecart_s, contact_s, marche_s)
                 if marche_s: tgt_i = None          # None = ordre au marche
             trades_to_execute.append((tgt_i, total_vol))
 
-        logger.info("🍽 INDODOG : %.2f lot(s) -> %s" % (total_vol, trades_to_execute))
+        logger.info("🪜 %s : %.2f lot(s) -> %s" % (_nom_canal, total_vol, trades_to_execute))
 
     elif "SABR" in channel_source:
         # --- A. Détermination du volume TOTAL ---
@@ -3402,9 +3537,10 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
         # (#87) Une seule ligne de comptage pour tout le signal. La cle est construite comme
         # dans monitor_positions, sinon les paliers se noteraient sur une autre ligne.
         if tickets_opened:
-            indo_stats_open(ACTIVE_TRADE_SIGNALS.get(tickets_opened[0]) or ("_tk%d" % tickets_opened[0]),
-                            symbol, len(tp_ladder))
-            await run_bg(save_indo_stats)
+            ladder_stats_open(channel_source,
+                              ACTIVE_TRADE_SIGNALS.get(tickets_opened[0]) or ("_tk%d" % tickets_opened[0]),
+                              symbol, len(tp_ladder))
+            await run_bg(save_ladder_stats, channel_source)
         await run_bg(save_memory)
 
     return tickets_opened
@@ -3506,6 +3642,7 @@ def resolve_channel_arg(target):
         "FREE": "CANAL MDT_FREE", "GRATUIT": "CANAL MDT_FREE", "MDT_FREE": "CANAL MDT_FREE",
         "SPACE": "CANAL SPACE", "LIGUE": "CANAL LIGUE", "PERSO": "CANAL PERSO",
         "INDODOG": "CANAL INDODOG", "INDO": "CANAL INDODOG",
+        "FTS": "CANAL FTS",
     }
     return mapping.get(target, f"CANAL {target}")
 
@@ -3668,16 +3805,17 @@ async def check_closed_positions():
             if not still_open:
                 INDO_LEVELS_BY_SIGNAL.pop(signal_id, None)
                 INDO_BASE_VOL_BY_SIGNAL.pop(signal_id, None)
-                # (#87) Issue du signal, notee une fois le DERNIER ordre referme. On reprend
-                # `reason`, deja calcule au-dessus, pour rester coherent avec trades_detailed.csv.
-                if "INDODOG" in (source or ""):
+                # (#87/#90) Issue du signal, notee une fois le DERNIER ordre referme. On
+                # reprend `reason`, deja calcule au-dessus, pour rester coherent avec
+                # trades_detailed.csv.
+                if is_ladder_channel(source):
                     if "Take Profit" in reason:      _issue = "TP_FINAL"
                     elif "Stop Loss Full" in reason: _issue = "SL"
                     elif "Breakeven" in reason:      _issue = "BE"
                     elif "SL Suiveur" in reason:     _issue = "SL_SUIVEUR"
                     else:                            _issue = "AUTRE"
-                    indo_stats_close(signal_id, _issue)
-                    await run_bg(save_indo_stats)
+                    ladder_stats_close(source, signal_id, _issue)
+                    await run_bg(save_ladder_stats, source)
             await run_bg(save_channel_data)
 
             # --- 👇 GENERATION DU FICHIER CSV DETAILLE 👇 ---
@@ -4086,7 +4224,7 @@ async def api_update_setting(data: SettingUpdate):
     global RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE, RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO
     global FIXED_LOT_SABR_VIP, FIXED_LOT_SABR_FREE, RISK_PERCENT_SABR_OTHER, SABR_ZONE_EQUAL_SPLIT, SABR_ZONE_PCT1, SABR_ZONE_PCT2
     global MAX_DAILY_DRAWDOWN, TRAILING_STOP_PIPS, SOFT_SL_PERCENT
-    global BE_OFFSET_PIPS, SABR_TRAILING_PIPS, FIXED_LOT_INDODOG
+    global BE_OFFSET_PIPS, SABR_TRAILING_PIPS, FIXED_LOT_INDODOG, FIXED_LOT_FTS
     global PRIME_HOURS, TIME_OFF_PEAK_FACTOR
 
     k = data.key
@@ -4099,6 +4237,7 @@ async def api_update_setting(data: SettingUpdate):
         "risk_mdt_vip": "CANAL MDT_VIP", "risk_mdt_free": "CANAL MDT_FREE",
         "risk_space": "CANAL SPACE", "risk_ligue": "CANAL LIGUE", "risk_perso": "CANAL PERSO",
         "sabr_lot_vip": "CANAL SABR_VIP", "sabr_lot_free": "CANAL SABR_FREE",
+        "lot_indodog": "CANAL INDODOG", "lot_fts": "CANAL FTS",
     }
     if k in CHANNEL_SETTING_KEYS and not channel_allowed(CHANNEL_SETTING_KEYS[k]):
         return {"status": "error", "message": f"{k} : canal hors de ton pack."}
@@ -4129,6 +4268,7 @@ async def api_update_setting(data: SettingUpdate):
     elif k == "be_offset_pips": BE_OFFSET_PIPS = max(-500.0, min(500.0, float(v)))
     elif k == "sabr_trailing_pips": SABR_TRAILING_PIPS = max(1, int(float(v)))
     elif k == "lot_indodog": FIXED_LOT_INDODOG = max(0.01, float(v))
+    elif k == "lot_fts": FIXED_LOT_FTS = max(0.01, float(v))
     elif k == "sl_sell": SOFT_SL_PERCENT = float(v)
     
     # 👇 CE QU'ON AJOUTE POUR LE PLANNING 👇
@@ -4266,8 +4406,9 @@ async def cancel_indo_stale_orders():
     for o in (orders or []):
         if o.magic != MAGIC_NUMBER:
             continue
-        if ACTIVE_TRADE_SOURCES.get(o.ticket) != "CANAL INDODOG":
+        if not is_ladder_channel(ACTIVE_TRADE_SOURCES.get(o.ticket)):
             continue
+        _c = ACTIVE_TRADE_SOURCES.get(o.ticket, "").replace("CANAL ", "")
 
         motif = None
 
@@ -4289,8 +4430,8 @@ async def cancel_indo_stale_orders():
                 if ecart <= INDO_APPROACH_PIPS and o.ticket not in INDO_APPROACHED:
                     INDO_APPROACHED.add(o.ticket)
                     touche_memoire = True
-                    logger.info("🍽 INDODOG : ordre %s frole a %.1f pips sans declencher."
-                                % (o.ticket, ecart))
+                    logger.info("🪜 %s : ordre %s frole a %.1f pips sans declencher."
+                                % (_c, o.ticket, ecart))
                 tp2 = ladder[1]
                 tp2_atteint = (curr >= tp2) if is_buy else (curr <= tp2)
                 if o.ticket in INDO_APPROACHED and tp2_atteint:
@@ -4300,6 +4441,9 @@ async def cancel_indo_stale_orders():
         if not motif:
             continue
 
+        # Le canal doit etre lu AVANT le nettoyage : send_channel_alert() s'en sert pour
+        # router l'alerte et respecter le mute, et les .pop() ci-dessous l'effacent.
+        src_o = ACTIVE_TRADE_SOURCES.get(o.ticket, "CANAL INDODOG")
         res = await run_mt5(_send_order_blocking,
                             {"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket,
                              "magic": MAGIC_NUMBER})
@@ -4309,16 +4453,16 @@ async def cancel_indo_stale_orders():
             INDO_TP_BY_TICKET.pop(o.ticket, None)
             INDO_APPROACHED.discard(o.ticket)
             touche_memoire = True
-            logger.warning("🗑 INDODOG : ordre %s annule -- %s" % (o.ticket, motif))
+            logger.warning("🗑 %s : ordre %s annule -- %s" % (_c, o.ticket, motif))
             await send_channel_alert(
-                "🗑 **INDODOG : ORDRE ANNULE**" + chr(10) + chr(10) +
+                ("🗑 **%s : ORDRE ANNULE**" % _c) + chr(10) + chr(10) +
                 ("%s @ %s" % (o.symbol, o.price_open)) + chr(10) +
                 ("Motif : %s" % motif) + chr(10) + chr(10) +
-                "Le signal n'est plus valide.", "CANAL INDODOG")
+                "Le signal n'est plus valide.", src_o)
             await run_bg(save_channel_data)
         else:
-            logger.warning("🗑 INDODOG : annulation refusee sur %s (%s)"
-                           % (o.ticket, getattr(res, "retcode", "?")))
+            logger.warning("🗑 %s : annulation refusee sur %s (%s)"
+                           % (_c, o.ticket, getattr(res, "retcode", "?")))
 
     if touche_memoire:
         await run_bg(save_memory)
@@ -4566,7 +4710,8 @@ async def monitor_positions():
             if all_positions is not None:
                 
                 sabr_groups = {} 
-                indo_groups = {}   # (#84) INDODOG groupe par SIGNAL, pas par symbole
+                indo_groups = {}   # (#84) canaux a echelle groupes par SIGNAL, pas par symbole
+                indo_srcs = {}     # (#90) canal d'origine de chaque groupe (INDODOG ou FTS)
                 
                 for pos in all_positions:
                     # 🛑 LE BOUCLIER WEEK-END ABSOLU
@@ -4593,13 +4738,16 @@ async def monitor_positions():
                         sabr_groups[pos.symbol].append(pos)
                         continue
 
-                    # (#84) INDODOG : gestion PAR SIGNAL et non par position. Une entree en
-                    # zone pose 3 ordres ; les paliers de TP se calculent sur le volume TOTAL
-                    # reellement pris, donc il faut voir le groupe entier avant de decider.
-                    if src_trade == "CANAL INDODOG":
+                    # (#84/#90) Canaux a echelle : gestion PAR SIGNAL et non par position. Une
+                    # entree en zone pose 3 ordres ; les paliers de TP se calculent sur le
+                    # volume TOTAL reellement pris, donc il faut voir le groupe entier avant
+                    # de decider. On memorise le canal du groupe : les pourcentages et la mise
+                    # a BE en dependent.
+                    if is_ladder_channel(src_trade):
                         sig_key = ACTIVE_TRADE_SIGNALS.get(pos.ticket) or f"_tk{pos.ticket}"
                         indo_groups.setdefault(sig_key, []).append(pos)
-                        continue 
+                        indo_srcs[sig_key] = src_trade
+                        continue
                     
                     # --- LOGIQUE STANDARD ---
                     sym = pos.symbol
@@ -4945,15 +5093,19 @@ async def monitor_positions():
                                         ACTIVE_TRADE_SOURCES.get(p.ticket, ""))
 
                 # ==========================================
-                # 🍽 GESTION INDODOG PAR SIGNAL (#84)
+                # 🪜 GESTION DES CANAUX A ECHELLE PAR SIGNAL (#84/#90)
                 # ==========================================
-                # Une entree en zone pose 3 ordres. Les paliers de TP se calculent sur le
-                # volume TOTAL reellement pris (donc seulement les ordres REMPLIS), et non
-                # position par position : c'est la regle voulue cote canal.
+                # INDODOG et FTS. Une entree en zone pose 3 ordres. Les paliers de TP se
+                # calculent sur le volume TOTAL reellement pris (donc seulement les ordres
+                # REMPLIS), et non position par position : c'est la regle voulue cote canal.
                 for sig_key, positions in indo_groups.items():
                     if not positions: continue
                     ladder = INDO_TP_BY_TICKET.get(positions[0].ticket) or []
                     if len(ladder) < 2: continue
+
+                    src_ladder = indo_srcs.get(sig_key, "CANAL INDODOG")
+                    nom_ladder = src_ladder.replace("CANAL ", "")
+                    pct_tp1, pct_next = ladder_pcts(src_ladder)
 
                     ref = positions[0]
                     sym_i = ref.symbol
@@ -4987,11 +5139,11 @@ async def monitor_positions():
                             annules = await cancel_pending_of_signal(sig_key)
                             if annules:
                                 await send_channel_alert(
-                                    "🗑 **INDODOG : ZONE NETTOYEE**" + chr(10) + chr(10) +
+                                    ("🗑 **%s : ZONE NETTOYEE**" % nom_ladder) + chr(10) + chr(10) +
                                     ("%d ordre(s) en attente annule(s) apres le TP1." % annules),
-                                    "CANAL INDODOG")
+                                    src_ladder)
 
-                        pct_i = INDO_TP1_PCT if idx == 1 else INDO_TP_NEXT_PCT
+                        pct_i = pct_tp1 if idx == 1 else pct_next
                         # Arrondi a l'INFERIEUR sur le pas du courtier. Avec un arrondi au plus
                         # proche, 20 % de 0.08 donne 0.016 -> 0.02, et les quatre paliers
                         # consommaient 100 % du volume : il ne restait plus rien a fermer au TP
@@ -5005,16 +5157,17 @@ async def monitor_positions():
                         pips_i = ((curr_i - ref.price_open) / pt_i) / div_i if is_buy_i                                  else ((ref.price_open - curr_i) / pt_i) / div_i
 
                         ferme = await close_volume_across(positions, vol_cible,
-                                                          "INDODOG TP%d (%d%%)" % (idx, int(pct_i * 100)),
+                                                          "%s TP%d (%d%%)" % (nom_ladder, idx, int(pct_i * 100)),
                                                           pips_i)
                         if ferme > 0:
                             done.add(tag)
-                            indo_stats_tp(sig_key, idx)          # (#87)
-                            await run_bg(save_indo_stats)
+                            ladder_stats_tp(src_ladder, sig_key, idx)          # (#87/#90)
+                            await run_bg(save_ladder_stats, src_ladder)
                             await run_bg(save_memory)
 
-                            # BE au TP1 : recommande par le canal dans chaque message
-                            if idx == 1 and "INDO_BE" not in done:
+                            # BE au TP1 : recommande par INDODOG dans chaque message. FTS n'en
+                            # parle pas, on ne l'impose donc pas (cf. ladder_be_at_tp1).
+                            if idx == 1 and ladder_be_at_tp1(src_ladder) and "INDO_BE" not in done:
                                 for p in positions:
                                     be_i = compute_be_price(p.price_open, is_buy_i, sym_i)
                                     besoin = (is_buy_i and p.sl < be_i) or                                              ((not is_buy_i) and (p.sl > be_i or p.sl == 0))
@@ -5025,8 +5178,8 @@ async def monitor_positions():
                                         await run_mt5(_send_order_blocking, req_i)
                                 done.add("INDO_BE")
                                 await send_channel_alert(
-                                    "🛡 **INDODOG : SL AU BE** (TP1 atteint)" + chr(10) + chr(10) +
-                                    ("Symbole: %s" % sym_i), "CANAL INDODOG")
+                                    ("🛡 **%s : SL AU BE** (TP1 atteint)" % nom_ladder) + chr(10) + chr(10) +
+                                    ("Symbole: %s" % sym_i), src_ladder)
                         break   # un seul palier par cycle : on relit les volumes au suivant
 
         except Exception as e: 
@@ -5305,30 +5458,45 @@ async def admin_commands(event):
                               f"reliquat fermé au dernier TP du signal.")
         except: await event.reply("❌ Usage: /lot_indodog 0.10")
 
-    # (#87) Jusqu'ou vont reellement les signaux INDODOG -- de quoi regler l'echelle de TP.
-    elif text.startswith("/stats_indodog"):
-        if not channel_allowed("CANAL INDODOG"):
-            await event.reply("❌ INDODOG ne fait pas partie de ton pack."); return
-        r = _indo_stats_resume()
+    elif text.startswith("/lot_fts"):
+        global FIXED_LOT_FTS
+        if not channel_allowed("CANAL FTS"):
+            await event.reply("❌ FTS ne fait pas partie de ton pack."); return
+        try:
+            FIXED_LOT_FTS = max(0.01, float(text.split()[1]))
+            await run_bg(save_settings)
+            await event.reply(f"🚀 Lot Fixe FTS : **{FIXED_LOT_FTS} lots**\n"
+                              f"Échelle : {int(FTS_TP_PCT * 100)} % de la position initiale à "
+                              f"chaque TP, reliquat fermé au dernier TP du signal.")
+        except: await event.reply("❌ Usage: /lot_fts 0.10")
+
+    # (#87/#90) Jusqu'ou vont reellement les signaux -- de quoi regler l'echelle de TP.
+    elif text.startswith("/stats_indodog") or text.startswith("/stats_fts"):
+        _src = "CANAL FTS" if text.startswith("/stats_fts") else "CANAL INDODOG"
+        _nom = _src.replace("CANAL ", "")
+        if not channel_allowed(_src):
+            await event.reply(f"❌ {_nom} ne fait pas partie de ton pack."); return
+        r = _ladder_stats_resume(_src)
         total = r["signaux"]
         if total == 0:
-            await event.reply("🍽 **INDODOG** : aucun signal enregistré pour l'instant.\n"
-                              f"Le comptage démarre au premier signal (`{INDO_STATS_FILENAME}`).")
+            await event.reply(f"🪜 **{_nom}** : aucun signal enregistré pour l'instant.\n"
+                              f"Le comptage démarre au premier signal "
+                              f"(`{LADDER_STATS_FILES[_src]}`).")
             return
         lignes = []
         for cle, n in r["paliers_atteints"].items():
-            idx = int(cle[2:])
-            pct = "TP%d" % idx
-            lignes.append(f"  {pct} : **{n}**/{total}  ({100.0 * n / total:.0f} %)")
+            lignes.append(f"  TP{int(cle[2:])} : **{n}**/{total}  ({100.0 * n / total:.0f} %)")
         paliers_txt = "\n".join(lignes) if lignes else "  _aucun palier atteint_"
         issues_txt = "\n".join(f"  {k} : **{v}**" for k, v in r["issues"].items()) or "  _aucun signal terminé_"
+        _p1, _pn = ladder_pcts(_src)
+        echelle = (f"{int(_p1 * 100)} % à chaque TP" if _p1 == _pn
+                   else f"{int(_p1 * 100)} % au TP1, {int(_pn * 100)} % ensuite")
         await event.reply(
-            f"🍽 **STATS INDODOG**\n\n"
+            f"🪜 **STATS {_nom}**\n\n"
             f"Signaux : **{total}** ({r['termines']} terminés, {r['en_cours']} en cours)\n\n"
             f"**Paliers atteints** (cumulatif)\n{paliers_txt}\n\n"
             f"**Issues**\n{issues_txt}\n\n"
-            f"_Échelle actuelle : {int(INDO_TP1_PCT * 100)} % au TP1, "
-            f"{int(INDO_TP_NEXT_PCT * 100)} % ensuite._")
+            f"_Échelle actuelle : {echelle}._")
 
     elif text.startswith("/risk_sabr_vip"):
         if not channel_allowed("CANAL SABR_VIP"): await event.reply("❌ SABR_VIP ne fait pas partie de ton pack."); return
@@ -5695,6 +5863,7 @@ async def admin_commands(event):
             ("CANAL SABR_VIP", "`/risk_sabr_vip 0.06` (Lots Fixes)"),
             ("CANAL SABR_FREE", "`/risk_sabr_free 0.06` (Lots Fixes)"),
             ("CANAL INDODOG", "`/lot_indodog 0.10` (Lots Fixes) · `/stats_indodog` (paliers atteints)"),
+            ("CANAL FTS", "`/lot_fts 0.10` (Lots Fixes) · `/stats_fts` (paliers atteints)"),
             ("CANAL SPACE", "`/risk_space 1.0`"),
             ("CANAL LIGUE", "`/risk_ligue 1.0`"),
             ("CANAL PERSO", "`/risk_perso 1.0`"),
@@ -6202,7 +6371,8 @@ async def main_handler(event):
 
                 # (#84) INDODOG : on transmet l'echelle complete des TP du signal (3 a 5
                 # paliers selon les jours) pour la gestion en partiels.
-                tp_ladder = parse_indodog_tps(final_text) if final_source == "CANAL INDODOG" else None
+                tp_ladder = (parse_indodog_tps(final_text) if final_source == "CANAL INDODOG"
+                             else parse_fts_tps(final_text) if final_source == "CANAL FTS" else None)
 
                 opened_tickets = await execute_trade(sym, act, sl, tp, p_msg, event.date, final_source,
                                                      tp1_price=tp1_price, tp_ladder=tp_ladder)
@@ -6460,6 +6630,7 @@ async def get_current_state_for_firebase() -> dict:
             "sl_suiveur": TRAILING_STOP_PIPS, "sl_sell": SOFT_SL_PERCENT,
             "be_offset_pips": BE_OFFSET_PIPS,
             "lot_indodog": FIXED_LOT_INDODOG,
+            "lot_fts": FIXED_LOT_FTS,
             "sabr_trailing_active": SABR_TRAILING_ACTIVE, "sabr_trailing_pips": SABR_TRAILING_PIPS,
             "sl_suiveur_active": SL_SUIVEUR_ACTIVE, "soft_sl_active": SOFT_SL_ACTIVE,
             "muted_channels": MUTED_CHANNELS, "allowed_channels": ALLOWED_CHANNELS,
@@ -6807,7 +6978,7 @@ async def main():
     load_memory()
     load_settings()
     load_channel_data()
-    load_indo_stats()   # (#87)
+    load_ladder_stats()   # (#87/#90)
 
     if not await init_daily_stats(): 
         logger.error("❌ Erreur de chargement des statistiques.")

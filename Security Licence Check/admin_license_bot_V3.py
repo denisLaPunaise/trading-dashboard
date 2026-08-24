@@ -293,6 +293,7 @@ VALID_CHANNEL_TOKENS = {
     "SPACE":      "CANAL SPACE",
     "INDODOG":    "CANAL INDODOG",
     "INDO":       "CANAL INDODOG",
+    "FTS":        "CANAL FTS",
     "LIGUE":      "CANAL LIGUE",
     "PERSO":      "CANAL PERSO",
 }
@@ -303,15 +304,16 @@ CHANNEL_PROFILES = {
     "mdt":   ["CANAL MDT_VIP", "CANAL MDT_FREE"],
     "space": ["CANAL SPACE"],
     "indodog": ["CANAL INDODOG"],
+    "fts": ["CANAL FTS"],
     "ligue": ["CANAL LIGUE"],
     "perso": ["CANAL PERSO"],
     # 'full' = tout SAUF SABR_COPIE (qui reste réservé à une assignation manuelle)
     "full":  ["CANAL SABR_VIP", "CANAL SABR_FREE", "CANAL MDT_VIP", "CANAL MDT_FREE",
-              "CANAL SPACE", "CANAL LIGUE", "CANAL PERSO", "CANAL INDODOG"],
+              "CANAL SPACE", "CANAL LIGUE", "CANAL PERSO", "CANAL INDODOG", "CANAL FTS"],
     # 'dev' = version complète : tous les canaux (SABR_COPIE inclus) + validité illimitée d'office
     "dev":   ["CANAL SABR_VIP", "CANAL SABR_FREE", "CANAL SABR_COPIE",
               "CANAL MDT_VIP", "CANAL MDT_FREE",
-              "CANAL SPACE", "CANAL LIGUE", "CANAL PERSO", "CANAL INDODOG"],
+              "CANAL SPACE", "CANAL LIGUE", "CANAL PERSO", "CANAL INDODOG", "CANAL FTS"],
 }
 
 
@@ -366,6 +368,7 @@ SETTINGS_TEMPLATE = {
     "RISK_PERCENT_FREE": 0.008,
     "RISK_PERCENT_SPACE": 0.008,
     "FIXED_LOT_INDODOG": 0.10,
+    "FIXED_LOT_FTS": 0.10,
     "RISK_PERCENT_LIGUE": 0.008,
     "RISK_PERCENT_PERSO": 0.008,
     "RISK_PERCENT_INDICES": 0.008,

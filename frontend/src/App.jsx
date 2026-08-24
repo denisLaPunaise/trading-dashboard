@@ -1328,7 +1328,9 @@ const { account, daily_stats, settings, active_trades } = dashboardData
                 { label: 'Risque SABR autres (%)', key: 'risk_sabr_other', step: '0.1', mult: 100, fallback: 0.006 },
                 // (#84) INDODOG : lot fixe, comme SABR. L'echelle de TP (10 % puis 20 %, cf. INDO_TP1_PCT) se
                 // calcule sur ce volume initial.
-                { label: 'Lot INDODOG (lot)', key: 'lot_indodog', channel: 'CANAL INDODOG', step: '0.01', fallback: 0.10 }
+                { label: 'Lot INDODOG (lot)', key: 'lot_indodog', channel: 'CANAL INDODOG', step: '0.01', fallback: 0.10 },
+                // (#90) FTS : meme moteur qu'INDODOG, echelle uniforme de 20 % par palier.
+                { label: 'Lot FTS (lot)', key: 'lot_fts', channel: 'CANAL FTS', step: '0.01', fallback: 0.10 }
               ].filter((item) => !item.channel || isChannelVisible(item.channel)).map((item) => {
                 const raw = settings[item.key] ?? item.fallback ?? 0;
                 const displayVal = item.mult ? (raw * 100).toFixed(1) : raw;
@@ -1603,7 +1605,7 @@ const { account, daily_stats, settings, active_trades } = dashboardData
             <div style={{ background: '#1e1e1e', border: '1px solid #333', borderRadius: '12px', padding: '20px' }}>
               <h3 style={{ margin: '0 0 15px 0', fontSize: '1rem', color: '#aaa', display: 'flex', alignItems: 'center', gap: '5px' }}><BellOff size={16}/> Mute Canaux</h3>
              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px' }}>
-                {["CANAL MDT_VIP", "CANAL MDT_FREE", "CANAL SABR_VIP", "CANAL SABR_FREE", "CANAL SABR_COPIE", "CANAL INDODOG", "CANAL SPACE", "CANAL LIGUE", "CANAL PERSO"].filter(isChannelVisible).map(chan => {
+                {["CANAL MDT_VIP", "CANAL MDT_FREE", "CANAL SABR_VIP", "CANAL SABR_FREE", "CANAL SABR_COPIE", "CANAL INDODOG", "CANAL FTS", "CANAL SPACE", "CANAL LIGUE", "CANAL PERSO"].filter(isChannelVisible).map(chan => {
                   const isMuted = settings.muted_channels?.includes(chan);
                   return (
                     <button 
