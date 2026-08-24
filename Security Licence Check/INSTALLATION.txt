@@ -3,7 +3,7 @@
 ===============================================================
 
 Ce dossier contient :
-  - Kairos_V15.4.0.exe   -> le programme
+  - Kairos_V15.4.1.exe   -> le programme
   - settings.json        -> ta configuration (déjà pré-remplie avec ta clé)
   - INSTALLATION.txt     -> ce guide
 
@@ -171,7 +171,7 @@ choix (ex: C:\Kairos). Les 3 fichiers doivent rester ENSEMBLE dans
 le même dossier — ne lance pas l'exe directement depuis le ZIP.
 
 1. Assure-toi que MetaTrader 5 est ouvert et connecté à ton compte.
-2. Double-clique sur Kairos_V15.4.0.exe.
+2. Double-clique sur Kairos_V15.4.1.exe.
 
 3. ⚠️ WINDOWS VA AFFICHER UN AVERTISSEMENT — C'EST NORMAL.
    Un écran bleu "Windows a protégé votre ordinateur" apparaît, avec

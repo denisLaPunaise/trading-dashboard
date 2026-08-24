@@ -64,6 +64,21 @@ chaque partie : un suffixe (`-beta`, `_test`…) lève une `ValueError` avalée 
   « SL au NIVEAU d'entrée », symbole résolu avant d'annoncer un signal valide, lot plafonné à
   la marge libre, reconnexion Telegram durcie, faux crash au Ctrl+C, `edit_handler`, journaux
   trompeurs.
+- **V15.4.1** — trois irritants de saisie et de découpage.
+  1. Les champs numériques du dashboard se battaient avec l'utilisateur : effacer le chiffre
+     présent envoyait `parseFloat('') = NaN` et la valeur par défaut se réaffichait en plein
+     milieu de la frappe. Ils gardent maintenant un brouillon local pendant la saisie
+     (`NumField`), et `updateSetting()` refuse les non-finis.
+  2. Le décalage BE n'acceptait pas de valeur négative : le pavé numérique du mobile n'a pas
+     de touche moins. Bouton **±** ajouté — le backend acceptait déjà les négatifs.
+  3. `split_zone_lots()` centralise le découpage de zone (SABR **et** INDODOG) et garantit que
+     la somme des 3 ordres vaut toujours exactement le lot réglé. Le mode manuel remontait au
+     pas minimum tout ordre trop petit *après* le calcul, ce qui gonflait le total (0.03 lot
+     en 90/5/5 posait 0.05). Le mode égal, lui, était déjà correct. Au passage : le garde-fou
+     INDODOG réassignait la variable de boucle et ne s'appliquait à rien, et l'arrondi suit
+     désormais les décimales du pas broker au lieu d'un `round(x, 2)` en dur.
+  Rappel utile trouvé à cette occasion : le champ « Lots SABR VIP/Free » ne s'applique
+  **qu'à l'or**. Tout autre symbole passe par « Risque SABR autres (%) ».
 - **V15.3.0** — décalage du SL à la mise à BE (`BE_OFFSET_PIPS`, signé : positif = SL dans le
   gain), SL suiveur propre à SABR (interrupteur + distance ; `SABR_TRAILING_ACTIVE` existait
   dans les configs distribuées mais n'était lu nulle part), et section « Historique Trades »
