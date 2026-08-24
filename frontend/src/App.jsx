@@ -1326,7 +1326,7 @@ const { account, daily_stats, settings, active_trades } = dashboardData
                 { label: 'Lots SABR VIP (lot)', key: 'sabr_lot_vip', channel: 'CANAL SABR_VIP', step: '0.01' },
                 { label: 'Lots SABR Free (lot)', key: 'sabr_lot_free', channel: 'CANAL SABR_FREE', step: '0.01' },
                 { label: 'Risque SABR autres (%)', key: 'risk_sabr_other', step: '0.1', mult: 100, fallback: 0.006 },
-                // (#84) INDODOG : lot fixe, comme SABR. L'echelle de TP (30 % puis 20 %) se
+                // (#84) INDODOG : lot fixe, comme SABR. L'echelle de TP (10 % puis 20 %, cf. INDO_TP1_PCT) se
                 // calcule sur ce volume initial.
                 { label: 'Lot INDODOG (lot)', key: 'lot_indodog', channel: 'CANAL INDODOG', step: '0.01', fallback: 0.10 }
               ].filter((item) => !item.channel || isChannelVisible(item.channel)).map((item) => {
