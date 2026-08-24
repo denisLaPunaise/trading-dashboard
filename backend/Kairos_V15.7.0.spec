@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-# V15.6.0 — /reset_stats : remise a zero des stats par canal
+# V15.7.0 — TP INDODOG non numerotes + BE partiel SABR
 # V15.3.0 — Decalage du BE, SL suiveur SABR, historique des trades, theme force sombre
 # V15.2.3 — Zone SABR : prix abrege de 3 chiffres mal reconstruit
 # V15.2.2 — MDT FREE lu comme MDT VIP : le canal d'origine fait foi
@@ -45,7 +45,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='Kairos_V15.6.0',
+    name='Kairos_V15.7.0',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

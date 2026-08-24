@@ -108,6 +108,24 @@ chaque partie : un suffixe (`-beta`, `_test`…) lève une `ValueError` avalée 
   rien), et un seed étant un agrégat indécoupable, il est largué en entier dès que la coupure
   tombe après le début de sa plage. Les libellés acceptés sont ceux des **stats** — SABR y est
   regroupé sous « CANAL SABR VIP », avec une espace, pas sous son nom de pack.
+- **V15.7.0** — deux points, dont un vu en production.
+  - **INDODOG a cessé de numéroter ses TP.** « Lauk 1 : 4668 » au lieu de « Lauk 1 : 4665
+    (TP1) », et un plat inédit (« Menu Sultan »). La regex s'ancrait sur `(TPn)` : zéro palier
+    lu, donc aucun partiel **et** un TP à 0 envoyé à MT5. Constaté sur les tickets
+    526368935/38/45. `parse_indodog_tps()` accepte désormais les deux formats ; le format non
+    numéroté raisonne par **exclusion** (tout `libellé : nombre` est un palier sauf Harga
+    Makan / Warteg Tutup / Menu Utama) — s'ancrer sur les trois lignes stables plutôt que sur
+    une liste de plats évite de reprendre ce bug au prochain nom inventé. Garde-fous : le
+    nombre doit suivre immédiatement le deux-points, et rester entre 0,5× et 2× le SL.
+    Nouveau filet : zéro TP lu sur un canal à paliers déclenche une alerte Telegram et
+    recrache le message brut en console — la panne était **silencieuse**.
+  - **Toggle « Mise à BE SABR »** : *Classique* (historique, le SL remonte à l'entrée à
+    +100 pips) ou *Partiel* (le SL ne bouge pas ; si le prix revient toucher l'entrée, on vend
+    `SABR_BE_PARTIEL_PCT` du volume **encore ouvert**). La clôture des 60 % à +100 pips est
+    inchangée dans les deux modes. Le déclencheur est le prix d'entrée **brut** :
+    `BE_OFFSET_PIPS` ne décale que le SL d'une vraie mise à BE, l'y appliquer déplacerait le
+    seuil en douce. Le % porte sur le restant et non sur l'initial — sur l'initial, toute
+    valeur ≥ 40 % soldait la position sans que le libellé le laisse deviner.
 - **V15.3.0** — décalage du SL à la mise à BE (`BE_OFFSET_PIPS`, signé : positif = SL dans le
   gain), SL suiveur propre à SABR (interrupteur + distance ; `SABR_TRAILING_ACTIVE` existait
   dans les configs distribuées mais n'était lu nulle part), et section « Historique Trades »
