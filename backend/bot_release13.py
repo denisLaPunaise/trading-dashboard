@@ -593,11 +593,31 @@ def ladder_be_at_tp1(src):
     return "INDODOG" in (src or "")
 
 
-def parse_indodog_tps(raw_text):
-    """(#84) Renvoie les TP du signal, tries par numero : [(1, 4588.0), (2, 4591.0), ...].
+# (#92) Libelles qui ne sont PAS des paliers. Tout le reste du "menu" en est un.
+# Raisonner par EXCLUSION et non par inclusion : les noms de plats changent au gre de
+# l'humeur du canal ("Lauk Spesial", "Paket Sultan", "Menu Sultan"...), les trois lignes
+# structurantes, elles, sont stables.
+INDO_LIGNES_NON_TP = ("HARGA MAKAN", "WARTEG TUTUP", "MENU UTAMA", "MENU HARI INI")
 
-    Le nombre de paliers varie d'un signal a l'autre (3, 4 ou 5 observes), d'ou le tri par
-    l'index ecrit dans "(TPn)" plutot qu'un ordre d'apparition suppose."""
+
+def parse_indodog_tps(raw_text):
+    """(#84/#92) Renvoie les TP du signal, dans l'ordre de l'echelle.
+
+    Deux formats coexistent, le canal ayant cesse de numeroter ses paliers en cours de route :
+
+      A. "Lauk 1 : 4665 (TP1)"  -> l'index ecrit fait foi, on trie dessus.
+      B. "Lauk 1 : 4668"        -> plus aucun marqueur : c'est l'ORDRE D'APPARITION des
+                                   lignes qui donne l'echelle.
+
+    Le format B est apparu sans prevenir et a coute un signal entier : aucun TP lu, donc
+    aucun partiel pris ET un TP a 0 envoye a MT5. On ne s'ancre donc plus sur "(TPn)".
+
+    En B, tout "libelle : nombre" est un palier SAUF les trois lignes structurantes. Le
+    nombre doit suivre IMMEDIATEMENT le deux-points (sinon "( 80 pip )" et consorts
+    passeraient pour des prix), et rester dans un ordre de grandeur plausible face au SL --
+    ce qui elimine les pourcentages et autres nombres glisses dans la prose.
+    """
+    # --- Format A : les index ecrits font foi
     out = {}
     for m in REGEX_INDO_TP.finditer(raw_text or ""):
         try:
@@ -607,7 +627,38 @@ def parse_indodog_tps(raw_text):
                 out[idx] = val
         except Exception:
             continue
-    return [out[k] for k in sorted(out)]
+    if len(out) >= 2:
+        return [out[k] for k in sorted(out)]
+
+    # --- Format B : ordre d'apparition
+    ref = None
+    m_sl = REGEX_INDO_SL.search(raw_text or "")
+    if m_sl:
+        try:
+            ref = float(m_sl.group(1).replace(",", "."))
+        except Exception:
+            ref = None
+
+    tps = []
+    for ligne in (raw_text or "").splitlines():
+        if ":" not in ligne:
+            continue
+        libelle, _, valeur = ligne.partition(":")
+        if any(mot in libelle.upper() for mot in INDO_LIGNES_NON_TP):
+            continue
+        m = re.match(r"\s*([\d]+(?:[.,]\d+)?)", valeur)
+        if not m:
+            continue
+        try:
+            v = float(m.group(1).replace(",", "."))
+        except Exception:
+            continue
+        if v <= 0 or v in tps:
+            continue
+        if ref and not (ref * 0.5 <= v <= ref * 2.0):
+            continue  # hors de portee du SL : ce n'est pas un prix de ce signal
+        tps.append(v)
+    return tps
 
 
 # --- REGEX SPACE ---
@@ -6494,6 +6545,22 @@ async def main_handler(event):
                 # paliers selon les jours) pour la gestion en partiels.
                 tp_ladder = (parse_indodog_tps(final_text) if final_source == "CANAL INDODOG"
                              else parse_fts_tps(final_text) if final_source == "CANAL FTS" else None)
+
+                # (#92) Filet : sur un canal a echelle, zero TP lu veut dire que le format du
+                # canal a change. Sans alerte, ca passe inapercu -- le trade s'ouvre avec un TP
+                # a 0 et aucun palier ne sera jamais pris, ce qui ne se voit que des jours plus
+                # tard en fouillant indodog_tp.json. C'est exactement ce qui est arrive quand le
+                # canal a cesse d'ecrire "(TP1)".
+                if is_ladder_channel(final_source) and not tp_ladder:
+                    logger.error("⚠️ %s : AUCUN TP lu dans le signal -- format du canal modifie ?"
+                                 % final_source)
+                    logger.error("Message brut :\n%s" % final_text)
+                    await send_channel_alert(
+                        "⚠️ **AUCUN TP LU DANS LE SIGNAL**" + chr(10) + chr(10) +
+                        "Le trade est pris et le SL est posé, mais **aucun palier ne sera "
+                        "géré** et MetaTrader n'aura pas de TP." + chr(10) + chr(10) +
+                        "Le format du canal a probablement changé. Le message brut est dans "
+                        "la console.", final_source)
 
                 opened_tickets = await execute_trade(sym, act, sl, tp, p_msg, event.date, final_source,
                                                      tp1_price=tp1_price, tp_ladder=tp_ladder)
