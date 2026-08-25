@@ -2062,6 +2062,15 @@ def _merge_stats_seed(out, cutoff):
         entry["positions"] += int(data.get("positions", data.get("count", 0)))
         entry["profit"] += float(data.get("profit", 0.0))
         entry["pips"] += float(data.get("pips", 0.0))
+        # (#96) Le seed est un TOTAL agrege : il ne porte aucun symbole, donc il ne peut pas
+        # etre ventile par classe d'actifs. On lui donne sa propre ligne dans le detail plutot
+        # que de le passer sous silence -- sans elle, la somme des classes serait inferieure au
+        # total du canal sans que rien ne l'explique.
+        seed_ligne = _entree_actif(entry, "Historique repris")
+        seed_ligne["count"] += int(data.get("count", 0))
+        seed_ligne["positions"] += int(data.get("positions", data.get("count", 0)))
+        seed_ligne["profit"] += float(data.get("profit", 0.0))
+        seed_ligne["pips"] += float(data.get("pips", 0.0))
 
 
 def get_channel_stats_period(days=30, start_date_custom=None):
@@ -2107,21 +2116,67 @@ def get_channel_stats_period(days=30, start_date_custom=None):
                     continue
                 entry = out.setdefault(src, {"count": 0, "positions": 0, "profit": 0.0,
                                              "pips": 0.0, "avg_pips": 0.0})
+                # (#96) Detail par classe d'actifs, alimente en parallele du total du canal.
+                sous = _entree_actif(entry, classe_actif(row.get("Symbol")))
+
                 entry["positions"] += 1
+                sous["positions"] += 1
                 # Un signal peut avoir produit plusieurs positions : on ne le compte qu'une fois.
                 # Sans Signal ID (lignes d'avant ce format), on retombe sur le ticket = 1 trade.
                 sig = (row.get("Signal ID") or "").strip() or f"_tk{row.get('Ticket')}"
                 if sig not in seen_signals.setdefault(src, set()):
                     seen_signals[src].add(sig)
                     entry["count"] += 1
-                try: entry["profit"] += float(row.get("Profit") or 0)
+                    # Un signal ne porte que sur un symbole : le compter dans sa seule classe
+                    # suffit, la somme des classes redonne exactement le total du canal.
+                    sous["count"] += 1
+                try:
+                    _p = float(row.get("Profit") or 0)
+                    entry["profit"] += _p
+                    sous["profit"] += _p
                 except Exception: pass
-                try: entry["pips"] += float(row.get("Pips") or 0)
+                try:
+                    _pi = float(row.get("Pips") or 0)
+                    entry["pips"] += _pi
+                    sous["pips"] += _pi
                 except Exception: pass
     except Exception as e:
         logger.warning(f"⚠️ get_channel_stats_period : {e}")
 
     return _finalize_channel_stats(out)
+
+
+def classe_actif(symbole):
+    """(#96) Range un symbole dans une classe d'actifs, pour le detail des stats par canal.
+
+    Les tests suivent l'ordre de get_pip_divisor() -- meme vocabulaire de symboles, donc une
+    paire reconnue la-bas l'est ici. "Autre" est un filet : mieux vaut une ligne "Autre" dans
+    le detail qu'un trade qui disparait du total.
+    """
+    s = (symbole or "").upper()
+    if not s:
+        return "Autre"
+    if "XAU" in s or "GOLD" in s:
+        return "Or"
+    if any(c in s for c in ("BTC", "BITCOIN", "ETH", "XRP", "SOL", "DOGE", "LTC", "ADA")):
+        return "Crypto"
+    if any(i in s for i in ("US100", "NAS100", "NASDAQ", "US30", "DOW", "DJ30",
+                            "GER40", "DAX", "US500", "SPX", "SP500", "UK100", "JP225")):
+        return "Indices"
+    if "XAG" in s or "SILVER" in s:
+        return "Argent"
+    if any(e in s for e in ("USOIL", "UKOIL", "WTI", "BRENT")):
+        return "Petrole"
+    # Forex : deux codes devise de 3 lettres accoles.
+    if len(s) >= 6 and s[:6].isalpha():
+        return "Devises"
+    return "Autre"
+
+
+def _entree_actif(entry, classe):
+    """Sous-total d'une classe d'actifs dans l'entree d'un canal, cree a la demande."""
+    return entry.setdefault("actifs", {}).setdefault(
+        classe, {"count": 0, "positions": 0, "profit": 0.0, "pips": 0.0, "avg_pips": 0.0})
 
 
 def _finalize_channel_stats(out):
@@ -2139,6 +2194,17 @@ def _finalize_channel_stats(out):
         entry["avg_pips"] = round(entry["pips"] / cnt, 1) if cnt > 0 else 0.0
         entry["pips"] = round(entry["pips"], 1)
         entry["profit"] = round(entry["profit"], 2)
+        # (#96) Meme traitement pour chaque classe d'actifs, puis tri par profit decroissant
+        # pour que le dashboard n'ait rien a recalculer.
+        actifs = entry.get("actifs")
+        if actifs:
+            for sous in actifs.values():
+                c = sous.get("count", 0)
+                sous["avg_pips"] = round(sous["pips"] / c, 1) if c > 0 else 0.0
+                sous["pips"] = round(sous["pips"], 1)
+                sous["profit"] = round(sous["profit"], 2)
+            entry["actifs"] = dict(sorted(actifs.items(),
+                                          key=lambda kv: kv[1]["profit"], reverse=True))
     return out
 
 

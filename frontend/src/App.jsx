@@ -360,6 +360,8 @@ function App() {
   // stats_seed.json), donc celle qui a du sens à l'ouverture. Un 1M par défaut affichait
   // "Aucun trade sur cette période" tant qu'aucun trade récent n'était clôturé.
   const [channelPeriod, setChannelPeriod] = useState('all');
+  // (#96) Carte de détail d'un canal, par classe d'actifs. null = fermée.
+  const [detailCanal, setDetailCanal] = useState(null);
   const [dayWeekToggle, setDayWeekToggle] = useState('day'); // 'day' ou 'week'
   // (#74) Période de la section "Historique Trades". Les libellés sont en heures mais les
   // bornes sont des JOURNÉES ENTIÈRES côté bot : '2' = toute la journée d'hier + aujourd'hui.
@@ -388,6 +390,14 @@ function App() {
                          channels_period: channelsPeriod, equity_curve: equityCurve });
     if (period) setIsLoadingStats(false);
   }, [dashboardData, globalPeriod, channelPeriod]);
+
+  // (#96) Échap ferme la carte de détail, comme le clic sur le fond.
+  useEffect(() => {
+    if (!detailCanal) return;
+    const onKey = (e) => { if (e.key === 'Escape') setDetailCanal(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [detailCanal]);
 
   // Déclenche une requête au bot quand la période (Global) ou la vue Semaine change (sans alert, sans doublon)
   useEffect(() => {
@@ -853,6 +863,15 @@ const { account, daily_stats, settings, active_trades } = dashboardData
       <style>{`
         /* Modale */
         @keyframes fadeIn { from { opacity: 0; backdrop-filter: blur(0px); } to { opacity: 1; backdrop-filter: blur(4px); } }
+        /* (#96) Variante qui n'anime QUE l'opacité : une animation qui pilote backdrop-filter
+           le maintient à sa valeur de départ (blur(0px)) tant qu'elle n'a pas tourné, et une
+           animation gagne toujours contre le style inline. Onglet en arrière-plan, rendu
+           suspendu ou prefers-reduced-motion suffisent à laisser le fond net. Ici le flou est
+           porté par le style, donc appliqué immédiatement, et le fondu reste cosmétique. */
+        @keyframes ouvreDetail { from { opacity: 0; } to { opacity: 1; } }
+        @media (prefers-reduced-motion: reduce) {
+          .detail-overlay { animation: none !important; }
+        }
         @keyframes popIn { from { transform: scale(0.9); opacity: 0; } to { transform: scale(1); opacity: 1; } }
         
         /* Trades & P&L */
@@ -1841,10 +1860,23 @@ const { account, daily_stats, settings, active_trades } = dashboardData
                   const nbPositions = data.positions ?? data.count;
                   const isPositive = (data.profit ?? 0) >= 0;
                   
+                  // (#96) Le détail par classe d'actifs n'existe que si l'exe du client le
+                  // pousse. Sur une version antérieure, la carte reste simplement inerte.
+                  const aDetail = data.actifs && Object.keys(data.actifs).length > 0;
+
                   return (
-                  <div key={name} style={{ background: '#1e1e1e', borderRadius: '12px', padding: '15px', border: '1px solid #333' }}>
+                  <div key={name}
+                    onClick={aDetail ? () => setDetailCanal({ name, data }) : undefined}
+                    role={aDetail ? 'button' : undefined}
+                    tabIndex={aDetail ? 0 : undefined}
+                    onKeyDown={aDetail ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setDetailCanal({ name, data }); } } : undefined}
+                    style={{ background: '#1e1e1e', borderRadius: '12px', padding: '15px', border: '1px solid #333',
+                             cursor: aDetail ? 'pointer' : 'default' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                      <span style={{ fontWeight: 'bold', fontSize: '1rem', color: '#fff' }}>{name.replace('CANAL ', '').replace('_', ' ')}</span>
+                      <span style={{ fontWeight: 'bold', fontSize: '1rem', color: '#fff', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        {name.replace('CANAL ', '').replace('_', ' ')}
+                        {aDetail && <ChevronDown size={14} style={{ color: '#555' }} />}
+                      </span>
                       <div style={{ textAlign: 'right' }}>
                         <div style={{ color: isPositive ? '#00e676' : '#ff4444', fontWeight: 'bold', fontSize: '1.2rem' }}>
                           {isPositive ? '+' : ''}{(data.profit ?? 0).toFixed(2)} €
@@ -2080,6 +2112,82 @@ const { account, daily_stats, settings, active_trades } = dashboardData
         </div>
       </div>
       </div>
+
+      {/* (#96) Détail d'un canal par classe d'actifs. Fond flouté + carte, plutôt qu'un
+          déroulant : le détail peut faire 6 lignes, et les déplier dans la liste ferait sauter
+          la position de toutes les cartes en dessous. */}
+      {detailCanal && (() => {
+        const { name, data } = detailCanal;
+        const classes = Object.entries(data.actifs || {});
+        const emoji = { 'Or': '🥇', 'Crypto': '₿', 'Indices': '📊', 'Devises': '💱',
+                        'Argent': '🥈', 'Petrole': '🛢️', 'Autre': '❓',
+                        'Historique repris': '📜' };
+        return (
+          <div
+            onClick={() => setDetailCanal(null)}
+            className="detail-overlay"
+            style={{ position: 'fixed', inset: 0, zIndex: 1200, background: 'rgba(0,0,0,0.55)',
+                     backdropFilter: 'blur(5px)', WebkitBackdropFilter: 'blur(5px)',
+                     display: 'flex', alignItems: 'center', justifyContent: 'center',
+                     padding: '18px', animation: 'ouvreDetail 0.18s ease-out forwards' }}>
+            <div
+              onClick={(e) => e.stopPropagation()}
+              style={{ background: '#1a1a1a', border: '1px solid #383838', borderRadius: '16px',
+                       width: '100%', maxWidth: '440px', maxHeight: '80vh', overflowY: 'auto',
+                       padding: '20px', boxShadow: '0 24px 60px -20px rgba(0,0,0,0.9)' }}>
+
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '12px', marginBottom: '4px' }}>
+                <span style={{ fontWeight: 'bold', fontSize: '1.05rem', color: '#fff' }}>
+                  {name.replace('CANAL ', '').replace('_', ' ')}
+                </span>
+                <button
+                  onClick={() => setDetailCanal(null)}
+                  aria-label="Fermer"
+                  style={{ background: '#2a2a2a', border: 'none', color: '#aaa', borderRadius: '8px',
+                           width: '30px', height: '30px', cursor: 'pointer', fontSize: '1rem',
+                           lineHeight: 1, flexShrink: 0 }}>✕</button>
+              </div>
+              <div style={{ fontSize: '0.72rem', color: '#666', marginBottom: '16px' }}>Détail par type d'actif</div>
+
+              {classes.length === 0 ? (
+                <div style={{ color: '#666', fontSize: '0.85rem', textAlign: 'center', padding: '20px 0' }}>
+                  Aucun détail disponible sur cette période.
+                </div>
+              ) : classes.map(([cl, d]) => {
+                const pos = (d.profit ?? 0) >= 0;
+                const part = data.profit ? Math.min(Math.abs((d.profit / data.profit) * 100), 100) : 0;
+                return (
+                  <div key={cl} style={{ background: '#222', borderRadius: '10px', padding: '12px 14px', marginBottom: '8px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                      <span style={{ fontSize: '0.9rem', color: '#eee', fontWeight: 600 }}>
+                        <span style={{ marginRight: '7px' }}>{emoji[cl] || '•'}</span>{cl}
+                      </span>
+                      <span style={{ color: pos ? '#00e676' : '#ff4444', fontWeight: 'bold', fontSize: '1rem' }}>
+                        {pos ? '+' : ''}{(d.profit ?? 0).toFixed(2)} €
+                      </span>
+                    </div>
+                    <div style={{ height: '4px', background: '#151515', borderRadius: '10px', overflow: 'hidden', marginBottom: '8px' }}>
+                      <div style={{ height: '100%', width: `${Math.max(part, 2)}%`, borderRadius: '10px',
+                                    background: pos ? '#00c853' : '#d50000' }}></div>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem', color: '#888' }}>
+                      <span>📦 {d.count} Trades{(d.positions ?? d.count) !== d.count ? ` (${d.positions} ordres)` : ''}</span>
+                      <span>{(d.pips ?? 0) > 0 ? '+' : ''}{(d.pips ?? 0).toFixed(1)} pips · moy {d.avg_pips ?? 0}</span>
+                    </div>
+                  </div>
+                );
+              })}
+
+              {data.actifs?.['Historique repris'] && (
+                <div style={{ fontSize: '0.7rem', color: '#666', marginTop: '10px', lineHeight: 1.45 }}>
+                  📜 « Historique repris » est un total agrégé d'avant la refonte des stats : il ne
+                  porte aucun symbole, donc il ne peut pas être ventilé par type d'actif.
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
     </div>
   )
 }
