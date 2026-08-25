@@ -7140,15 +7140,30 @@ async def handle_firebase_command(cmd_id: str, cmd_data: dict) -> None:
 
         elif cmd_type == "request_stats":
             days = payload.get("days", "30")
-            if days == "week":
-                now = datetime.now()
-                monday = now - timedelta(days=now.weekday())
-                monday = monday.replace(hour=0, minute=0, second=0, microsecond=0)
-                stats = await get_historical_stats(start_date_custom=monday)
-                chan_stats = await run_bg(get_channel_stats_period, start_date_custom=monday)
-                curve = await get_equity_curve(start_date_custom=monday)
+            # (#95) Deux périodes calées sur des bornes CALENDAIRES et non sur un nombre de
+            # jours glissant, même convention que l'historique des trades (cf. history_cutoff) :
+            #   "today" = aujourd'hui depuis 00h00, et rien d'hier ;
+            #   "week"  = depuis lundi 00h00, donc la semaine EN COURS et non 7 jours glissants.
+            debut = None
+            if days == "today":
+                debut = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            elif days == "week":
+                _n = datetime.now()
+                debut = (_n - timedelta(days=_n.weekday())).replace(
+                    hour=0, minute=0, second=0, microsecond=0)
+
+            if debut is not None:
+                stats = await get_historical_stats(start_date_custom=debut)
+                chan_stats = await run_bg(get_channel_stats_period, start_date_custom=debut)
+                curve = await get_equity_curve(start_date_custom=debut)
             else:
-                days_int = 9999 if days == "all" else int(days)
+                # Repli sur 30 jours si le dashboard envoie une période inconnue : sans ça, un
+                # int() sur une chaîne inattendue ferait échouer toute la commande.
+                try:
+                    days_int = 9999 if days == "all" else int(days)
+                except (TypeError, ValueError):
+                    logger.warning(f"⚠️ request_stats : période inconnue {days!r}, repli sur 30 j")
+                    days_int = 30
                 stats = await get_historical_stats(days=days_int)
                 chan_stats = await run_bg(get_channel_stats_period, days=days_int)
                 curve = await get_equity_curve(days=days_int)

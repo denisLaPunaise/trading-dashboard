@@ -1791,9 +1791,15 @@ const { account, daily_stats, settings, active_trades } = dashboardData
             <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
 
               <div style={{ display: 'flex', gap: '5px', background: '#1e1e1e', padding: '5px', borderRadius: '8px', border: '1px solid #333' }}>
+                {/* (#95) "24h" et "1S" sont calés sur des bornes CALENDAIRES, pas sur un nombre
+                    de jours glissant : 24h = aujourd'hui depuis 00h00, 1S = depuis lundi. Même
+                    convention que l'Historique Trades. 6M retiré — 3M et 1 An suffisent à
+                    couvrir le long terme, et 7 boutons est le maximum qui tienne sur une ligne
+                    à 375px (mesuré : 42px par bouton, sans troncature ni retour à la ligne). */}
                 {[
+                  { id: 'today', label: '24h' }, { id: 'week', label: '1S' },
                   { id: '14', label: '14j' }, { id: '30', label: '1M' }, { id: '90', label: '3M' },
-                  { id: '180', label: '6M' }, { id: '365', label: '1 An' }, { id: 'all', label: 'Max' }
+                  { id: '365', label: '1 An' }, { id: 'all', label: 'Max' }
                 ].map(p => (
                   <button
                     key={p.id}
