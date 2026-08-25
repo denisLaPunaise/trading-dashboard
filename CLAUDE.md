@@ -154,6 +154,18 @@ chaque partie : un suffixe (`-beta`, `_test`…) lève une `ValueError` avalée 
     l'anti-doublon qui « se réactivait tout seul ». Seul réglage du fichier dans ce cas,
     vérifié par comparaison automatique des deux fonctions (36 écrits, 35 relus). Aucune action
     client : le `settings.json` distribué porte déjà la bonne valeur.
+- **V15.9.0** — **détail par type d'actif** dans les stats par canal. Un clic sur une carte
+  ouvre une carte sur fond flouté : Or, Crypto, Indices, Devises, Argent, Pétrole, Autre.
+  `classe_actif()` suit le même vocabulaire de symboles que `get_pip_divisor()`. Les
+  sous-totaux sont alimentés en parallèle du total, donc leur somme redonne exactement le total
+  du canal — vérifié zone SABR comprise (1 signal / 3 ordres). Le seed étant un agrégat sans
+  symbole, il a sa propre ligne « Historique repris » : sans elle, la somme des classes serait
+  inférieure au total sans explication. Ouvert à **tous** les canaux, pas seulement MDT — un
+  canal mono-actif affiche simplement une ligne.
+  Piège trouvé en vérifiant : le flou ne s'appliquait pas (`blur(0px)` mesuré). L'animation
+  `fadeIn` partagée anime `backdrop-filter` depuis `blur(0px)`, et **une animation l'emporte
+  sur le style inline** — onglet en arrière-plan, rendu suspendu ou `prefers-reduced-motion`
+  suffisaient à laisser le fond net. D'où `ouvreDetail`, qui n'anime que l'opacité.
 - **V15.3.0** — décalage du SL à la mise à BE (`BE_OFFSET_PIPS`, signé : positif = SL dans le
   gain), SL suiveur propre à SABR (interrupteur + distance ; `SABR_TRAILING_ACTIVE` existait
   dans les configs distribuées mais n'était lu nulle part), et section « Historique Trades »
