@@ -140,6 +140,20 @@ chaque partie : un suffixe (`-beta`, `_test`…) lève une `ValueError` avalée 
     `BE_OFFSET_PIPS` ne décale que le SL d'une vraie mise à BE, l'y appliquer déplacerait le
     seuil en douce. Le % porte sur le restant et non sur l'initial — sur l'initial, toute
     valeur ≥ 40 % soldait la position sans que le libellé le laisse deviner.
+- **V15.8.0** — deux points.
+  - **Périodes de l'onglet « Par Canal »** : `24h · 1S · 14j · 1M · 3M · 1 An · Max`. 6M retiré.
+    « 24h » et « 1S » sont calés sur des bornes **calendaires** et non sur un nombre de jours
+    glissant, même convention que l'Historique Trades — 24h = aujourd'hui depuis 00h00, 1S =
+    depuis lundi 00h00, donc la semaine *en cours*. 3M conservé après mesure : à 375 px, sept
+    boutons donnent 42 px chacun, sans troncature ni retour à la ligne (« Semaine » écrit en
+    toutes lettres, lui, débordait — d'où « 1S »). Le backend savait déjà traiter `"week"`,
+    mais la branche n'était jamais atteinte, le dashboard envoyant `'7'`.
+  - **`SABR_ANTI_DOUBLON_ACTIVE` ne survivait pas à un redémarrage.** `save_settings()`
+    l'écrivait dans `settings.json`, `load_settings()` ne le relisait jamais et ne le déclarait
+    pas en `global` : le réglage repartait de son défaut (`True`) à chaque démarrage — d'où
+    l'anti-doublon qui « se réactivait tout seul ». Seul réglage du fichier dans ce cas,
+    vérifié par comparaison automatique des deux fonctions (36 écrits, 35 relus). Aucune action
+    client : le `settings.json` distribué porte déjà la bonne valeur.
 - **V15.3.0** — décalage du SL à la mise à BE (`BE_OFFSET_PIPS`, signé : positif = SL dans le
   gain), SL suiveur propre à SABR (interrupteur + distance ; `SABR_TRAILING_ACTIVE` existait
   dans les configs distribuées mais n'était lu nulle part), et section « Historique Trades »
