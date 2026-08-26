@@ -1750,11 +1750,15 @@ def save_state_and_stats(day, balance_snapshot):
         data_to_save = daily_stats.copy()
         data_to_save["active_trades_max_pips"] = active_trades_max_pips
         data_to_save["active_trades_min_pips"] = active_trades_min_pips
+        # (#97) Le verrou drawdown doit survivre a un redemarrage : sans ca, il vivait
+        # uniquement en memoire et repartait a False au lancement -- relancer le bot suffisait
+        # donc a lever une securite censee ne ceder qu'a un deverrouillage explicite.
+        data_to_save["security_triggered"] = security_triggered
         with open(STATS_FILENAME, "w") as f: json.dump(data_to_save, f)
     except: pass
 
 def load_daily_state(server_day):
-    global daily_stats, active_trades_max_pips, active_trades_min_pips
+    global daily_stats, active_trades_max_pips, active_trades_min_pips, security_triggered
     saved_balance = None
     
     # Lecture du fichier ftmo_state.txt
@@ -1780,11 +1784,21 @@ def load_daily_state(server_day):
                 if "active_trades_min_pips" in loaded:
                     active_trades_min_pips = {int(k): v for k, v in loaded["active_trades_min_pips"].items()}
                     del loaded["active_trades_min_pips"]
+                # (#97) Verrou drawdown restaure UNIQUEMENT ici, c'est-a-dire dans la branche
+                # "meme jour" (saved_balance non nul). Si le bot est reste eteint au passage de
+                # minuit, on ne repasse pas par ce chemin : le verrou tombe de lui-meme, ce qui
+                # est exactement la regle voulue -- il saute au changement de jour.
+                if "security_triggered" in loaded:
+                    security_triggered = bool(loaded["security_triggered"])
+                    del loaded["security_triggered"]
+                    if security_triggered:
+                        logger.warning("🔒 Verrou drawdown restaure : le trading reste bloque "
+                                       "jusqu'au deverrouillage manuel ou au changement de jour.")
                 daily_stats.update(loaded)
         except: pass
-    else: 
+    else:
         daily_stats = DEFAULT_STATS.copy()
-        
+
     return saved_balance
 
 def archive_daily_stats_to_csv():
@@ -2496,7 +2510,7 @@ async def send_daily_report(acc, pnl_eur, pnl_pct):
     #await send_alert(lt_msg)
 
 async def update_daily_stats():
-    global daily_start_balance, current_trade_day, daily_stats, active_trades_max_pips, NOTIFIED_MANUAL_TICKETS
+    global daily_start_balance, current_trade_day, daily_stats, active_trades_max_pips, NOTIFIED_MANUAL_TICKETS, security_triggered
     
     # On calcule l'heure Broker actuelle via l'horloge système (UTC + Offset)
     # C'est ce qui permet de fonctionner le week-end quand le marché est mort.
@@ -2530,11 +2544,19 @@ async def update_daily_stats():
         current_weekly_profit = daily_stats.get("weekly_profit", 0.0)
         
         # 3. RESET TOTAL
-        daily_start_balance = acc.balance 
+        daily_start_balance = acc.balance
         current_trade_day = day
         daily_stats = DEFAULT_STATS.copy()
         active_trades_max_pips = {}
-        NOTIFIED_MANUAL_TICKETS = set() 
+        NOTIFIED_MANUAL_TICKETS = set()
+
+        # (#97) Le verrou drawdown saute avec les compteurs : la perte du jour repart de zero,
+        # le disjoncteur n'a plus de raison de tenir. Il ne manquait pas ici par hasard -- il
+        # etait volontairement permanent, mais ca laissait le bot bloque tout un week-end sans
+        # que personne s'en apercoive. Il reste bien sur en place pendant toute la journee, et
+        # il survit desormais a un redemarrage (cf. save_state_and_stats).
+        _verrou_leve = security_triggered
+        security_triggered = False
         
         # 4. Logique Hebdomadaire
         if weekday == 0: # Lundi
@@ -2545,7 +2567,10 @@ async def update_daily_stats():
             daily_stats["weekly_profit"] = current_weekly_profit
 
         save_state_and_stats(day, daily_start_balance)
-        await send_alert(f"📅 **NOUVEAU JOUR ({day})**\n\nCompteurs remis à zéro.\nBalance Ref: {daily_start_balance:.2f}€")
+        await send_alert(f"📅 **NOUVEAU JOUR ({day})**\n\nCompteurs remis à zéro.\n"
+                         f"Balance Ref: {daily_start_balance:.2f}€"
+                         + ("\n\n🔓 **Sécurité Drawdown levée** — le trading reprend."
+                            if _verrou_leve else ""))
     else:
         # Sauvegarde silencieuse de l'état actuel
         save_state_and_stats(current_trade_day, daily_start_balance)
