@@ -166,6 +166,19 @@ chaque partie : un suffixe (`-beta`, `_test`…) lève une `ValueError` avalée 
   `fadeIn` partagée anime `backdrop-filter` depuis `blur(0px)`, et **une animation l'emporte
   sur le style inline** — onglet en arrière-plan, rendu suspendu ou `prefers-reduced-motion`
   suffisaient à laisser le fond net. D'où `ouvreDetail`, qui n'anime que l'opacité.
+- **V15.10.0** — **verrou drawdown** : il survit désormais à un redémarrage *et* se lève au
+  changement de jour. `security_triggered` ne vivait qu'en mémoire — relancer le bot suffisait
+  à lever une sécurité censée ne céder qu'à un déverrouillage explicite. Il est écrit dans le
+  fichier de stats et relu au démarrage, mais **uniquement dans la branche « même jour »** de
+  `load_daily_state()` : une relance le lendemain repart donc sans verrou, sans code dédié.
+  Symétriquement, le bloc de minuit le remet à zéro avec les autres compteurs — il manquait,
+  et le bot pouvait rester bloqué tout un week-end sans que personne le remarque. L'alerte
+  « NOUVEAU JOUR » le signale, seulement s'il était actif.
+  Piège rencontré : l'affectation dans `update_daily_stats()` créait une variable **locale**,
+  faute de `global` — le verrou ne serait jamais tombé. `py_compile` ne voit pas ça ; c'est un
+  contrôle statique (toute fonction affectant le drapeau doit le déclarer) qui l'a attrapé.
+  Même famille que le bug de l'anti-doublon en V15.8.0, et exactement ce que l'étape 4 du
+  [`REFACTOR_PLAN.md`](REFACTOR_PLAN.md) rendrait impossible.
 - **V15.3.0** — décalage du SL à la mise à BE (`BE_OFFSET_PIPS`, signé : positif = SL dans le
   gain), SL suiveur propre à SABR (interrupteur + distance ; `SABR_TRAILING_ACTIVE` existait
   dans les configs distribuées mais n'était lu nulle part), et section « Historique Trades »
