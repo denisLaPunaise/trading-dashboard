@@ -179,6 +179,20 @@ chaque partie : un suffixe (`-beta`, `_test`…) lève une `ValueError` avalée 
   contrôle statique (toute fonction affectant le drapeau doit le déclarer) qui l'a attrapé.
   Même famille que le bug de l'anti-doublon en V15.8.0, et exactement ce que l'étape 4 du
   [`REFACTOR_PLAN.md`](REFACTOR_PLAN.md) rendrait impossible.
+- **V15.11.0** — **ajout manuel de résultats** aux stats par canal, pour rattraper des trades
+  que le bot n'a pas pris (coupure, panne de parsing). Formulaire au dashboard plutôt qu'un
+  fichier à éditer : le canal se choisit dans un menu déroulant, et c'est ce qui a décidé de
+  l'approche — les stats utilisent « CANAL SABR VIP » avec une **espace** là où le pack utilise
+  l'underscore, et le taper à la main produit une ligne fantôme sans aucun message.
+  Une **ligne datée** par ajout dans `stats_manuel.json`, jamais vidée : la date suffit à faire
+  sortir la ligne de « 24h » le lendemain tout en la gardant dans « 1S » et « Max ». Pas de
+  fichier à remettre à zéro chaque nuit, donc pas de vidage qui pourrait échouer (bot éteint à
+  minuit) ou se rejouer. Ces lignes n'alimentent **que** les stats par canal, jamais
+  l'historique des trades ni la courbe du portefeuille.
+  Réservé au profil dev, avec une **limite connue et assumée** : `DISPLAY_MODE` est lu dans le
+  `settings.json` du client, qui peut donc l'éditer. Le seul verrou incontournable serait un
+  champ dans le document de licence Firestore (comme `allowed_channels`) — non fait, l'enjeu
+  étant nul : un client qui triche ne fausse que son propre dashboard.
 - **V15.3.0** — décalage du SL à la mise à BE (`BE_OFFSET_PIPS`, signé : positif = SL dans le
   gain), SL suiveur propre à SABR (interrupteur + distance ; `SABR_TRAILING_ACTIVE` existait
   dans les configs distribuées mais n'était lu nulle part), et section « Historique Trades »
