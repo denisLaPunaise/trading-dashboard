@@ -1851,10 +1851,11 @@ const { account, daily_stats, settings, active_trades } = dashboardData
                 ))}
               </div>
 
-              {/* (#98) Ajout manuel : trades ratés pendant une coupure, résultats rattrapés à
-                  la main. Bouton visible en profil dev seulement -- masquage d'affichage, le
-                  refus qui compte est côté bot. */}
-              {settings.display_mode === 'dev' && (
+              {/* (#98/#99) Ajout manuel : trades ratés pendant une coupure, résultats
+                  rattrapés à la main. Piloté par AJOUT_MANUEL_STATS dans settings.json, et non
+                  par DISPLAY_MODE -- la console épurée et cette fonction n'ont rien à voir.
+                  Masquage d'affichage seulement, le refus qui compte est côté bot. */}
+              {settings.ajout_manuel === true && (
                 <button
                   onClick={() => { setAjoutForm(nouveauFormAjout()); setAjoutOuvert(true); }}
                   style={{ background: 'transparent', border: '1px dashed #444', color: '#888',

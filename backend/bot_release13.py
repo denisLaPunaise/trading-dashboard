@@ -29,9 +29,17 @@ from telethon.tl.types import KeyboardButtonWebView
 # "client" (défaut) = console épurée (logo + statut), logs complets toujours écrits
 # dans kairos.log pour le support. Lu tôt, avant la config du logging ci-dessous.
 DISPLAY_MODE = "client"
+# (#99) Ajout manuel de resultats aux stats par canal. Reglage SEPARE de DISPLAY_MODE :
+# l'affichage de la console et l'acces a cette fonction n'ont rien a voir, et les coupler
+# obligeait a subir les logs detailles pour avoir le bouton. Absent du settings.json d'un
+# client, donc desactive chez lui. Volontairement lu ici et JAMAIS ecrit par save_settings :
+# il ne doit pas pouvoir etre bascule depuis le dashboard.
+AJOUT_MANUEL_STATS = False
 try:
     with open("settings.json", "r", encoding="utf-8") as _dm_f:
-        DISPLAY_MODE = json.load(_dm_f).get("DISPLAY_MODE", "client")
+        _cfg_demarrage = json.load(_dm_f)
+        DISPLAY_MODE = _cfg_demarrage.get("DISPLAY_MODE", "client")
+        AJOUT_MANUEL_STATS = bool(_cfg_demarrage.get("AJOUT_MANUEL_STATS", False))
 except Exception:
     pass
 
@@ -150,7 +158,7 @@ SECURITY_PIN = str(secrets.randbelow(900000) + 100000)
 # ==========================================
 # 🔐 CONFIGURATION DISTRIBUTION (LICENCE)
 # ==========================================
-VERSION_BOT = "15.11.0"
+VERSION_BOT = "15.11.1"
 # (URL_LICENCE retire — licence verifiee via Firestore, Phase 4)
 
 # ==========================================
@@ -506,7 +514,7 @@ STATS_SEED_FILE = "stats_seed.json"
 # rattrapes a la main... Une LIGNE DATEE par ajout, jamais videe. La date suffit a faire
 # sortir la ligne de "24h" le lendemain tout en la gardant dans "1S" et "Max" -- pas de
 # fichier a remettre a zero, donc pas de vidage qui peut echouer ou se rejouer.
-# Reserve au profil dev (cf. DISPLAY_MODE) : le bot d'un client ignore ce fichier.
+# Active par AJOUT_MANUEL_STATS dans settings.json : le bot d'un client ignore ce fichier.
 MANUAL_STATS_FILE = "stats_manuel.json"
 # (#91) Remise a zero des stats par canal. On n'efface RIEN : trades_detailed.csv sert aussi
 # a l'historique des trades et a la courbe du portefeuille, y supprimer des lignes detruirait
@@ -2051,10 +2059,10 @@ STATS_CHANNELS = [
 def charge_stats_manuel():
     """(#98) Lit les ajouts manuels. Liste vide si le fichier est absent ou hors profil dev.
 
-    Le garde-fou porte sur DISPLAY_MODE et non sur l'existence du fichier : un client qui
-    devinerait le nom et le format n'obtiendrait rien, son bot ne lit tout simplement pas.
+    Le garde-fou porte sur AJOUT_MANUEL_STATS et non sur l'existence du fichier : un client
+    qui devinerait le nom et le format n'obtiendrait rien, son bot ne lit tout simplement pas.
     """
-    if DISPLAY_MODE != "dev" or not os.path.exists(MANUAL_STATS_FILE):
+    if not AJOUT_MANUEL_STATS or not os.path.exists(MANUAL_STATS_FILE):
         return []
     try:
         with open(MANUAL_STATS_FILE, "r", encoding="utf-8") as f:
@@ -7130,10 +7138,10 @@ async def get_current_state_for_firebase() -> dict:
             "sabr_trailing_active": SABR_TRAILING_ACTIVE, "sabr_trailing_pips": SABR_TRAILING_PIPS,
             "sl_suiveur_active": SL_SUIVEUR_ACTIVE, "soft_sl_active": SOFT_SL_ACTIVE,
             "muted_channels": MUTED_CHANNELS, "allowed_channels": ALLOWED_CHANNELS,
-            # (#98) Le dashboard n'affiche le bouton "Ajout manuel" qu'en profil dev. C'est
-            # du confort d'affichage, PAS une securite : le refus qui compte est cote bot,
-            # dans le handler de la commande.
-            "display_mode": DISPLAY_MODE,
+            # (#98/#99) Le dashboard n'affiche le bouton "Ajout manuel" que si ce drapeau est
+            # vrai. C'est du confort d'affichage, PAS une securite : le refus qui compte est
+            # cote bot, dans le handler de la commande.
+            "ajout_manuel": AJOUT_MANUEL_STATS,
             "stats_channels": STATS_CHANNELS,
             "stats_manuel": charge_stats_manuel(),
             # (#pack) False = pack 100% SABR -> le dashboard masque les % globaux
@@ -7222,12 +7230,12 @@ async def handle_firebase_command(cmd_id: str, cmd_data: dict) -> None:
             set_status("done", {"success": True})
 
         # (#98) Ajout / suppression d'une ligne de stats manuelle, depuis le dashboard.
-        # Le refus hors profil dev est fait ICI : la liste blanche des regles Firestore
-        # autorise le type de commande pour tout le monde, et le masquage du bouton cote
-        # dashboard n'est que de l'affichage. C'est ce test qui protege reellement.
+        # Le refus est fait ICI : la liste blanche des regles Firestore autorise le type de
+        # commande pour tout le monde, et le masquage du bouton cote dashboard n'est que de
+        # l'affichage. C'est ce test qui protege reellement.
         elif cmd_type in ("add_manual_stat", "del_manual_stat"):
-            if DISPLAY_MODE != "dev":
-                set_status("error", {"success": False, "message": "Réservé au profil dev."})
+            if not AJOUT_MANUEL_STATS:
+                set_status("error", {"success": False, "message": "Fonction non activée sur ce bot."})
             elif cmd_type == "del_manual_stat":
                 lignes = charge_stats_manuel()
                 idx = payload.get("index", -1)

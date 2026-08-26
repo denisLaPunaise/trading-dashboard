@@ -189,10 +189,15 @@ chaque partie : un suffixe (`-beta`, `_test`…) lève une `ValueError` avalée 
   fichier à remettre à zéro chaque nuit, donc pas de vidage qui pourrait échouer (bot éteint à
   minuit) ou se rejouer. Ces lignes n'alimentent **que** les stats par canal, jamais
   l'historique des trades ni la courbe du portefeuille.
-  Réservé au profil dev, avec une **limite connue et assumée** : `DISPLAY_MODE` est lu dans le
-  `settings.json` du client, qui peut donc l'éditer. Le seul verrou incontournable serait un
-  champ dans le document de licence Firestore (comme `allowed_channels`) — non fait, l'enjeu
-  étant nul : un client qui triche ne fausse que son propre dashboard.
+  Activé par **`AJOUT_MANUEL_STATS: true`** dans `settings.json`, un réglage à part —
+  volontairement jamais écrit par `save_settings()`, donc impossible à basculer depuis le
+  dashboard. Limite connue et assumée : le client peut éditer son propre `settings.json`. Le
+  seul verrou incontournable serait un champ dans le document de licence Firestore (comme
+  `allowed_channels`) — non fait, l'enjeu étant nul : un client qui triche ne fausse que son
+  propre dashboard.
+- **V15.11.1** — l'ajout manuel était piloté par `DISPLAY_MODE == "dev"`, ce qui obligeait à
+  subir la console détaillée pour avoir le bouton. Deux choses sans rapport, découplées : la
+  console reste gouvernée par `DISPLAY_MODE`, la fonction par `AJOUT_MANUEL_STATS`.
 - **V15.3.0** — décalage du SL à la mise à BE (`BE_OFFSET_PIPS`, signé : positif = SL dans le
   gain), SL suiveur propre à SABR (interrupteur + distance ; `SABR_TRAILING_ACTIVE` existait
   dans les configs distribuées mais n'était lu nulle part), et section « Historique Trades »
