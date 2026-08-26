@@ -90,7 +90,10 @@ service cloud.firestore {
               && request.resource.data.type in
                  ['request_stats', 'update_setting', 'close_trade', 'be_trade', 'suivre', 'panic',
                   'kill', 'unlock', 'toggle_mute', 'toggle_drawdown', 'toggle_sl_suiveur', 'toggle_soft_sl',
-                  'toggle_sabr_doublon', 'toggle_sabr_trailing', 'request_history']
+                  'toggle_sabr_doublon', 'toggle_sabr_trailing', 'request_history',
+                  // (#98) Ajouts manuels aux stats par canal. Autorises pour tous ici :
+                  // le refus hors profil dev se fait cote bot, seul endroit fiable.
+                  'add_manual_stat', 'del_manual_stat']
               && (request.resource.data.type == 'request_stats' || licenseActiveForUser(userId))
             )
           );

@@ -362,6 +362,17 @@ function App() {
   const [channelPeriod, setChannelPeriod] = useState('all');
   // (#96) Carte de détail d'un canal, par classe d'actifs. null = fermée.
   const [detailCanal, setDetailCanal] = useState(null);
+  // (#98) Formulaire d'ajout manuel aux stats. Profil dev uniquement.
+  const [ajoutOuvert, setAjoutOuvert] = useState(false);
+  const [ajoutForm, setAjoutForm] = useState(null);
+  // Date du jour au format AAAA-MM-JJ, en heure LOCALE. toISOString() donnerait de l'UTC et
+  // daterait la ligne de la veille pour toute saisie faite avant 2h du matin.
+  const dateDuJour = () => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  };
+  const nouveauFormAjout = () => ({ date: dateDuJour(), canal: '', signaux: '1', ordres: '',
+                                    profit: '', pips: '', symbole: '', note: '' });
   const [dayWeekToggle, setDayWeekToggle] = useState('day'); // 'day' ou 'week'
   // (#74) Période de la section "Historique Trades". Les libellés sont en heures mais les
   // bornes sont des JOURNÉES ENTIÈRES côté bot : '2' = toute la journée d'hier + aujourd'hui.
@@ -391,13 +402,17 @@ function App() {
     if (period) setIsLoadingStats(false);
   }, [dashboardData, globalPeriod, channelPeriod]);
 
-  // (#96) Échap ferme la carte de détail, comme le clic sur le fond.
+  // (#96/#98) Échap ferme la carte ouverte, comme le clic sur le fond.
   useEffect(() => {
-    if (!detailCanal) return;
-    const onKey = (e) => { if (e.key === 'Escape') setDetailCanal(null); };
+    if (!detailCanal && !ajoutOuvert) return;
+    const onKey = (e) => {
+      if (e.key !== 'Escape') return;
+      setDetailCanal(null);
+      setAjoutOuvert(false);
+    };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [detailCanal]);
+  }, [detailCanal, ajoutOuvert]);
 
   // Déclenche une requête au bot quand la période (Global) ou la vue Semaine change (sans alert, sans doublon)
   useEffect(() => {
@@ -1836,6 +1851,19 @@ const { account, daily_stats, settings, active_trades } = dashboardData
                 ))}
               </div>
 
+              {/* (#98) Ajout manuel : trades ratés pendant une coupure, résultats rattrapés à
+                  la main. Bouton visible en profil dev seulement -- masquage d'affichage, le
+                  refus qui compte est côté bot. */}
+              {settings.display_mode === 'dev' && (
+                <button
+                  onClick={() => { setAjoutForm(nouveauFormAjout()); setAjoutOuvert(true); }}
+                  style={{ background: 'transparent', border: '1px dashed #444', color: '#888',
+                           borderRadius: '10px', padding: '10px', cursor: 'pointer',
+                           fontSize: '0.8rem', fontWeight: 'bold', width: '100%' }}>
+                  ✍️ Ajouter un résultat à la main
+                </button>
+              )}
+
               {isLoadingStats && (
                 <div style={{ textAlign: 'center', padding: '12px', color: '#00e676', fontSize: '0.82rem', background: 'rgba(0,230,118,0.05)', borderRadius: '8px', border: '1px solid rgba(0,230,118,0.2)' }}>
                   ⏳ Calcul en cours...
@@ -2182,6 +2210,142 @@ const { account, daily_stats, settings, active_trades } = dashboardData
                 <div style={{ fontSize: '0.7rem', color: '#666', marginTop: '10px', lineHeight: 1.45 }}>
                   📜 « Historique repris » est un total agrégé d'avant la refonte des stats : il ne
                   porte aucun symbole, donc il ne peut pas être ventilé par type d'actif.
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
+      {/* (#98) Formulaire d'ajout manuel aux stats par canal. Même traitement visuel que la
+          carte de détail : fond flouté, animation sur la seule opacité. */}
+      {ajoutOuvert && ajoutForm && (() => {
+        const canaux = settings.stats_channels || [];
+        const dejaSaisies = settings.stats_manuel || [];
+        const champ = (cle, valeur) => setAjoutForm((f) => ({ ...f, [cle]: valeur }));
+        const valide = ajoutForm.canal && ajoutForm.date;
+        const envoyer = async () => {
+          await sendCommand('add_manual_stat', {
+            date: ajoutForm.date, canal: ajoutForm.canal,
+            signaux: parseInt(ajoutForm.signaux, 10) || 1,
+            ordres: parseInt(ajoutForm.ordres, 10) || (parseInt(ajoutForm.signaux, 10) || 1),
+            profit: parseFloat(ajoutForm.profit) || 0,
+            pips: parseFloat(ajoutForm.pips) || 0,
+            symbole: ajoutForm.symbole, note: ajoutForm.note,
+          }, 'add_manual');
+          setAjoutOuvert(false);
+          requestedPeriods.current.clear();   // force le recalcul de la période affichée
+        };
+        const styleChamp = { background: '#121212', border: '1px solid #444', color: '#fff',
+                             padding: '9px', borderRadius: '6px', width: '100%', fontSize: '0.85rem' };
+        const styleLabel = { fontSize: '0.7rem', color: '#888', display: 'block', marginBottom: '4px' };
+        return (
+          <div
+            onClick={() => setAjoutOuvert(false)}
+            className="detail-overlay"
+            style={{ position: 'fixed', inset: 0, zIndex: 1200, background: 'rgba(0,0,0,0.55)',
+                     backdropFilter: 'blur(5px)', WebkitBackdropFilter: 'blur(5px)',
+                     display: 'flex', alignItems: 'center', justifyContent: 'center',
+                     padding: '18px', animation: 'ouvreDetail 0.18s ease-out forwards' }}>
+            <div onClick={(e) => e.stopPropagation()}
+              style={{ background: '#1a1a1a', border: '1px solid #383838', borderRadius: '16px',
+                       width: '100%', maxWidth: '440px', maxHeight: '85vh', overflowY: 'auto',
+                       padding: '20px', boxShadow: '0 24px 60px -20px rgba(0,0,0,0.9)' }}>
+
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '12px' }}>
+                <span style={{ fontWeight: 'bold', fontSize: '1.05rem', color: '#fff' }}>Ajout manuel</span>
+                <button onClick={() => setAjoutOuvert(false)} aria-label="Fermer"
+                  style={{ background: '#2a2a2a', border: 'none', color: '#aaa', borderRadius: '8px',
+                           width: '30px', height: '30px', cursor: 'pointer', fontSize: '1rem', lineHeight: 1, flexShrink: 0 }}>✕</button>
+              </div>
+              <div style={{ fontSize: '0.72rem', color: '#666', marginBottom: '16px' }}>
+                Compté dans les stats du canal, à la date choisie. N'apparaît ni dans l'historique
+                des trades ni dans la courbe du portefeuille.
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '11px' }}>
+                <div>
+                  <label style={styleLabel}>Canal</label>
+                  <select value={ajoutForm.canal} onChange={(e) => champ('canal', e.target.value)} style={styleChamp}>
+                    <option value="">— choisir —</option>
+                    {canaux.map((c) => <option key={c} value={c}>{c.replace('CANAL ', '')}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label style={styleLabel}>Date</label>
+                  <input type="date" value={ajoutForm.date} onChange={(e) => champ('date', e.target.value)} style={styleChamp} />
+                </div>
+                <div style={{ display: 'flex', gap: '10px' }}>
+                  <div style={{ flex: 1 }}>
+                    <label style={styleLabel}>Profit (€)</label>
+                    <input type="number" step="0.01" inputMode="decimal" value={ajoutForm.profit}
+                      onChange={(e) => champ('profit', e.target.value)} placeholder="145.30" style={styleChamp} />
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <label style={styleLabel}>Pips</label>
+                    <input type="number" step="0.1" inputMode="decimal" value={ajoutForm.pips}
+                      onChange={(e) => champ('pips', e.target.value)} placeholder="62.5" style={styleChamp} />
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: '10px' }}>
+                  <div style={{ flex: 1 }}>
+                    <label style={styleLabel}>Signaux</label>
+                    <input type="number" step="1" min="1" inputMode="numeric" value={ajoutForm.signaux}
+                      onChange={(e) => champ('signaux', e.target.value)} style={styleChamp} />
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <label style={styleLabel}>Ordres <span style={{ color: '#555' }}>(facultatif)</span></label>
+                    <input type="number" step="1" min="1" inputMode="numeric" value={ajoutForm.ordres}
+                      onChange={(e) => champ('ordres', e.target.value)} placeholder="= signaux" style={styleChamp} />
+                  </div>
+                </div>
+                <div>
+                  <label style={styleLabel}>Symbole <span style={{ color: '#555' }}>(facultatif — classe la ligne dans le détail par actif)</span></label>
+                  <input type="text" value={ajoutForm.symbole} onChange={(e) => champ('symbole', e.target.value)}
+                    placeholder="XAUUSD" style={styleChamp} />
+                </div>
+                <div>
+                  <label style={styleLabel}>Note <span style={{ color: '#555' }}>(pour toi, ignorée par le bot)</span></label>
+                  <input type="text" value={ajoutForm.note} onChange={(e) => champ('note', e.target.value)}
+                    placeholder="trades ratés pendant la coupure" style={styleChamp} />
+                </div>
+
+                <button onClick={envoyer} disabled={!valide || loadingAction === 'add_manual'}
+                  style={{ background: valide ? '#00c853' : '#2a2a2a', border: 'none',
+                           color: valide ? '#000' : '#666', borderRadius: '8px', padding: '12px',
+                           cursor: valide ? 'pointer' : 'not-allowed', fontWeight: 'bold', fontSize: '0.9rem', marginTop: '4px' }}>
+                  {loadingAction === 'add_manual' ? 'Enregistrement...' : 'Ajouter aux stats'}
+                </button>
+              </div>
+
+              {dejaSaisies.length > 0 && (
+                <div style={{ marginTop: '20px', paddingTop: '16px', borderTop: '1px solid #333' }}>
+                  <div style={{ fontSize: '0.72rem', color: '#888', marginBottom: '10px' }}>
+                    Déjà enregistrés ({dejaSaisies.length})
+                  </div>
+                  {dejaSaisies.slice(0, 12).map((l, i) => (
+                    <div key={`${l.date}-${l.canal}-${i}`}
+                      style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                               gap: '10px', background: '#222', borderRadius: '8px', padding: '9px 11px', marginBottom: '6px' }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: '0.78rem', color: '#ddd' }}>
+                          {l.date} · {(l.canal || '').replace('CANAL ', '')}
+                        </div>
+                        <div style={{ fontSize: '0.7rem', color: (l.profit ?? 0) >= 0 ? '#00e676' : '#ff4444' }}>
+                          {(l.profit ?? 0) >= 0 ? '+' : ''}{(l.profit ?? 0).toFixed(2)} € · {(l.pips ?? 0) > 0 ? '+' : ''}{(l.pips ?? 0).toFixed(1)} pips
+                          {l.note ? <span style={{ color: '#666' }}> · {l.note}</span> : null}
+                        </div>
+                      </div>
+                      <button
+                        onClick={async () => {
+                          await sendCommand('del_manual_stat', { index: i }, `del_manual_${i}`);
+                          requestedPeriods.current.clear();
+                        }}
+                        aria-label="Supprimer cette ligne"
+                        style={{ background: 'transparent', border: '1px solid #444', color: '#ff6b6b',
+                                 borderRadius: '6px', width: '26px', height: '26px', cursor: 'pointer',
+                                 fontSize: '0.8rem', lineHeight: 1, flexShrink: 0 }}>✕</button>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>

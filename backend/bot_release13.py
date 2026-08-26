@@ -502,6 +502,12 @@ DETAILED_HISTORY_FILE = "trades_detailed.csv"
 # (#stats) Historique agrégé repris d'avant la refonte des stats. Optionnel : absent chez un
 # nouveau client, il ne fait qu'ajouter un total aux périodes qui couvrent sa plage de dates.
 STATS_SEED_FILE = "stats_seed.json"
+# (#98) Ajouts manuels aux stats par canal : trades rates pendant une coupure, resultats
+# rattrapes a la main... Une LIGNE DATEE par ajout, jamais videe. La date suffit a faire
+# sortir la ligne de "24h" le lendemain tout en la gardant dans "1S" et "Max" -- pas de
+# fichier a remettre a zero, donc pas de vidage qui peut echouer ou se rejouer.
+# Reserve au profil dev (cf. DISPLAY_MODE) : le bot d'un client ignore ce fichier.
+MANUAL_STATS_FILE = "stats_manuel.json"
 # (#91) Remise a zero des stats par canal. On n'efface RIEN : trades_detailed.csv sert aussi
 # a l'historique des trades et a la courbe du portefeuille, y supprimer des lignes detruirait
 # ces deux-la. On memorise juste une date de coupure par canal, et les stats ignorent ce qui
@@ -2030,6 +2036,104 @@ def stats_reset_cutoff(src):
         return None
 
 
+# (#98) Libelles de canaux tels qu'ils apparaissent DANS LES STATS. Source unique : sert a
+# valider un ajout manuel ET a remplir le menu deroulant du dashboard, pour qu'aucun des deux
+# ne puisse deriver de l'autre. Attention, SABR y est regroupe avec une ESPACE
+# ("CANAL SABR VIP") et non avec l'underscore de son nom de pack.
+STATS_CHANNELS = [
+    "CANAL MDT_VIP", "CANAL MDT_FREE",
+    "CANAL SABR VIP", "CANAL SABR FREE",
+    "CANAL INDODOG", "CANAL FTS",
+    "CANAL SPACE", "CANAL LIGUE", "CANAL PERSO",
+]
+
+
+def charge_stats_manuel():
+    """(#98) Lit les ajouts manuels. Liste vide si le fichier est absent ou hors profil dev.
+
+    Le garde-fou porte sur DISPLAY_MODE et non sur l'existence du fichier : un client qui
+    devinerait le nom et le format n'obtiendrait rien, son bot ne lit tout simplement pas.
+    """
+    if DISPLAY_MODE != "dev" or not os.path.exists(MANUAL_STATS_FILE):
+        return []
+    try:
+        with open(MANUAL_STATS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except Exception as e:
+        logger.warning(f"⚠️ {MANUAL_STATS_FILE} illisible : {e}")
+        return []
+
+
+def sauve_stats_manuel(lignes):
+    try:
+        with open(MANUAL_STATS_FILE, "w", encoding="utf-8") as f:
+            json.dump(lignes, f, indent=2, ensure_ascii=False)
+        return True
+    except Exception as e:
+        logger.error(f"⚠️ Ecriture {MANUAL_STATS_FILE} : {e}")
+        return False
+
+
+def _merge_stats_manuel(out, cutoff):
+    """(#98) Injecte les ajouts manuels dans les stats par canal.
+
+    Une ligne datee entre dans une periode si sa date tombe apres la borne de debut -- la
+    meme regle que les vrais trades. Elle sort donc de "24h" toute seule le lendemain, tout
+    en restant dans "1S" et "Max". C'est ce qui evite d'avoir un fichier a vider chaque nuit,
+    donc un vidage qui pourrait echouer (bot eteint a minuit) ou se rejouer.
+
+    Ces lignes n'alimentent QUE les stats par canal : ni l'historique des trades, ni la courbe
+    du portefeuille, qui doivent rester le reflet exact du compte MT5.
+    """
+    for ligne in charge_stats_manuel():
+        if not isinstance(ligne, dict):
+            continue
+        canal = (ligne.get("canal") or "").strip()
+        if canal not in STATS_CHANNELS:
+            logger.warning(f"⚠️ Ajout manuel ignore : canal inconnu {canal!r}")
+            continue
+        try:
+            jour = datetime.strptime(str(ligne.get("date", "")).strip(), "%Y-%m-%d")
+        except Exception:
+            logger.warning(f"⚠️ Ajout manuel ignore ({canal}) : date invalide "
+                           f"{ligne.get('date')!r}, attendu AAAA-MM-JJ")
+            continue
+        # Comparaison au JOUR pres : une ligne datee du jour de la borne doit entrer, meme si
+        # cutoff porte une heure (cas des periodes glissantes type "14j").
+        if jour.date() < cutoff.date():
+            continue
+        # Une remise a zero du canal masque aussi les ajouts manuels anterieurs a la coupure.
+        _rst = stats_reset_cutoff(canal)
+        if _rst and jour.date() < _rst.date():
+            continue
+
+        try:
+            signaux = int(ligne.get("signaux", 1))
+            ordres = int(ligne.get("ordres", signaux))
+            profit = float(ligne.get("profit", 0.0))
+            pips = float(ligne.get("pips", 0.0))
+        except Exception:
+            logger.warning(f"⚠️ Ajout manuel ignore ({canal}) : valeurs illisibles")
+            continue
+
+        entry = out.setdefault(canal, {"count": 0, "positions": 0, "profit": 0.0,
+                                       "pips": 0.0, "avg_pips": 0.0})
+        entry["count"] += signaux
+        entry["positions"] += ordres
+        entry["profit"] += profit
+        entry["pips"] += pips
+
+        # (#96) Detail par type d'actif : avec un symbole, la ligne rejoint sa vraie classe ;
+        # sans symbole, elle a sa propre entree pour que la somme redonne le total du canal.
+        sym = (ligne.get("symbole") or "").strip()
+        sous = _entree_actif(entry, classe_actif(sym) if sym else "Ajout manuel")
+        sous["count"] += signaux
+        sous["positions"] += ordres
+        sous["profit"] += profit
+        sous["pips"] += pips
+
+
 def _merge_stats_seed(out, cutoff):
     """(#stats) Injecte un historique REPRIS d'avant la refonte des stats (stats_seed.json).
 
@@ -2103,6 +2207,7 @@ def get_channel_stats_period(days=30, start_date_custom=None):
     cutoff = start_date_custom if start_date_custom else (datetime.now() - timedelta(days=days))
     seen_signals = {}
     _merge_stats_seed(out, cutoff)
+    _merge_stats_manuel(out, cutoff)   # (#98)
     if not os.path.exists(DETAILED_HISTORY_FILE):
         return _finalize_channel_stats(out)
     try:
@@ -7025,6 +7130,12 @@ async def get_current_state_for_firebase() -> dict:
             "sabr_trailing_active": SABR_TRAILING_ACTIVE, "sabr_trailing_pips": SABR_TRAILING_PIPS,
             "sl_suiveur_active": SL_SUIVEUR_ACTIVE, "soft_sl_active": SOFT_SL_ACTIVE,
             "muted_channels": MUTED_CHANNELS, "allowed_channels": ALLOWED_CHANNELS,
+            # (#98) Le dashboard n'affiche le bouton "Ajout manuel" qu'en profil dev. C'est
+            # du confort d'affichage, PAS une securite : le refus qui compte est cote bot,
+            # dans le handler de la commande.
+            "display_mode": DISPLAY_MODE,
+            "stats_channels": STATS_CHANNELS,
+            "stats_manuel": charge_stats_manuel(),
             # (#pack) False = pack 100% SABR -> le dashboard masque les % globaux
             # (or/indices/devises) et le planning heure/jour, sans effet sur SABR.
             "uses_risk_engine": pack_uses_risk_engine(),
@@ -7109,6 +7220,63 @@ async def handle_firebase_command(cmd_id: str, cmd_data: dict) -> None:
                                "type_filling": mt5.ORDER_FILLING_IOC}
                         await run_mt5(_send_order_blocking, req)
             set_status("done", {"success": True})
+
+        # (#98) Ajout / suppression d'une ligne de stats manuelle, depuis le dashboard.
+        # Le refus hors profil dev est fait ICI : la liste blanche des regles Firestore
+        # autorise le type de commande pour tout le monde, et le masquage du bouton cote
+        # dashboard n'est que de l'affichage. C'est ce test qui protege reellement.
+        elif cmd_type in ("add_manual_stat", "del_manual_stat"):
+            if DISPLAY_MODE != "dev":
+                set_status("error", {"success": False, "message": "Réservé au profil dev."})
+            elif cmd_type == "del_manual_stat":
+                lignes = charge_stats_manuel()
+                idx = payload.get("index", -1)
+                if not isinstance(idx, int) or not (0 <= idx < len(lignes)):
+                    set_status("error", {"success": False, "message": "Ligne introuvable."})
+                else:
+                    retiree = lignes.pop(idx)
+                    if sauve_stats_manuel(lignes):
+                        logger.info("🧾 Ajout manuel supprime : %s" % retiree)
+                        set_status("done", {"success": True, "stats_manuel": lignes})
+                    else:
+                        set_status("error", {"success": False, "message": "Écriture impossible."})
+            else:
+                canal = (payload.get("canal") or "").strip()
+                date_txt = (payload.get("date") or "").strip()
+                if canal not in STATS_CHANNELS:
+                    set_status("error", {"success": False, "message": f"Canal inconnu : {canal}"})
+                else:
+                    try:
+                        datetime.strptime(date_txt, "%Y-%m-%d")
+                    except Exception:
+                        set_status("error", {"success": False, "message": "Date attendue au format AAAA-MM-JJ."})
+                        return
+                    try:
+                        signaux = max(1, int(payload.get("signaux", 1)))
+                        ordres = max(signaux, int(payload.get("ordres", signaux) or signaux))
+                        profit = float(payload.get("profit", 0.0))
+                        pips = float(payload.get("pips", 0.0))
+                    except (TypeError, ValueError):
+                        set_status("error", {"success": False, "message": "Valeurs numériques invalides."})
+                        return
+                    ligne = {"date": date_txt, "canal": canal, "signaux": signaux,
+                             "ordres": ordres, "profit": round(profit, 2), "pips": round(pips, 1)}
+                    sym = (payload.get("symbole") or "").strip().upper()
+                    if sym: ligne["symbole"] = sym
+                    note = (payload.get("note") or "").strip()
+                    if note: ligne["note"] = note[:120]
+
+                    lignes = charge_stats_manuel()
+                    lignes.append(ligne)
+                    lignes.sort(key=lambda l: str(l.get("date", "")), reverse=True)
+                    if sauve_stats_manuel(lignes):
+                        logger.info("🧾 Ajout manuel enregistre : %s" % ligne)
+                        await send_alert(f"🧾 **AJOUT MANUEL AUX STATS**\n\n"
+                                         f"{canal.replace('CANAL ', '')} · {date_txt}\n"
+                                         f"{signaux} signal(s) · {profit:+.2f} € · {pips:+.1f} pips")
+                        set_status("done", {"success": True, "stats_manuel": lignes})
+                    else:
+                        set_status("error", {"success": False, "message": "Écriture impossible."})
 
         elif cmd_type == "unlock":
             global security_triggered
