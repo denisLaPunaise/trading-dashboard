@@ -376,6 +376,10 @@ TP1_PIPS = 30
 TP2_PIPS =75
 TP3_PIPS = 140
 TP4_PIPS = 200
+# (#101) TP de repli pour un signal MDT qui n'en annonce aucun : sans lui la position partait
+# sans cible et ne pouvait sortir que par le SL ou un partiel. Les paliers de prise (30/75/140
+# /200 pips) s'appliquent par-dessus, c'est juste un filet.
+MDT_TP_DEFAUT_PIPS = 200
 TRAILING_STOP_PIPS = 85
 SOFT_SL_PERCENT = 0.30
 # (#10) Interrupteurs ON/OFF (dashboard) pour la gestion du SL général (hors SABR)
@@ -2879,7 +2883,10 @@ async def get_safe_lot_size(symbol, signal_type, sl_price, entry_price_ref, chan
 # 🚀 TRADING & MONITORING
 # ==========================================
 
-async def close_partial(pos, pct, tp_label, pips_gained, fixed_lot=None):
+async def close_partial(pos, pct, tp_label, pips_gained, fixed_lot=None, etape=None, pips_tp=None):
+    """tp_label sert aux alertes Telegram et au journal -- du texte lisible, libre.
+    etape/pips_tp servent au commentaire MT5, qui lui est standardise et court (#100).
+    Deux publics differents, deux formats : c'est voulu."""
     # 1. SÉCURITÉ PETITS COMPTES
     if round(pos.volume, 2) <= 0.01:
         return True
@@ -2919,7 +2926,7 @@ async def close_partial(pos, pct, tp_label, pips_gained, fixed_lot=None):
     req = {
         "action": mt5.TRADE_ACTION_DEAL, "symbol": pos.symbol, "volume": lot, "type": otype,
         "position": pos.ticket, "price": price, "magic": MAGIC_NUMBER,
-        "comment": f"Part {tp_label}"[:25], # <--- ON COUPE À 25 CARACTÈRES MAX
+        "comment": commentaire_mt5(ACTIVE_TRADE_SOURCES.get(pos.ticket, ""), etape, pips_tp),
         "type_filling": mt5.ORDER_FILLING_IOC,
         "deviation": MAX_SLIPPAGE
     }
@@ -3765,6 +3772,17 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
         try: final_tp = float(tp)
         except: final_tp = 0.0
         
+        # (#101) MDT : un signal sans TP partait sans aucune cible. On en pose une a
+        # MDT_TP_DEFAUT_PIPS le temps que le canal en annonce une -- les paliers de partiels
+        # (60/140/200/300 pips) continuent de s'appliquer par-dessus, ce TP n'est qu'un filet
+        # pour que la position ne coure pas indefiniment.
+        if "MDT" in channel_source and final_tp == 0.0:
+            dist_mdt = MDT_TP_DEFAUT_PIPS * pt * div
+            final_tp = final_px + dist_mdt if action == "ACHAT" else final_px - dist_mdt
+            final_tp = round(final_tp / s_info.point) * s_info.point
+            log(f"🎯 {channel_source} sans TP : cible par defaut a {MDT_TP_DEFAUT_PIPS} pips "
+                f"-> {final_tp}", important=True)
+
         if "SABR" in channel_source and final_tp == 0.0:
             dist_tp_points = 1000 * 10 * pt * (div/10)
             if action == "ACHAT": final_tp = final_px + dist_tp_points
@@ -3779,7 +3797,7 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
             "action": tact, "symbol": symbol, "volume": float(f"{lot:.2f}"), "type": otype,
             "price": final_px, "sl": final_sl, "tp": final_tp,
             "deviation": MAX_SLIPPAGE, "magic": MAGIC_NUMBER,
-            "comment": f"Bot - {source_clean}", "type_time": mt5.ORDER_TIME_GTC,
+            "comment": commentaire_mt5(channel_source), "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": mt5.ORDER_FILLING_IOC if tact == mt5.TRADE_ACTION_DEAL else mt5.ORDER_FILLING_RETURN,
         }
 
@@ -3884,6 +3902,29 @@ async def send_alert(msg, buttons=None):
         await bot_user.send_message(ADMIN_ID, msg, buttons=buttons, parse_mode='md')
     except Exception as e:
         logger.error(f"⚠️ Erreur Envoi Alerte: {e}")
+
+
+# (#100) Le champ commentaire de MqlTradeRequest tient 31 caracteres. Au-dela, le courtier
+# tronque sans prevenir -- d'ou des libelles coupes en plein milieu dans MT5.
+MT5_COMMENT_MAX = 31
+
+
+def commentaire_mt5(canal, etape=None, pips=None):
+    """(#100) Commentaire MT5 standardise : "B - SABR VIP TP1 (100 pips)".
+
+    B pour "bot", puis le canal, puis l'etape, puis la distance du palier quand le canal
+    l'annonce en pips (les canaux a echelle donnent des PRIX, pas des pips : on n'invente rien).
+
+    La coupe a MT5_COMMENT_MAX est faite ICI, une seule fois, au lieu d'un [:25] recopie a
+    chaque appel -- c'est ce qui garantit que tous les commentaires ont la meme forme.
+    """
+    nom = _channel_base_token(canal).replace("_", " ").strip()
+    txt = "B - %s" % (nom or "?")
+    if etape:
+        txt += " %s" % etape
+    if pips:
+        txt += " (%d pips)" % int(pips)
+    return txt[:MT5_COMMENT_MAX]
 
 
 def _channel_base_token(name):
@@ -4803,7 +4844,7 @@ async def cancel_indo_stale_orders():
         await run_bg(save_memory)
 
 
-async def close_volume_across(positions, vol_target, label, pips):
+async def close_volume_across(positions, vol_target, label, pips, etape_mt5=None):
     """(#84) Ferme vol_target lots repartis sur plusieurs positions d'un meme signal.
 
     Les paliers INDODOG portent sur le volume TOTAL du signal, pas sur une position : il faut
@@ -4828,7 +4869,7 @@ async def close_volume_across(positions, vol_target, label, pips):
         prise = round(prise, 2)
         if prise < vmin:
             continue
-        if await close_partial(p, 0.0, label, pips, fixed_lot=prise):
+        if await close_partial(p, 0.0, label, pips, fixed_lot=prise, etape=etape_mt5):
             ferme = round(ferme + prise, 2)
             restant = round(restant - prise, 2)
     return ferme
@@ -5149,7 +5190,7 @@ async def monitor_positions():
                             # 2. On ferme 40% (Réessaie en boucle si le réseau Timeout)
                             if "MDT_FREE_TP1_PARTIAL" not in processed:
                                 lbl_part = "TP1 (signal, 40%)"
-                                success = await close_partial(pos, 0.40, lbl_part, pips)
+                                success = await close_partial(pos, 0.40, lbl_part, pips, etape="TP1")
                                 if success:
                                     processed.add("MDT_FREE_TP1_PARTIAL")
                                     await run_bg(save_memory)
@@ -5183,7 +5224,8 @@ async def monitor_positions():
 
                             # Prise partielle 30%, avec son propre marqueur.
                             partial_done = "VIP_PARTIAL60_DONE" in processed
-                            if not partial_done and await close_partial(pos, 0.30, "MDT VIP 60p (30%)", pips):
+                            if not partial_done and await close_partial(pos, 0.30, "MDT VIP 60p (30%)", pips,
+                                                                    etape="TP1", pips_tp=60):
                                 processed.add("VIP_PARTIAL60_DONE")
                                 partial_done = True
 
@@ -5205,7 +5247,7 @@ async def monitor_positions():
                     if pips >= TP1_PIPS and "TP1" not in processed:
                         lbl_part = f"TP1 ({TP1_PIPS} pips)"; spec_pct = CHANNEL_TP1_PCT.get(src_trade, None)
                         pct_close = spec_pct if spec_pct is not None else CFG_TP1_PCT
-                        if await close_partial(pos, pct_close, lbl_part, pips):
+                        if await close_partial(pos, pct_close, lbl_part, pips, etape="TP1", pips_tp=TP1_PIPS):
                             daily_stats["tp1_reached"] += 1; processed.add("TP1"); await run_bg(save_memory)
 
                     # NIVEAU 2 
@@ -5215,7 +5257,7 @@ async def monitor_positions():
                         
                         # 2. On encaisse 50% du trade (ce qui enverra le ticket de caisse)
                         lbl_part = f"TP2 ({TP2_PIPS}p)"
-                        if await close_partial(pos, 0.50, lbl_part, pips):
+                        if await close_partial(pos, 0.50, lbl_part, pips, etape="TP2", pips_tp=TP2_PIPS):
                             daily_stats["tp2_reached"] += 1; processed.add("TP2"); await run_bg(save_memory)
 
                     # NIVEAU 3 
@@ -5269,7 +5311,7 @@ async def monitor_positions():
                                                      f"Sommet: +{int(current_max_pips)}p | Actuel: +{int(pips)}p\n"
                                                      f"Action: Clôture {pct_txt}%. Le reste court avec SL à BE.", src_trade)
 
-                                    success = await close_partial(pos, SOFT_SL_PERCENT, "Soft Trailing", pips)
+                                    success = await close_partial(pos, SOFT_SL_PERCENT, "Soft Trailing", pips, etape="SL suiv")
                                     # Si ça rate (sauf petit lot), on enlève le tag pour réessayer
                                     if not success and pos.volume > 0.01: 
                                         TRADES_PROCESSED_LEVELS[pos.ticket].remove(tag)
@@ -5382,7 +5424,8 @@ async def monitor_positions():
                                 if vol_to_close < 0.01: vol_to_close = 0.01
 
                                 if round(p.volume - vol_to_close, 2) >= 0.01:
-                                    success = await close_partial(p, 0.0, "SABR 100p (BE+60%)", pips_indiv, fixed_lot=vol_to_close)
+                                    success = await close_partial(p, 0.0, "SABR 100p (BE+60%)", pips_indiv, fixed_lot=vol_to_close,
+                                                                  etape="TP1", pips_tp=100)
                                     if success:
                                         TRADES_PROCESSED_LEVELS[p.ticket].add(tag_100)
                                         await run_bg(save_memory)
@@ -5412,7 +5455,7 @@ async def monitor_positions():
                                 if round(p.volume - vol_be, 2) >= 0.01:
                                     ok_be = await close_partial(p, 0.0,
                                                                 "SABR retour BE (%d%%)" % int(pct_be * 100),
-                                                                pips_indiv, fixed_lot=vol_be)
+                                                                pips_indiv, fixed_lot=vol_be, etape="BE")
                                     reste_be = round(p.volume - vol_be, 2)
                                 else:
                                     # Le reliquat serait sous le lot minimum du courtier : on
@@ -5420,7 +5463,7 @@ async def monitor_positions():
                                     vol_be = p.volume
                                     ok_be = await close_partial(p, 0.0,
                                                                 "SABR retour BE (solde)",
-                                                                pips_indiv, fixed_lot=vol_be)
+                                                                pips_indiv, fixed_lot=vol_be, etape="BE")
                                     reste_be = 0.0
                                 if ok_be:
                                     TRADES_PROCESSED_LEVELS[p.ticket].add("SABR_BE_PARTIEL_FAIT")
@@ -5446,7 +5489,8 @@ async def monitor_positions():
                                 if vol_to_close < 0.01: vol_to_close = 0.01
 
                                 if round(p.volume - vol_to_close, 2) >= 0.01:
-                                    success = await close_partial(p, 0.0, "SABR 150p (+10%)", pips_indiv, fixed_lot=vol_to_close)
+                                    success = await close_partial(p, 0.0, "SABR 150p (+10%)", pips_indiv, fixed_lot=vol_to_close,
+                                                                  etape="TP2", pips_tp=150)
                                     if success:
                                         TRADES_PROCESSED_LEVELS[p.ticket].add(tag_150)
                                         await run_bg(save_memory)
@@ -5545,7 +5589,7 @@ async def monitor_positions():
 
                         ferme = await close_volume_across(positions, vol_cible,
                                                           "%s TP%d (%d%%)" % (nom_ladder, idx, int(pct_i * 100)),
-                                                          pips_i)
+                                                          pips_i, etape_mt5="TP%d" % idx)
                         if ferme > 0:
                             done.add(tag)
                             ladder_stats_tp(src_ladder, sig_key, idx)          # (#87/#90)
@@ -6503,7 +6547,7 @@ async def main_handler(event):
                     pips_now = ((pos.price_open - pos.price_current) / pt_p) / div_p
 
                 if round(pos.volume - vol_to_close, 2) >= 0.01:
-                    await close_partial(pos, 0.0, "SABR PARTIEL (+10%)", pips_now, fixed_lot=vol_to_close)
+                    await close_partial(pos, 0.0, "SABR PARTIEL (+10%)", pips_now, fixed_lot=vol_to_close, etape="TP2")
         return
 
     # ==================================================================
@@ -6593,7 +6637,7 @@ async def main_handler(event):
                         req = {
                             "action": mt5.TRADE_ACTION_DEAL, "symbol": pos.symbol, "volume": pos.volume,
                             "type": otype, "position": tk, "price": price,
-                            "magic": MAGIC_NUMBER, "comment": "Bot - Stop Admin", "type_filling": mt5.ORDER_FILLING_IOC,
+                            "magic": MAGIC_NUMBER, "comment": "B - STOP ADMIN", "type_filling": mt5.ORDER_FILLING_IOC,
                         }
                         res = await run_mt5(_send_order_blocking, req)
 
@@ -6636,7 +6680,7 @@ async def main_handler(event):
                             pips_now = ((pos.price_current - pos.price_open) / pt) / div
                         else:
                             pips_now = ((pos.price_open - pos.price_current) / pt) / div
-                        if await close_partial(pos, 0.5, label, pips_now):
+                        if await close_partial(pos, 0.5, label, pips_now, etape="TP1"):
                             action_taken = True
 
                 # --- (#20) Mise à BE (SL au point d'entrée) ---
