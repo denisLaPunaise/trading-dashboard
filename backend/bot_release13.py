@@ -158,7 +158,7 @@ SECURITY_PIN = str(secrets.randbelow(900000) + 100000)
 # ==========================================
 # 🔐 CONFIGURATION DISTRIBUTION (LICENCE)
 # ==========================================
-VERSION_BOT = "15.11.1"
+VERSION_BOT = "15.12.0"
 # (URL_LICENCE retire — licence verifiee via Firestore, Phase 4)
 
 # ==========================================
@@ -3833,8 +3833,6 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
             if final_tp > 0:
                 final_tp = round(final_tp / s_info.point) * s_info.point
 
-        source_clean = channel_source.replace("CANAL ", "") if channel_source else "INCONNU"
-        
         req = {
             "action": tact, "symbol": symbol, "volume": float(f"{lot:.2f}"), "type": otype,
             "price": final_px, "sl": final_sl, "tp": final_tp,

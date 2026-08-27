@@ -198,6 +198,26 @@ chaque partie : un suffixe (`-beta`, `_test`…) lève une `ValueError` avalée 
 - **V15.11.1** — l'ajout manuel était piloté par `DISPLAY_MODE == "dev"`, ce qui obligeait à
   subir la console détaillée pour avoir le bouton. Deux choses sans rapport, découplées : la
   console reste gouvernée par `DISPLAY_MODE`, la fonction par `AJOUT_MANUEL_STATS`.
+- **V15.12.0** — trois points.
+  - **TP de repli MDT** (`MDT_TP_DEFAUT_PIPS`, 200) : un signal MDT sans TP partait sans aucune
+    cible et ne pouvait sortir que par le SL ou un partiel. Les paliers de prise s'appliquent
+    par-dessus — c'est un filet, pas une stratégie. Un signal qui annonce son TP garde le sien.
+  - **Commentaires MT5 standardisés** : `commentaire_mt5()` produit une forme unique,
+    `B - SABR VIP TP1 (100 pips)`. Le champ commentaire de MT5 tient **31 caractères** et le
+    courtier tronque sans prévenir — d'où les libellés coupés. La coupe est faite dans le helper,
+    une seule fois, au lieu d'un `[:25]` recopié partout. `close_partial()` garde `tp_label` pour
+    les alertes Telegram (texte libre) et reçoit `etape`/`pips_tp` pour MT5 (format court) : deux
+    publics, deux formats. Les pips ne s'affichent que si le canal annonce une distance — INDODOG
+    et FTS donnent des **prix** de TP, donc `B - FTS TP4` sans parenthèse inventée.
+  - **Bornes de la zone SABR** (`SABR_ZONE_BORNES`) : on retient tout ou partie de
+    début/milieu/fin, soit 1 à 3 ordres. Trois par défaut, donc rien ne change sans action.
+    Propre à SABR ; INDODOG et FTS gardent leurs trois ordres. `split_zone_lots()` passe à N
+    sorties en conservant l'invariant (somme = lot réglé exactement) — vérifié identique à
+    l'ancienne version sur 7 200 combinaisons à 3 ordres.
+    Piège traité : l'entrée au marché comparait le prix courant à « début » **en dur**. Elle
+    porte désormais sur la borne *sélectionnée* la plus proche, sinon ne retenir que milieu+fin
+    aurait déclenché un marché calculé sur une borne inutilisée. Un réglage vide retombe sur les
+    trois bornes : un signal valide ne doit jamais être perdu sur un réglage.
 - **V15.3.0** — décalage du SL à la mise à BE (`BE_OFFSET_PIPS`, signé : positif = SL dans le
   gain), SL suiveur propre à SABR (interrupteur + distance ; `SABR_TRAILING_ACTIVE` existait
   dans les configs distribuées mais n'était lu nulle part), et section « Historique Trades »
