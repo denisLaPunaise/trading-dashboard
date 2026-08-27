@@ -318,6 +318,11 @@ RISK_PERCENT_SABR_OTHER = 0.006    # 0.6% par défaut pour les paires SABR autre
 # gros lot proche du marché) ; True = répartition égale sur les 3 ordres de la zone.
 # Togglable au dashboard (sous "Lots SABR").
 SABR_ZONE_EQUAL_SPLIT = False
+# (#102) Bornes de la zone SABR reellement prises. Trois = comportement historique, et c'est
+# le defaut : personne ne voit son comportement changer sans l'avoir demande. On peut n'en
+# retenir que deux, ou une seule. Les pourcentages de repartition s'adaptent au nombre.
+# Propre a SABR : INDODOG et FTS gardent leurs trois ordres.
+SABR_ZONE_BORNES = ["debut", "milieu", "fin"]
 # Répartition manuelle réglable au dashboard : % de l'ordre 1 (proche/gros lot) et de
 # l'ordre 2 (milieu). L'ordre 3 (loin/petit lot) prend toujours le reliquat (1 - PCT1 - PCT2)
 # -- jamais stocké directement, pour garantir que la somme fasse toujours 100%.
@@ -1610,6 +1615,7 @@ def save_settings():
                 "FIXED_LOT_FTS": FIXED_LOT_FTS,
                 "RISK_PERCENT_SABR_OTHER": RISK_PERCENT_SABR_OTHER,
                 "SABR_ZONE_EQUAL_SPLIT": SABR_ZONE_EQUAL_SPLIT,
+                "SABR_ZONE_BORNES": SABR_ZONE_BORNES,
                 "SABR_BE_PARTIEL_ACTIVE": SABR_BE_PARTIEL_ACTIVE,
                 "SABR_BE_PARTIEL_PCT": SABR_BE_PARTIEL_PCT,
                 "SABR_ZONE_PCT1": SABR_ZONE_PCT1,
@@ -1657,7 +1663,7 @@ FIREBASE_PASSWORD = ""
 
 def load_settings():
     """Charge les réglages au démarrage"""
-    global RISK_PERCENT_GOLD, SABR_FORWARD_ACTIVE, RISK_PERCENT_OTHER, RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE, MAX_DAILY_DRAWDOWN, DRAWDOWN_ACTIVE, TRAILING_STOP_PIPS, RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO, SOFT_SL_PERCENT, MUTED_CHANNELS, ALLOWED_CHANNELS, CHANNEL_TP1_PCT, TELEGRAM_DESTINATION_ID, ADMIN_ID, RISK_PERCENT_INDICES, PRIME_HOURS, TIME_OFF_PEAK_FACTOR, DAY_RISK_FACTORS, FIXED_LOT_SABR_FREE, FIXED_LOT_SABR_VIP, RISK_PERCENT_SABR_OTHER, SABR_ZONE_EQUAL_SPLIT, SABR_ZONE_PCT1, SABR_ZONE_PCT2, SL_SUIVEUR_ACTIVE, SOFT_SL_ACTIVE, FIREBASE_EMAIL, FIREBASE_PASSWORD, SERVER_PACK_CHANNELS, BE_OFFSET_PIPS, SABR_TRAILING_ACTIVE, SABR_TRAILING_PIPS, FIXED_LOT_INDODOG, FIXED_LOT_FTS, SABR_BE_PARTIEL_ACTIVE, SABR_BE_PARTIEL_PCT, SABR_ANTI_DOUBLON_ACTIVE
+    global RISK_PERCENT_GOLD, SABR_FORWARD_ACTIVE, RISK_PERCENT_OTHER, RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE, MAX_DAILY_DRAWDOWN, DRAWDOWN_ACTIVE, TRAILING_STOP_PIPS, RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO, SOFT_SL_PERCENT, MUTED_CHANNELS, ALLOWED_CHANNELS, CHANNEL_TP1_PCT, TELEGRAM_DESTINATION_ID, ADMIN_ID, RISK_PERCENT_INDICES, PRIME_HOURS, TIME_OFF_PEAK_FACTOR, DAY_RISK_FACTORS, FIXED_LOT_SABR_FREE, FIXED_LOT_SABR_VIP, RISK_PERCENT_SABR_OTHER, SABR_ZONE_EQUAL_SPLIT, SABR_ZONE_BORNES, SABR_ZONE_PCT1, SABR_ZONE_PCT2, SL_SUIVEUR_ACTIVE, SOFT_SL_ACTIVE, FIREBASE_EMAIL, FIREBASE_PASSWORD, SERVER_PACK_CHANNELS, BE_OFFSET_PIPS, SABR_TRAILING_ACTIVE, SABR_TRAILING_PIPS, FIXED_LOT_INDODOG, FIXED_LOT_FTS, SABR_BE_PARTIEL_ACTIVE, SABR_BE_PARTIEL_PCT, SABR_ANTI_DOUBLON_ACTIVE
 
     if os.path.exists(SETTINGS_FILENAME):
         try:
@@ -1677,6 +1683,9 @@ def load_settings():
                 if "FIXED_LOT_SABR_VIP" in data: FIXED_LOT_SABR_VIP = data["FIXED_LOT_SABR_VIP"]
                 if "RISK_PERCENT_SABR_OTHER" in data: RISK_PERCENT_SABR_OTHER = data["RISK_PERCENT_SABR_OTHER"]
                 if "SABR_ZONE_EQUAL_SPLIT" in data: SABR_ZONE_EQUAL_SPLIT = data["SABR_ZONE_EQUAL_SPLIT"]
+                if "SABR_ZONE_BORNES" in data:
+                    _b = [x for x in (data["SABR_ZONE_BORNES"] or []) if x in ("debut", "milieu", "fin")]
+                    if _b: SABR_ZONE_BORNES = _b
                 if "SABR_BE_PARTIEL_ACTIVE" in data: SABR_BE_PARTIEL_ACTIVE = bool(data["SABR_BE_PARTIEL_ACTIVE"])
                 if "SABR_BE_PARTIEL_PCT" in data: SABR_BE_PARTIEL_PCT = float(data["SABR_BE_PARTIEL_PCT"])
                 if "SABR_ZONE_PCT1" in data: SABR_ZONE_PCT1 = data["SABR_ZONE_PCT1"]
@@ -3078,21 +3087,25 @@ def distribute_lots(total_vol, n_orders):
         
     return lots
 
-def split_zone_lots(total_vol, step, equal, pct1, pct2):
-    """(#85) Decoupe un volume total en 3 ordres etages sur une zone (SABR et INDODOG).
+def split_zone_lots(total_vol, step, equal, pct1, pct2, n_ordres=3):
+    """(#85/#102) Decoupe un volume total en N ordres etages sur une zone.
 
-    INVARIANT : la somme des 3 lots vaut TOUJOURS exactement total_vol. On raisonne en
-    UNITES du pas broker (jamais en flottants), on arrondit chaque part vers le BAS, puis
-    on donne les unites restantes aux PREMIERS ordres (debut > milieu > fin).
-    Ex. 0.13 lot, pas 0.01 : 0.05 / 0.04 / 0.04 -- jamais 0.05 / 0.05 / 0.05.
+    N vaut 3 par defaut (SABR historique, INDODOG, FTS) et peut descendre a 2 ou 1 quand le
+    reglage SABR_ZONE_BORNES ne retient qu'une partie des bornes.
 
-    Avant, le mode manuel remontait au pas minimum tout ordre trop petit APRES le calcul,
-    ce qui gonflait le total : 0.03 lot reparti en 90/5/5 posait 0.03 + 0.01 + 0.01 = 0.05,
-    soit 66 % de plus que le lot regle au dashboard.
+    INVARIANT : la somme des N lots vaut TOUJOURS exactement total_vol. On raisonne en UNITES
+    du pas broker (jamais en flottants), on arrondit chaque part vers le BAS, puis on donne les
+    unites restantes aux PREMIERS ordres (debut > milieu > fin).
+    Ex. 0.13 lot, pas 0.01, 3 ordres : 0.05 / 0.04 / 0.04 -- jamais 0.05 / 0.05 / 0.05.
 
-    L'arrondi suit le nombre de decimales du pas broker : un `round(x, 2)` en dur perdait
-    ou inventait du volume chez un courtier au pas de 0.001.
+    Avant, le mode manuel remontait au pas minimum tout ordre trop petit APRES le calcul, ce
+    qui gonflait le total : 0.03 lot reparti en 90/5/5 posait 0.03 + 0.01 + 0.01 = 0.05, soit
+    66 % de plus que le lot regle au dashboard.
+
+    L'arrondi suit le nombre de decimales du pas broker : un `round(x, 2)` en dur perdait ou
+    inventait du volume chez un courtier au pas de 0.001.
     """
+    n = max(1, min(3, int(n_ordres)))
     if step <= 0:
         step = 0.01
     dec = len(str(step).split(".")[1]) if "." in str(step) else 0
@@ -3100,22 +3113,29 @@ def split_zone_lots(total_vol, step, equal, pct1, pct2):
     n_units = int(round(total_vol / step))
 
     if n_units <= 0:
-        return [0.0, 0.0, 0.0]
-    if n_units == 1:
-        return [round(total_vol, dec), 0.0, 0.0]
-    if n_units == 2:
-        return [round(step, dec), round(total_vol - step, dec), 0.0]
+        return [0.0] * n
+    # Moins d'unites que d'ordres : on ne finance que les premiers plutot que de forcer chaque
+    # montant au pas minimum, ce qui gonflerait le total.
+    if n_units < n:
+        return [round(step, dec)] * n_units + [0.0] * (n - n_units)
 
     if equal:
-        base_u, rest_u = divmod(n_units, 3)
-        units = [base_u + (1 if i < rest_u else 0) for i in range(3)]
+        base_u, rest_u = divmod(n_units, n)
+        units = [base_u + (1 if i < rest_u else 0) for i in range(n)]
     else:
-        # Securite : 3 pourcentages valides et positifs (>= 1 % chacun) meme si un reglage
-        # dashboard mal saisi a ete sauvegarde.
-        p1 = max(0.01, min(0.98, pct1))
-        p2 = max(0.01, min(0.98 - p1, pct2))
-        p3 = max(0.0, 1.0 - p1 - p2)
-        units = [int(n_units * p1), int(n_units * p2), int(n_units * p3)]
+        # Securite : des pourcentages valides et positifs meme si un reglage dashboard mal
+        # saisi a ete sauvegarde. A 1 ordre la question ne se pose pas, il prend tout.
+        if n == 1:
+            pcts = [1.0]
+        elif n == 2:
+            p1 = max(0.01, min(0.99, pct1))
+            pcts = [p1, 1.0 - p1]
+        else:
+            p1 = max(0.01, min(0.98, pct1))
+            p2 = max(0.01, min(0.98 - p1, pct2))
+            pcts = [p1, p2, max(0.0, 1.0 - p1 - p2)]
+
+        units = [int(n_units * p) for p in pcts]
         # 1. Chaque ordre doit valoir au moins une unite.
         units = [u if u > 0 else 1 for u in units]
         # 2. Si ce plancher a fait deborder, on REPREND sur le plus gros -- jamais en
@@ -3128,9 +3148,11 @@ def split_zone_lots(total_vol, step, equal, pct1, pct2):
         # 3. Le reliquat d'arrondi va aux PREMIERS ordres (debut > milieu > fin).
         i = 0
         while sum(units) < n_units:
-            units[i % 3] += 1
+            units[i % n] += 1
             i += 1
     return [round(u * step, dec) for u in units]
+
+
 # ==========================================
 # 🪜 COMPTAGE DES CANAUX A ECHELLE (#87/#90)
 # ==========================================
@@ -3648,22 +3670,42 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
                 dist_sl = 100 * pt * (div/10)
                 sl_val = p2 - dist_sl if action == "ACHAT" else p2 + dist_sl
 
+            # --- BORNES RETENUES (#102) ---
+            # Le client choisit au dashboard lesquelles des trois bornes il veut prendre. Les
+            # prix sont toujours calculés tous les trois : c'est la SÉLECTION qui change, pas
+            # la géométrie de la zone. On conserve l'ordre proche -> loin, dont dépend la
+            # priorité d'attribution des lots.
+            bornes_dispo = [("debut", p1), ("milieu", p_mid), ("fin", p2)]
+            bornes = [(nom, prix) for nom, prix in bornes_dispo if nom in SABR_ZONE_BORNES]
+            if not bornes:
+                # Réglage vide ou corrompu : on retombe sur les trois bornes plutôt que de ne
+                # rien poser du tout. Un signal valide ne doit jamais être perdu sur un réglage.
+                logger.warning("⚠️ SABR_ZONE_BORNES vide, repli sur les 3 bornes.")
+                bornes = bornes_dispo
+
             # --- RÉPARTITION : MANUELLE (% réglables au dashboard) OU ÉGALE (toggle) ---
-            # (#85) Découpage centralisé dans split_zone_lots() : la somme des 3 ordres vaut
+            # (#85) Découpage centralisé dans split_zone_lots() : la somme des ordres vaut
             # toujours EXACTEMENT le lot réglé, en mode égal comme en mode manuel. Les unités
             # qui ne tombent pas juste vont aux premiers ordres (début > milieu > fin).
             min_step_zone = s_info.volume_step if s_info.volume_step > 0 else 0.01
-            lot1, lot2, lot3 = split_zone_lots(total_vol, min_step_zone, SABR_ZONE_EQUAL_SPLIT,
-                                               SABR_ZONE_PCT1, SABR_ZONE_PCT2)
+            lots_zone = split_zone_lots(total_vol, min_step_zone, SABR_ZONE_EQUAL_SPLIT,
+                                        SABR_ZONE_PCT1, SABR_ZONE_PCT2, n_ordres=len(bornes))
 
-            # Vérification distance pour le premier ordre (P1)
-            dist_p1_pips = (abs(p1 - curr_price) / pt) / div
-            
-            price_order_1 = None if dist_p1_pips <= 30 else p1
-            
-            if lot1 > 0: trades_to_execute.append((price_order_1, lot1))
-            if lot2 > 0: trades_to_execute.append((p_mid, lot2))
-            if lot3 > 0: trades_to_execute.append((p2, lot3))
+            # (#102) L'entrée au marché porte sur la borne SÉLECTIONNÉE la plus proche du
+            # marché, et non plus sur "début" en dur : si le client ne retient que milieu+fin,
+            # comparer à une borne qu'il n'utilise pas n'aurait aucun sens.
+            for idx_b, (nom_b, prix_b) in enumerate(bornes):
+                lot_b = lots_zone[idx_b] if idx_b < len(lots_zone) else 0.0
+                if lot_b <= 0:
+                    continue
+                if idx_b == 0:
+                    dist_b = (abs(prix_b - curr_price) / pt) / div
+                    trades_to_execute.append((None if dist_b <= 30 else prix_b, lot_b))
+                else:
+                    trades_to_execute.append((prix_b, lot_b))
+
+            logger.info("🪓 Zone SABR : bornes %s -> lots %s"
+                        % ([n for n, _ in bornes], lots_zone))
         
         # === ⚙️ DEBUG SABR (EXÉCUTION) ===
         logger.info(f"\n{'='*50}\n"
@@ -4594,7 +4636,7 @@ async def api_update_planning(data: PlanningUpdate):
 async def api_update_setting(data: SettingUpdate):
     global RISK_PERCENT_GOLD, RISK_PERCENT_INDICES, RISK_PERCENT_OTHER
     global RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE, RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO
-    global FIXED_LOT_SABR_VIP, FIXED_LOT_SABR_FREE, RISK_PERCENT_SABR_OTHER, SABR_ZONE_EQUAL_SPLIT, SABR_ZONE_PCT1, SABR_ZONE_PCT2
+    global FIXED_LOT_SABR_VIP, FIXED_LOT_SABR_FREE, RISK_PERCENT_SABR_OTHER, SABR_ZONE_EQUAL_SPLIT, SABR_ZONE_PCT1, SABR_ZONE_PCT2, SABR_ZONE_BORNES
     global MAX_DAILY_DRAWDOWN, TRAILING_STOP_PIPS, SOFT_SL_PERCENT
     global BE_OFFSET_PIPS, SABR_TRAILING_PIPS, FIXED_LOT_INDODOG, FIXED_LOT_FTS
     global SABR_BE_PARTIEL_ACTIVE, SABR_BE_PARTIEL_PCT
@@ -4615,7 +4657,7 @@ async def api_update_setting(data: SettingUpdate):
     if k in CHANNEL_SETTING_KEYS and not channel_allowed(CHANNEL_SETTING_KEYS[k]):
         return {"status": "error", "message": f"{k} : canal hors de ton pack."}
     if k in ("risk_sabr_other", "sabr_zone_equal_split", "sabr_zone_pct1", "sabr_zone_pct2",
-             "sabr_be_partiel", "sabr_be_partiel_pct") and not (
+             "sabr_be_partiel", "sabr_be_partiel_pct", "sabr_zone_bornes") and not (
         channel_allowed("CANAL SABR_VIP") or channel_allowed("CANAL SABR_FREE") or channel_allowed("CANAL SABR_COPIE")
     ):
         return {"status": "error", "message": f"{k} : SABR hors de ton pack."}
@@ -4632,6 +4674,11 @@ async def api_update_setting(data: SettingUpdate):
     elif k == "sabr_lot_free": FIXED_LOT_SABR_FREE = float(v)
     elif k == "risk_sabr_other": RISK_PERCENT_SABR_OTHER = float(v)
     elif k == "sabr_zone_equal_split": SABR_ZONE_EQUAL_SPLIT = bool(v)
+    elif k == "sabr_zone_bornes":
+        # (#102) Liste filtree et REORDONNEE proche -> loin : l'ordre porte la priorite
+        # d'attribution des lots, il ne doit pas dependre de l'ordre de clic du client.
+        _b = [x for x in ("debut", "milieu", "fin") if x in (v or [])]
+        if _b: SABR_ZONE_BORNES = _b
     elif k == "sabr_be_partiel": SABR_BE_PARTIEL_ACTIVE = bool(v)
     elif k == "sabr_be_partiel_pct": SABR_BE_PARTIEL_PCT = max(0.01, min(1.0, float(v)))
     elif k == "sabr_zone_pct1": SABR_ZONE_PCT1 = max(0.01, min(0.98, float(v)))
@@ -7169,6 +7216,7 @@ async def get_current_state_for_firebase() -> dict:
             "sabr_lot_vip": FIXED_LOT_SABR_VIP, "sabr_lot_free": FIXED_LOT_SABR_FREE,
             "risk_sabr_other": RISK_PERCENT_SABR_OTHER,
             "sabr_zone_equal_split": SABR_ZONE_EQUAL_SPLIT,
+            "sabr_zone_bornes": SABR_ZONE_BORNES,
             "sabr_be_partiel": SABR_BE_PARTIEL_ACTIVE,
             "sabr_be_partiel_pct": SABR_BE_PARTIEL_PCT,
             "sabr_zone_pct1": SABR_ZONE_PCT1, "sabr_zone_pct2": SABR_ZONE_PCT2,

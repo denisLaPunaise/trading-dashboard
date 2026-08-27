@@ -1379,113 +1379,128 @@ const { account, daily_stats, settings, active_trades } = dashboardData
                 );
               })}
 
-              {/* (#pips) Répartition des lots sur la zone SABR : même présentation que les cases
-                  ci-dessus (label + contrôle à droite), mais le contrôle est un toggle Manuel/Égale */}
-              {(isChannelVisible('CANAL SABR_VIP') || isChannelVisible('CANAL SABR_FREE')) && (
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#2a2a2a', padding: '10px', borderRadius: '8px' }}>
-                  <span style={{ fontSize: '0.85rem' }}>Répartition Zone SABR</span>
-                  <div style={{ display: 'flex', background: '#121212', padding: '3px', borderRadius: '7px', border: '1px solid #444' }}>
-                    <button
-                      onClick={() => updateSetting('sabr_zone_equal_split', false, { debounce: false })}
-                      style={{
-                        padding: '5px 10px', borderRadius: '5px', border: 'none', cursor: 'pointer',
-                        fontWeight: 'bold', fontSize: '0.7rem', transition: '0.2s',
-                        background: !settings.sabr_zone_equal_split ? '#333' : 'transparent',
-                        color: !settings.sabr_zone_equal_split ? '#00e676' : '#666',
-                      }}
-                    >
-                      Manuel
-                    </button>
-                    <button
-                      onClick={() => updateSetting('sabr_zone_equal_split', true, { debounce: false })}
-                      style={{
-                        padding: '5px 10px', borderRadius: '5px', border: 'none', cursor: 'pointer',
-                        fontWeight: 'bold', fontSize: '0.7rem', transition: '0.2s',
-                        background: settings.sabr_zone_equal_split ? '#333' : 'transparent',
-                        color: settings.sabr_zone_equal_split ? '#00e676' : '#666',
-                      }}
-                    >
-                      Égale
-                    </button>
-                  </div>
-                </div>
-              )}
+              {/* (#pips/#102) Zone SABR : quelles bornes on prend, et comment le lot s'y
+                  répartit. Les deux réglages vivent dans la même carte parce qu'ils se
+                  commandent l'un l'autre — le nombre de bornes décide du nombre de
+                  pourcentages, et à une seule borne la répartition n'a plus d'objet. */}
+              {(isChannelVisible('CANAL SABR_VIP') || isChannelVisible('CANAL SABR_FREE')) && (() => {
+                const BORNES = [
+                  { id: 'debut',  label: 'Début',  aide: 'proche' },
+                  { id: 'milieu', label: 'Milieu', aide: 'centre' },
+                  { id: 'fin',    label: 'Fin',    aide: 'loin' },
+                ];
+                const actives = settings.sabr_zone_bornes?.length
+                  ? settings.sabr_zone_bornes : ['debut', 'milieu', 'fin'];
+                const bascule = (id) => {
+                  const suivant = actives.includes(id)
+                    ? actives.filter((b) => b !== id)
+                    : BORNES.map((b) => b.id).filter((b) => actives.includes(b) || b === id);
+                  if (!suivant.length) return;   // au moins une borne, sinon plus aucun ordre
+                  updateSetting('sabr_zone_bornes', suivant, { debounce: false });
+                };
+                const n = actives.length;
+                const egal = settings.sabr_zone_equal_split === true;
+                // Pourcentages effectifs, dans l'ordre proche -> loin. Le dernier est toujours
+                // le reliquat : il n'est pas saisissable, il se déduit des autres.
+                const pct1 = settings.sabr_zone_pct1 ?? 0.45;
+                const pct2 = settings.sabr_zone_pct2 ?? 0.35;
+                const parts = egal
+                  ? Array(n).fill(1 / n)
+                  : (n === 1 ? [1]
+                    : n === 2 ? [pct1, Math.max(0, 1 - pct1)]
+                    : [pct1, pct2, Math.max(0, 1 - pct1 - pct2)]);
+                const selectionnees = BORNES.filter((b) => actives.includes(b.id));
 
-              {/* (#93) Mode de mise à BE SABR. Classique = le SL remonte à l'entrée à +100p.
-                  Partiel = le SL ne bouge pas, mais un retour sur l'entrée vend une part du
-                  volume initial. Le champ % n'apparaît que dans ce second mode : il n'a aucun
-                  effet en classique, l'afficher laisserait croire le contraire. */}
-              {(isChannelVisible('CANAL SABR_VIP') || isChannelVisible('CANAL SABR_FREE')) && (
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#2a2a2a', padding: '10px', borderRadius: '8px' }}>
-                  <span style={{ fontSize: '0.85rem' }}>Mise à BE SABR</span>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    {settings.sabr_be_partiel === true && (
-                      <NumField
-                        value={Math.round((settings.sabr_be_partiel_pct ?? 0.5) * 100)}
-                        step="1" min="1" max="100" width="45px"
-                        onCommit={(n) => updateSetting('sabr_be_partiel_pct', n / 100)}
-                      />
-                    )}
-                    <div style={{ display: 'flex', background: '#121212', padding: '3px', borderRadius: '7px', border: '1px solid #444' }}>
-                      <button
-                        onClick={() => updateSetting('sabr_be_partiel', false, { debounce: false })}
-                        style={{
-                          padding: '5px 10px', borderRadius: '5px', border: 'none', cursor: 'pointer',
-                          fontWeight: 'bold', fontSize: '0.7rem', transition: '0.2s',
-                          background: settings.sabr_be_partiel !== true ? '#333' : 'transparent',
-                          color: settings.sabr_be_partiel !== true ? '#00e676' : '#666',
-                        }}
-                      >
-                        Classique
-                      </button>
-                      <button
-                        onClick={() => updateSetting('sabr_be_partiel', true, { debounce: false })}
-                        style={{
-                          padding: '5px 10px', borderRadius: '5px', border: 'none', cursor: 'pointer',
-                          fontWeight: 'bold', fontSize: '0.7rem', transition: '0.2s',
-                          background: settings.sabr_be_partiel === true ? '#333' : 'transparent',
-                          color: settings.sabr_be_partiel === true ? '#00e676' : '#666',
-                        }}
-                      >
-                        Partiel %
-                      </button>
+                return (
+                <div style={{ background: '#2a2a2a', padding: '12px', borderRadius: '8px',
+                              display: 'flex', flexDirection: 'column', gap: '11px' }}>
+
+                  <div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '7px' }}>
+                      <span style={{ fontSize: '0.85rem' }}>Zone SABR</span>
+                      <span style={{ fontSize: '0.7rem', color: '#666' }}>
+                        {n} ordre{n > 1 ? 's' : ''} par signal
+                      </span>
+                    </div>
+                    <div style={{ display: 'flex', gap: '6px' }}>
+                      {BORNES.map((b) => {
+                        const on = actives.includes(b.id);
+                        const seule = on && n === 1;   // on ne décoche jamais la dernière
+                        return (
+                          <button
+                            key={b.id}
+                            onClick={() => bascule(b.id)}
+                            disabled={seule}
+                            title={seule ? 'Il faut garder au moins une borne' : undefined}
+                            style={{
+                              flex: 1, padding: '8px 4px', borderRadius: '7px',
+                              cursor: seule ? 'default' : 'pointer',
+                              border: on ? '1px solid #00e676' : '1px solid #444',
+                              background: on ? 'rgba(0,230,118,0.12)' : '#121212',
+                              color: on ? '#00e676' : '#666', transition: '0.2s',
+                              opacity: seule ? 0.75 : 1,
+                            }}>
+                            <div style={{ fontSize: '0.75rem', fontWeight: 'bold' }}>{b.label}</div>
+                            <div style={{ fontSize: '0.62rem', opacity: 0.7 }}>{b.aide}</div>
+                          </button>
+                        );
+                      })}
                     </div>
                   </div>
-                </div>
-              )}
-            </div>
 
-            {/* Mode Manuel : les 3 ordres tiennent sur la même ligne (cellules flex:1, pas de
-                wrap) -- Ordre 3 reprend le calcul auto du reliquat (1 - Ordre 1 - Ordre 2) */}
-            {(isChannelVisible('CANAL SABR_VIP') || isChannelVisible('CANAL SABR_FREE')) && !settings.sabr_zone_equal_split && (() => {
-              const pct1 = settings.sabr_zone_pct1 ?? 0.45;
-              const pct2 = settings.sabr_zone_pct2 ?? 0.35;
-              const pct3 = Math.max(0, 1 - pct1 - pct2);
-              return (
-                <div style={{ display: 'flex', gap: '8px', marginTop: '15px' }}>
-                  <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', background: '#2a2a2a', padding: '8px 4px', borderRadius: '8px' }}>
-                    <span style={{ fontSize: '0.7rem', color: '#888' }}>O1</span>
-                    <NumField
-                      value={Math.round(pct1 * 100)} step="1" min="1" max="98" width="40px"
-                      onCommit={(n) => updateSetting('sabr_zone_pct1', n / 100)}
-                    />
-                    <span style={{ fontSize: '0.7rem', color: '#666' }}>%</span>
-                  </div>
-                  <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', background: '#2a2a2a', padding: '8px 4px', borderRadius: '8px' }}>
-                    <span style={{ fontSize: '0.7rem', color: '#888' }}>O2</span>
-                    <NumField
-                      value={Math.round(pct2 * 100)} step="1" min="1" max="98" width="40px"
-                      onCommit={(n) => updateSetting('sabr_zone_pct2', n / 100)}
-                    />
-                    <span style={{ fontSize: '0.7rem', color: '#666' }}>%</span>
-                  </div>
-                  <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', background: '#2a2a2a', padding: '8px 4px', borderRadius: '8px' }}>
-                    <span style={{ fontSize: '0.7rem', color: '#888' }}>O3</span>
-                    <span style={{ fontSize: '0.8rem', fontWeight: 'bold', color: '#00e676' }}>{Math.round(pct3 * 100)}%</span>
-                  </div>
+                  {n > 1 && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px' }}>
+                      <span style={{ fontSize: '0.8rem', color: '#aaa' }}>Répartition du lot</span>
+                      <div style={{ display: 'flex', background: '#121212', padding: '3px', borderRadius: '7px', border: '1px solid #444' }}>
+                        {[{ v: false, t: 'Manuel' }, { v: true, t: 'Égale' }].map((m) => (
+                          <button
+                            key={m.t}
+                            onClick={() => updateSetting('sabr_zone_equal_split', m.v, { debounce: false })}
+                            style={{
+                              padding: '5px 10px', borderRadius: '5px', border: 'none', cursor: 'pointer',
+                              fontWeight: 'bold', fontSize: '0.7rem', transition: '0.2s',
+                              background: egal === m.v ? '#333' : 'transparent',
+                              color: egal === m.v ? '#00e676' : '#666',
+                            }}>
+                            {m.t}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Une cellule par borne retenue, dans l'ordre proche -> loin. En mode Égale
+                      les valeurs restent affichées mais non saisissables : elles se déduisent. */}
+                  {n > 1 && (
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      {selectionnees.map((b, i) => {
+                        const dernier = i === selectionnees.length - 1;
+                        const valeur = Math.round((parts[i] ?? 0) * 100);
+                        const saisissable = !egal && !dernier;
+                        return (
+                          <div key={b.id} style={{ flex: 1, background: '#1e1e1e', padding: '8px 4px',
+                                                   borderRadius: '8px', textAlign: 'center' }}>
+                            <div style={{ fontSize: '0.65rem', color: '#888', marginBottom: '3px' }}>{b.label}</div>
+                            {saisissable ? (
+                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '3px' }}>
+                                <NumField
+                                  value={valeur} step="1" min="1" max="98" width="40px"
+                                  onCommit={(x) => updateSetting(i === 0 ? 'sabr_zone_pct1' : 'sabr_zone_pct2', x / 100)}
+                                />
+                                <span style={{ fontSize: '0.7rem', color: '#666' }}>%</span>
+                              </div>
+                            ) : (
+                              <div style={{ fontSize: '0.85rem', fontWeight: 'bold', color: '#00e676' }}>{valeur}%</div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
-              );
-            })()}
+                );
+              })()}
+            </div>
           </div>
 
           {/* BLOC B : GESTION DU RISQUE (H) & JOURS
