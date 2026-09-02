@@ -307,6 +307,18 @@ INDO_MARKET_LOOKBACK_MIN = 5
 #   - l'ordre dort depuis plus de INDO_ORDER_EXPIRY_H heures : le signal n'est plus frais.
 INDO_APPROACH_PIPS = 30.0
 INDO_ORDER_EXPIRY_H = 24.0
+# (#103) Repli INDODOG quand le signal n'annonce ni SL ni TP, ou que le format a change et
+# qu'on n'a rien su lire. Sans ces valeurs, la position partait SANS protection : le canal a
+# deja cesse de numeroter ses TP une fois (V15.7.0), il recommencera.
+#   - SL a 100 pips : une position sans stop est le seul risque reellement inacceptable.
+#   - echelle de TP a 50/100/150/200 pips, pour que les partiels aient quand meme lieu.
+#   - mise a BE des 30 pips, AVANT le premier palier : sur un signal qu'on n'a pas compris,
+#     on securise plus tot que d'habitude.
+INDO_SL_DEFAUT_PIPS = 100
+INDO_TP_DEFAUT_PALIERS = [50, 100, 150, 200]
+INDO_BE_DEFAUT_PIPS = 30
+# Marqueur pose sur le signal quand ce repli a servi -- il declenche le BE anticipe ci-dessus.
+TAG_SIGNAL_DEFAUT = "SIGNAL_DEFAUT"
 # (#90) FTS : lot fixe et echelle UNIFORME -- 20 % de la position initiale a chaque palier,
 # reliquat ferme au dernier TP. Les regles d'entree au marche et de peremption des ordres en
 # attente sont partagees avec INDODOG (constantes INDO_* ci-dessus).
@@ -3537,6 +3549,7 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
     # 3. Préparation des Lots et Prix (SABR vs CLASSIC)
     trades_to_execute = [] # Liste de tuples (TargetPrice, FixedLot) -> Si TargetPrice est None = Market
     
+    signal_defaut = False   # (#103) vrai si le repli SL/TP INDODOG a servi
     if is_ladder_channel(channel_source):
         # (#84/#90) Canaux a echelle de TP : lot fixe. INDODOG peut donner une ZONE, traitee
         # comme SABR (trois ordres etages) ; FTS donne toujours un prix unique, la branche zone
@@ -3546,6 +3559,40 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
         _nom_canal = channel_source.replace("CANAL ", "")
         total_vol = round(ladder_fixed_lot(channel_source) * custom_lot_modifier, 2)
         if total_vol < 0.01: total_vol = 0.01
+
+        # (#103) Repli INDODOG : SL et echelle de TP par defaut quand le signal n'en donne pas.
+        # Le prix de reference est la borne PROCHE d'une zone, sinon le prix annonce, sinon le
+        # marche -- jamais le milieu d'une zone, qui donnerait un SL trop court d'un cote.
+        if "INDODOG" in channel_source:
+            _ref = curr_price
+            if price_signal:
+                try:
+                    _ref = float(str(price_signal).split("|")[0].replace(",", "."))
+                except Exception:
+                    _ref = curr_price
+            if sl_val == 0.0:
+                _d_sl = INDO_SL_DEFAUT_PIPS * pt * div
+                sl_val = _ref - _d_sl if action == "ACHAT" else _ref + _d_sl
+                sl_val = round(sl_val / s_info.point) * s_info.point
+                logger.warning("🛑 INDODOG sans SL : repli a %d pips -> %s"
+                               % (INDO_SL_DEFAUT_PIPS, sl_val))
+                await send_channel_alert(
+                    "⚠️ **INDODOG : SL ABSENT DU SIGNAL**" + chr(10) + chr(10) +
+                    ("Stop posé par défaut à %d pips (%s)." % (INDO_SL_DEFAUT_PIPS, sl_val)),
+                    channel_source)
+            if not tp_ladder:
+                tp_ladder = []
+                for _p in INDO_TP_DEFAUT_PALIERS:
+                    _v = _ref + _p * pt * div if action == "ACHAT" else _ref - _p * pt * div
+                    tp_ladder.append(round(_v / s_info.point) * s_info.point)
+                signal_defaut = True
+                logger.warning("🎯 INDODOG sans TP : echelle par defaut %s pips -> %s"
+                               % (INDO_TP_DEFAUT_PALIERS, tp_ladder))
+                await send_channel_alert(
+                    "⚠️ **INDODOG : AUCUN TP DANS LE SIGNAL**" + chr(10) + chr(10) +
+                    ("Échelle par défaut : %s pips." % ", ".join(str(x) for x in INDO_TP_DEFAUT_PALIERS)) + chr(10) +
+                    ("Mise à BE anticipée dès +%d pips." % INDO_BE_DEFAUT_PIPS),
+                    channel_source)
 
         if price_signal and "|" in str(price_signal):
             parts_i = str(price_signal).split("|")
@@ -3926,9 +3973,12 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
         # (#87) Une seule ligne de comptage pour tout le signal. La cle est construite comme
         # dans monitor_positions, sinon les paliers se noteraient sur une autre ligne.
         if tickets_opened:
-            ladder_stats_open(channel_source,
-                              ACTIVE_TRADE_SIGNALS.get(tickets_opened[0]) or ("_tk%d" % tickets_opened[0]),
-                              symbol, len(tp_ladder))
+            _sig = ACTIVE_TRADE_SIGNALS.get(tickets_opened[0]) or ("_tk%d" % tickets_opened[0])
+            ladder_stats_open(channel_source, _sig, symbol, len(tp_ladder))
+            # (#103) Le marqueur voyage dans INDO_LEVELS_BY_SIGNAL, deja indexe par signal et
+            # deja persiste : pas de nouvel etat a sauvegarder ni a recharger.
+            if signal_defaut:
+                INDO_LEVELS_BY_SIGNAL.setdefault(_sig, set()).add(TAG_SIGNAL_DEFAUT)
             await run_bg(save_ladder_stats, channel_source)
         await run_bg(save_memory)
 
@@ -5601,6 +5651,31 @@ async def monitor_positions():
                     base_vol = INDO_BASE_VOL_BY_SIGNAL.get(sig_key)
                     if base_vol is None:
                         base_vol = round(sum(p.volume for p in positions), 2)
+
+                    # (#103) BE anticipé sur un signal dont on n'a pas su lire les TP : le
+                    # premier palier de repli est à 50 pips, on sécurise dès 30. Ne s'applique
+                    # QU'AUX signaux marqués, jamais aux signaux normaux -- eux gardent leur
+                    # mise à BE au TP1, comme le canal le recommande.
+                    if TAG_SIGNAL_DEFAUT in done and "INDO_BE" not in done:
+                        pips_ref = (((curr_i - ref.price_open) / pt_i) / div_i if is_buy_i
+                                    else ((ref.price_open - curr_i) / pt_i) / div_i)
+                        if pips_ref >= INDO_BE_DEFAUT_PIPS:
+                            for p in positions:
+                                be_d = compute_be_price(p.price_open, is_buy_i, sym_i)
+                                besoin = (is_buy_i and p.sl < be_d) or \
+                                         ((not is_buy_i) and (p.sl > be_d or p.sl == 0))
+                                if besoin:
+                                    await run_mt5(_send_order_blocking,
+                                                  {"action": mt5.TRADE_ACTION_SLTP, "symbol": sym_i,
+                                                   "position": p.ticket,
+                                                   "sl": round(be_d / pt_i) * pt_i, "tp": p.tp})
+                            done.add("INDO_BE")
+                            await run_bg(save_memory)
+                            await send_channel_alert(
+                                ("🛡 **%s : SL AU BE** (+%d pips)" % (nom_ladder, INDO_BE_DEFAUT_PIPS))
+                                + chr(10) + chr(10) +
+                                ("Symbole: %s" % sym_i) + chr(10) +
+                                "_Signal sans TP : sécurisation anticipée._", src_ladder)
 
                     for idx, tp_price in enumerate(ladder[:-1], start=1):
                         tag = "INDO_TP%d" % idx
