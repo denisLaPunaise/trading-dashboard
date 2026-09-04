@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-# V15.12.0 — Bornes de zone SABR + commentaires MT5 + TP par defaut MDT
+# V15.13.0 — Edition de message limitee a son canal + SL auto au risque regle
 # V15.3.0 — Decalage du BE, SL suiveur SABR, historique des trades, theme force sombre
 # V15.2.3 — Zone SABR : prix abrege de 3 chiffres mal reconstruit
 # V15.2.2 — MDT FREE lu comme MDT VIP : le canal d'origine fait foi
@@ -45,7 +45,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='Kairos_V15.12.0',
+    name='Kairos_V15.13.0',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

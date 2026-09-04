@@ -38,11 +38,12 @@ chaque partie : un suffixe (`-beta`, `_test`…) lève une `ValueError` avalée 
 ### Endroits à mettre à jour à chaque bump
 
 1. `backend/bot_release13.py` → `VERSION_BOT`
-2. `Security Licence Check/admin_license_bot_V3.py` → `EXE_FILENAME`
-   (⚠️ implique de recopier ce fichier sur le VPS, cf. workflow manuel)
-3. `backend/Kairos_V<version>.spec` → nom du fichier + champ `name=`
-4. `Security Licence Check/INSTALLATION.txt` et `GUIDE_ADMIN.md`
-5. Le binaire compilé dans `Security Licence Check/`
+2. `backend/Kairos_V<version>.spec` → nom du fichier + champ `name=`
+3. `Security Licence Check/INSTALLATION.txt` et `GUIDE_ADMIN.md`
+4. Le binaire compilé dans `Security Licence Check/`
+
+Le bot de licence, lui, n'a **rien** à changer : `find_bot_exe()` détecte l'exe le plus récent
+du dossier (`EXE_PATTERN`, issue #66). Déposer le binaire suffit, aucune recopie sur le VPS.
 
 ### Historique
 
@@ -218,6 +219,42 @@ chaque partie : un suffixe (`-beta`, `_test`…) lève une `ValueError` avalée 
     porte désormais sur la borne *sélectionnée* la plus proche, sinon ne retenir que milieu+fin
     aurait déclenché un marché calculé sur une borne inutilisée. Un réglage vide retombe sur les
     trois bornes : un signal valide ne doit jamais être perdu sur un réglage.
+- **V15.13.0** — quatre points, tous nés de l'analyse des logs du 1<sup>er</sup> au 3 septembre.
+  - **Une édition de message ne touche plus que son propre canal.** `edit_handler` a une branche
+    « orphelins » pour les trades dont le message n'est plus en mémoire (`TELEGRAM_TO_TICKET` ne
+    vit qu'en RAM, un redémarrage la vide). Elle ramassait **toutes** les positions et tous les
+    ordres du bot sur le symbole — tous partagent `MAGIC_NUMBER` — et leur réécrivait SL et TP.
+    Éditer un vieux message MDT sur XAUUSD réécrivait donc les positions SABR, INDODOG et FTS
+    ouvertes sur l'or. Constaté sur une position SABR : SL et TP modifiés « alors que SABR n'a
+    rien dit », remis à la main, puis le TP modifié de nouveau le lendemain. L'appariement se
+    fait maintenant sur `_channel_base_token()` (SABR VIP ↔ SABR VIP), vérifié sur 11 couples.
+    Deux corollaires : la modification est **journalisée** (elle n'existait qu'en alerte Telegram,
+    l'enquête partait donc de rien), et le nettoyage de `TELEGRAM_TO_TICKET` à la clôture
+    comparait une **liste** de tickets à un ticket — toujours faux, il n'avait jamais lieu.
+  - **Le SL automatique respecte le risque réglé du canal.** Quand un signal n'a pas de SL, le
+    bot en pose un à une distance calculée pour perdre X % du solde. X était figé à **0,5 %**,
+    sans rapport avec le risque du canal. Un signal MDT FREE prenait donc son lot sur 0,10 %
+    puis son stop sur 0,5 % : **cinq fois** le risque demandé, en silence. Vu sur le ticket
+    532870669 — stop à 502 pips, −511 €, quand toutes les autres pertes du mois tenaient sous
+    90 €. 0,5 % ne sert plus que de secours si le lot est fixe et qu'aucun pourcentage n'existe.
+  - **Signal ambigu ignoré.** Le rattrapage « le message parle de l'or » devine le symbole quand
+    l'expression a attrapé un mot de liaison (`SUR`, `LIMIT`) : utile, mais il a transformé du
+    commentaire en ordre au marché. « J'ai déjà mon prix d'**achat** […] 🔴 **SELL** EN ATTENTE »
+    a donné un ACHAT XAUUSD sans SL ni TP. Puisqu'on en est réduit à deviner, on exige que le
+    sens soit net : deux directions dans le texte = refus + alerte. Mesuré sur les **278 signaux
+    MDT** ayant réellement ouvert un trade en six semaines — un seul bloqué, précisément
+    celui-là.
+  - **Stats à échelle : « en cours » ne gonfle plus.** Un signal dont les ordres sont annulés
+    sans jamais se déclencher ne passe par aucune clôture de position : sa ligne restait
+    `issue: None`, donc comptée « en cours » à vie — **19 signaux sur 72** chez le client alors
+    que plus rien n'était ouvert. Les deux chemins d'annulation notent désormais `ANNULE`, et un
+    rattrapage au démarrage répare les lignes déjà bloquées (aucun palier atteint = jamais
+    déclenché → `ANNULE` ; un palier atteint prouve qu'une position a existé → `AUTRE`).
+    `/stats_indodog` et `/stats_fts` nomment les issues en clair et expliquent le cumul.
+    Au passage : l'italique Telegram s'écrit `__texte__` chez Telethon — avec un seul souligné
+    les caractères s'affichaient tels quels (« \_Échelle actuelle : …\_ »).
+  - Le repli SL/TP par défaut, introduit pour INDODOG en V15.12.0, couvre aussi **FTS** : même
+    exposition, et rien dans ce filet ne dépend d'une particularité de canal.
 - **V15.3.0** — décalage du SL à la mise à BE (`BE_OFFSET_PIPS`, signé : positif = SL dans le
   gain), SL suiveur propre à SABR (interrupteur + distance ; `SABR_TRAILING_ACTIVE` existait
   dans les configs distribuées mais n'était lu nulle part), et section « Historique Trades »

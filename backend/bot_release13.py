@@ -158,7 +158,7 @@ SECURITY_PIN = str(secrets.randbelow(900000) + 100000)
 # ==========================================
 # 🔐 CONFIGURATION DISTRIBUTION (LICENCE)
 # ==========================================
-VERSION_BOT = "15.12.0"
+VERSION_BOT = "15.13.0"
 # (URL_LICENCE retire — licence verifiee via Firestore, Phase 4)
 
 # ==========================================
@@ -3248,6 +3248,26 @@ def load_ladder_stats():
             logger.error(f"⚠️ Lecture {chemin} : {e}")
             LADDER_STATS[cle] = {}
 
+    # (#104) Rattrapage des signaux restes "en cours" alors que plus rien ne les porte. Deux
+    # causes : l'annulation d'un ordre jamais declenche ne notait aucune issue (corrige a la
+    # source), et une cloture survenue bot eteint n'est vue par personne. Appele APRES
+    # load_channel_data(), donc ACTIVE_TRADE_SIGNALS reflete ce qui vit encore.
+    # Depart : aucun palier atteint = le signal n'a jamais rien ouvert -> ANNULE. Un palier
+    # atteint prouve qu'une position a existe, mais on ne sait plus comment elle est sortie.
+    vivants = set(ACTIVE_TRADE_SIGNALS.values())
+    for cle in LADDER_STATS_FILES:
+        repares = 0
+        for sig_key, s in LADDER_STATS.get(cle, {}).items():
+            if not isinstance(s, dict) or s.get("issue") or sig_key in vivants:
+                continue
+            s["issue"] = "ANNULE" if int(s.get("tp_atteint") or 0) == 0 else "AUTRE"
+            s["ferme"] = s.get("ferme") or datetime.now().strftime("%Y-%m-%d %H:%M")
+            repares += 1
+        if repares:
+            logger.warning("🪜 %s : %d signaux sans issue rattrapes (plus aucun ordre ni "
+                           "position ne les porte)" % (cle.replace("CANAL ", ""), repares))
+            save_ladder_stats(cle)
+
 
 def ladder_stats_open(src, sig_key, symbol, nb_tp):
     """Nouveau signal. Idempotent : les 3 ordres d'une zone partagent le meme signal_id."""
@@ -3284,6 +3304,26 @@ def ladder_stats_close(src, sig_key, issue):
     # par la boucle des paliers : sans ca, un signal alle au bout resterait compte a nb_tp - 1.
     if issue == "TP_FINAL":
         s["tp_atteint"] = int(s.get("nb_tp") or s.get("tp_atteint") or 0)
+
+
+async def _ladder_close_si_plus_rien(src, sig_key):
+    """(#104) Note un signal a echelle comme ANNULE si plus AUCUN ordre ni position ne le porte.
+
+    Un signal dont les trois ordres expirent sans jamais se declencher ne passe jamais par
+    check_closed_positions() -- il n'y a pas de position a fermer. Sa ligne restait donc a
+    `issue: None`, c'est-a-dire comptee "en cours" indefiniment : 19 des 72 signaux INDODOG
+    etaient dans ce cas alors que plus rien n'etait ouvert.
+
+    ladder_stats_close() ecrit la premiere issue et ignore les suivantes : appeler ceci apres
+    l'annulation d'un ordre alors qu'une position du meme signal vit encore (cas normal au TP1)
+    n'ecrase donc jamais le vrai resultat -- et le garde-fou ci-dessous l'evite deja.
+    """
+    if not _ladder_key(src) or not sig_key:
+        return
+    if any(sg == sig_key for sg in ACTIVE_TRADE_SIGNALS.values()):
+        return          # il reste un ordre en attente ou une position sur ce signal
+    ladder_stats_close(src, sig_key, "ANNULE")
+    await run_bg(save_ladder_stats, src)
 
 
 def _price_touched_recently_blocking(symbol, target, minutes):
@@ -3560,39 +3600,40 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
         total_vol = round(ladder_fixed_lot(channel_source) * custom_lot_modifier, 2)
         if total_vol < 0.01: total_vol = 0.01
 
-        # (#103) Repli INDODOG : SL et echelle de TP par defaut quand le signal n'en donne pas.
+        # (#103) Repli des canaux a echelle : SL et echelle de TP par defaut quand le signal
+        # n'en donne pas. INDODOG et FTS ont la meme exposition -- un signal illisible partait
+        # sans stop, ou avec un TP a 0 -- et le repli ne depend d'aucune particularite de canal.
         # Le prix de reference est la borne PROCHE d'une zone, sinon le prix annonce, sinon le
         # marche -- jamais le milieu d'une zone, qui donnerait un SL trop court d'un cote.
-        if "INDODOG" in channel_source:
-            _ref = curr_price
-            if price_signal:
-                try:
-                    _ref = float(str(price_signal).split("|")[0].replace(",", "."))
-                except Exception:
-                    _ref = curr_price
-            if sl_val == 0.0:
-                _d_sl = INDO_SL_DEFAUT_PIPS * pt * div
-                sl_val = _ref - _d_sl if action == "ACHAT" else _ref + _d_sl
-                sl_val = round(sl_val / s_info.point) * s_info.point
-                logger.warning("🛑 INDODOG sans SL : repli a %d pips -> %s"
-                               % (INDO_SL_DEFAUT_PIPS, sl_val))
-                await send_channel_alert(
-                    "⚠️ **INDODOG : SL ABSENT DU SIGNAL**" + chr(10) + chr(10) +
-                    ("Stop posé par défaut à %d pips (%s)." % (INDO_SL_DEFAUT_PIPS, sl_val)),
-                    channel_source)
-            if not tp_ladder:
-                tp_ladder = []
-                for _p in INDO_TP_DEFAUT_PALIERS:
-                    _v = _ref + _p * pt * div if action == "ACHAT" else _ref - _p * pt * div
-                    tp_ladder.append(round(_v / s_info.point) * s_info.point)
-                signal_defaut = True
-                logger.warning("🎯 INDODOG sans TP : echelle par defaut %s pips -> %s"
-                               % (INDO_TP_DEFAUT_PALIERS, tp_ladder))
-                await send_channel_alert(
-                    "⚠️ **INDODOG : AUCUN TP DANS LE SIGNAL**" + chr(10) + chr(10) +
-                    ("Échelle par défaut : %s pips." % ", ".join(str(x) for x in INDO_TP_DEFAUT_PALIERS)) + chr(10) +
-                    ("Mise à BE anticipée dès +%d pips." % INDO_BE_DEFAUT_PIPS),
-                    channel_source)
+        _ref = curr_price
+        if price_signal:
+            try:
+                _ref = float(str(price_signal).split("|")[0].replace(",", "."))
+            except Exception:
+                _ref = curr_price
+        if sl_val == 0.0:
+            _d_sl = INDO_SL_DEFAUT_PIPS * pt * div
+            sl_val = _ref - _d_sl if action == "ACHAT" else _ref + _d_sl
+            sl_val = round(sl_val / s_info.point) * s_info.point
+            logger.warning("🛑 %s sans SL : repli a %d pips -> %s"
+                           % (_nom_canal, INDO_SL_DEFAUT_PIPS, sl_val))
+            await send_channel_alert(
+                ("⚠️ **%s : SL ABSENT DU SIGNAL**" % _nom_canal) + chr(10) + chr(10) +
+                ("Stop posé par défaut à %d pips (%s)." % (INDO_SL_DEFAUT_PIPS, sl_val)),
+                channel_source)
+        if not tp_ladder:
+            tp_ladder = []
+            for _p in INDO_TP_DEFAUT_PALIERS:
+                _v = _ref + _p * pt * div if action == "ACHAT" else _ref - _p * pt * div
+                tp_ladder.append(round(_v / s_info.point) * s_info.point)
+            signal_defaut = True
+            logger.warning("🎯 %s sans TP : echelle par defaut %s pips -> %s"
+                           % (_nom_canal, INDO_TP_DEFAUT_PALIERS, tp_ladder))
+            await send_channel_alert(
+                ("⚠️ **%s : AUCUN TP DANS LE SIGNAL**" % _nom_canal) + chr(10) + chr(10) +
+                ("Échelle par défaut : %s pips." % ", ".join(str(x) for x in INDO_TP_DEFAUT_PALIERS)) + chr(10) +
+                ("Mise à BE anticipée dès +%d pips." % INDO_BE_DEFAUT_PIPS),
+                channel_source)
 
         if price_signal and "|" in str(price_signal):
             parts_i = str(price_signal).split("|")
@@ -3848,14 +3889,25 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
                     "="*50 + "\n")
 
         # Calcul SL Auto Classique (Risk Based) pour les autres canaux
+        #
+        # (#104) Le pourcentage était figé à 0,5 % du solde, sans aucun rapport avec le risque
+        # réglé pour le canal. Un signal MDT FREE sans SL prenait donc son lot sur 0,10 % puis
+        # posait son stop à 0,5 % : cinq fois le risque demandé, en silence. Vu le 2026-09-01
+        # sur le ticket 532870669 -- stop à 502 pips, -511 € quand toutes les autres pertes du
+        # mois tenaient sous 90 €. On reprend le risque réellement appliqué à ce trade ; 0,5 %
+        # ne sert plus que de secours quand le lot est fixe et qu'aucun pourcentage n'existe.
         if final_sl == 0.0 and lot > 0 and "SABR" not in channel_source:
              try:
-                 risk_eur = mt5.account_info().balance * 0.005
+                 pct_sl = applied_risk_pct if applied_risk_pct > 0 else 0.005
+                 risk_eur = mt5.account_info().balance * pct_sl
                  val_pt = s_info.trade_tick_value * lot
                  if val_pt > 0:
                      dist = (risk_eur / val_pt) * s_info.trade_tick_size
                      final_sl = final_px - dist if action == "ACHAT" else final_px + dist
                      final_sl = round(final_sl / s_info.point) * s_info.point
+                     logger.warning("🛑 %s sans SL : stop auto a %.0f pips (%.2f %% du solde) -> %s"
+                                    % (channel_source, abs(final_px - final_sl) / (pt * div),
+                                       pct_sl * 100, final_sl))
              except: pass
 
         try: final_tp = float(tp)
@@ -4171,9 +4223,20 @@ async def check_closed_positions():
 
             daily_stats["pips_close_history"].append(pips)
             
-            # --- NETTOYAGE (LE CORRECTIF EST ICI) ---
+            # --- NETTOYAGE ---
+            # (#104) `tid` est la LISTE des tickets ouverts par ce message (une entrée en zone
+            # en pose trois), `t` un ticket. Le `tid == t` d'origine comparait une liste à un
+            # entier : toujours faux, donc le nettoyage n'avait jamais lieu. On retire le
+            # ticket fermé, et on ne jette l'entrée qu'une fois le dernier parti -- sinon une
+            # édition du message ne toucherait plus les ordres encore vivants de la zone.
             for mid, tid in list(TELEGRAM_TO_TICKET.items()):
-                if tid == t: del TELEGRAM_TO_TICKET[mid]; break
+                if not isinstance(tid, list):
+                    if tid == t: del TELEGRAM_TO_TICKET[mid]
+                    continue
+                if t in tid:
+                    tid.remove(t)
+                    if not tid: del TELEGRAM_TO_TICKET[mid]
+                    break
             if t in MANAGED_MANUAL_TICKETS: MANAGED_MANUAL_TICKETS.remove(t)
             
             # On supprime la mémoire des TP validés pour ce trade fini
@@ -4832,9 +4895,16 @@ async def cancel_pending_of_signal(sig_key):
                                  "magic": MAGIC_NUMBER})
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 annules += 1
+                _src_o = ACTIVE_TRADE_SOURCES.get(o.ticket)
                 ACTIVE_TRADE_SIGNALS.pop(o.ticket, None)
                 ACTIVE_TRADE_SOURCES.pop(o.ticket, None)
                 logger.warning("🗑 Ordre %s annule (zone INDODOG terminee)" % o.ticket)
+                # (#104) Filet : si TOUS les ordres du signal finissent annules sans qu'aucune
+                # position ne s'ouvre, plus rien ne passera par check_closed_positions() et le
+                # signal resterait "en cours" a vie. ladder_stats_close() ne fait rien si une
+                # issue est deja notee, donc ce cas normal (un ordre annule alors qu'un autre
+                # est deja en position) n'ecrase jamais le vrai resultat.
+                await _ladder_close_si_plus_rien(_src_o, sig_key)
     except Exception as e:
         logger.warning("cancel_pending_of_signal : %s" % e)
     return annules
@@ -4915,6 +4985,7 @@ async def cancel_indo_stale_orders():
         # Le canal doit etre lu AVANT le nettoyage : send_channel_alert() s'en sert pour
         # router l'alerte et respecter le mute, et les .pop() ci-dessous l'effacent.
         src_o = ACTIVE_TRADE_SOURCES.get(o.ticket, "CANAL INDODOG")
+        sig_o = ACTIVE_TRADE_SIGNALS.get(o.ticket)
         res = await run_mt5(_send_order_blocking,
                             {"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket,
                              "magic": MAGIC_NUMBER})
@@ -4930,6 +5001,9 @@ async def cancel_indo_stale_orders():
                 ("%s @ %s" % (o.symbol, o.price_open)) + chr(10) +
                 ("Motif : %s" % motif) + chr(10) + chr(10) +
                 "Le signal n'est plus valide.", src_o)
+            # (#104) Voir _ladder_close_si_plus_rien : sans ca, un signal dont tous les ordres
+            # sont annules sans jamais se declencher reste compte "en cours" pour toujours.
+            await _ladder_close_si_plus_rien(src_o, sig_o)
             await run_bg(save_channel_data)
         else:
             logger.warning("🗑 %s : annulation refusee sur %s (%s)"
@@ -5563,9 +5637,11 @@ async def monitor_positions():
                                 if ok_be:
                                     TRADES_PROCESSED_LEVELS[p.ticket].add("SABR_BE_PARTIEL_FAIT")
                                     await run_bg(save_memory)
-                                    _suite = (f"_Le SL d'origine est conservé sur les "
-                                              f"{reste_be:.2f} lot(s) restants._" if reste_be > 0
-                                              else "_Position soldée._")
+                                    # (#104) Italique Telethon = __texte__. Un seul souligné
+                                    # n'est pas reconnu et s'affiche tel quel chez le client.
+                                    _suite = (f"__Le SL d'origine est conservé sur les "
+                                              f"{reste_be:.2f} lot(s) restants.__" if reste_be > 0
+                                              else "__Position soldée.__")
                                     await send_channel_alert(
                                         f"🩹 **SABR : RETOUR SUR L'ENTRÉE**\n\n"
                                         f"Symbole: {sym}\nTicket: {p.ticket}\n"
@@ -5675,7 +5751,7 @@ async def monitor_positions():
                                 ("🛡 **%s : SL AU BE** (+%d pips)" % (nom_ladder, INDO_BE_DEFAUT_PIPS))
                                 + chr(10) + chr(10) +
                                 ("Symbole: %s" % sym_i) + chr(10) +
-                                "_Signal sans TP : sécurisation anticipée._", src_ladder)
+                                "__Signal sans TP : sécurisation anticipée.__", src_ladder)
 
                     for idx, tp_price in enumerate(ladder[:-1], start=1):
                         tag = "INDO_TP%d" % idx
@@ -6035,7 +6111,7 @@ async def admin_commands(event):
                               f"Si le prix revient sur l'entrée, on vend "
                               f"**{int(SABR_BE_PARTIEL_PCT * 100)} %** de ce qui est **encore "
                               f"ouvert** à ce moment-là.\n\n"
-                              f"_Changer la part : `/be_partiel 50` · 100 % = tout fermer_")
+                              f"__Changer la part : `/be_partiel 50` · 100 % = tout fermer__")
         else:
             await event.reply("☄️ **BE SABR : CLASSIQUE**\n\n"
                               "À +100 pips le SL remonte au prix d'entrée (comportement "
@@ -6069,17 +6145,31 @@ async def admin_commands(event):
         lignes = []
         for cle, n in r["paliers_atteints"].items():
             lignes.append(f"  TP{int(cle[2:])} : **{n}**/{total}  ({100.0 * n / total:.0f} %)")
-        paliers_txt = "\n".join(lignes) if lignes else "  _aucun palier atteint_"
-        issues_txt = "\n".join(f"  {k} : **{v}**" for k, v in r["issues"].items()) or "  _aucun signal terminé_"
+        paliers_txt = "\n".join(lignes) if lignes else "  __aucun palier atteint__"
+        # Libelles parlants : "TP_FINAL" ou "SL" ne disent rien a la lecture.
+        _NOMS_ISSUE = {
+            "TP_FINAL":   "🏆 Dernier TP atteint",
+            "SL":         "💥 Stop Loss",
+            "BE":         "🛡 Breakeven",
+            "SL_SUIVEUR": "💰 SL suiveur (en gain)",
+            "ANNULE":     "🗑 Jamais déclenché (ordre annulé)",
+            "AUTRE":      "❔ Autre (clôture manuelle…)",
+        }
+        issues_txt = "\n".join(f"  {_NOMS_ISSUE.get(k, k)} : **{v}**"
+                               for k, v in r["issues"].items()) or "  __aucun signal terminé__"
         _p1, _pn = ladder_pcts(_src)
         echelle = (f"{int(_p1 * 100)} % à chaque TP" if _p1 == _pn
                    else f"{int(_p1 * 100)} % au TP1, {int(_pn * 100)} % ensuite")
+        # (#104) L'italique Telethon s'ecrit __texte__ ; avec un seul souligne les caracteres
+        # s'affichaient tels quels ("_Echelle actuelle : ..._").
         await event.reply(
             f"🪜 **STATS {_nom}**\n\n"
-            f"Signaux : **{total}** ({r['termines']} terminés, {r['en_cours']} en cours)\n\n"
-            f"**Paliers atteints** (cumulatif)\n{paliers_txt}\n\n"
-            f"**Issues**\n{issues_txt}\n\n"
-            f"_Échelle actuelle : {echelle}._")
+            f"Signaux : **{total}** ({r['termines']} terminés, {r['en_cours']} en cours)\n"
+            f"__« en cours » = position encore ouverte à cet instant.__\n\n"
+            f"**Paliers atteints** (cumulatif — un signal allé au TP3 compte aussi en TP1 et TP2,\n"
+            f"donc la colonne se lit comme un taux de survie)\n{paliers_txt}\n\n"
+            f"**Comment ils se terminent**\n{issues_txt}\n\n"
+            f"__Échelle actuelle : {echelle}.__")
 
     # (#91) Remise a zero des stats par canal du dashboard. NON DESTRUCTIF : on pose une date
     # de coupure, trades_detailed.csv n'est jamais touche -- il sert aussi a l'historique des
@@ -6922,6 +7012,35 @@ async def main_handler(event):
             # sait quoi trader malgré tout. Vérifié sur "Je me replace en vente sur l'or now"
             # (2026-08-06), signal complet avec SL et TP qui n'avait jamais été exécuté.
             if not sym and re.search(r"\bL['’]?OR\b|\bGOLD\b|\bXAU", final_text, re.IGNORECASE):
+                # (#104) Ce rattrapage récupère un vrai signal quand l'expression a attrapé un
+                # mot de liaison au lieu du symbole ('SUR', 'LIMIT'). Mais il déduit le symbole
+                # d'une simple mention de l'or : si le message n'est pas un signal du tout, il
+                # transforme du commentaire en ordre au marché.
+                #
+                # Arrivé le 2026-09-01 sur MDT FREE : « J'ai déjà mon prix d'achat et il va
+                # partir directement dans le VIP. [...] 🔴 SELL EN ATTENTE : 4409 ». Le mot
+                # 'achat' a donné le sens, 'partir' le symbole, et le bot a acheté l'or au
+                # marché sans SL ni TP (ticket 532870669, -511 €).
+                #
+                # Puisqu'on en est réduit à DEVINER le symbole, on exige au moins que le sens
+                # soit net : un texte qui contient les deux directions n'est pas un signal.
+                # Vérifié sur les 12 déclenchements de ce rattrapage en six semaines -- seul
+                # celui du 1er septembre porte les deux sens, les 11 autres sont de vrais
+                # signaux et passent toujours.
+                _a = re.search(r"\b(ACHAT|ACH[EÈ]TE[ZR]?|BUY)\b", final_text, re.IGNORECASE)
+                _v = re.search(r"\b(VENTE|VEND[SRE]?Z?|SELL)\b", final_text, re.IGNORECASE)
+                if _a and _v:
+                    logger.error("🛑 Signal ignoré — symbole deviné (%s) sur un message qui "
+                                 "contient les DEUX sens (%s / %s). Message : %s"
+                                 % (rsym, _a.group(0), _v.group(0),
+                                    final_text[:160].replace(chr(10), " | ")))
+                    await send_alert(
+                        "🛑 **SIGNAL AMBIGU IGNORÉ**" + chr(10) + chr(10) +
+                        "Le symbole a dû être deviné (l'or) et le message contient "
+                        + ("**%s** et **%s**." % (_a.group(0).upper(), _v.group(0).upper()))
+                        + chr(10) + chr(10) + "Aucun ordre passé. Message :" + chr(10)
+                        + ("`%s`" % final_text[:250].replace("`", "'")))
+                    return
                 sym = find_tradable_symbol("XAUUSD")
                 if sym:
                     logger.warning(f"⚠️ Symbole '{rsym}' invalide, mais le message parle de "
@@ -7107,19 +7226,40 @@ async def edit_handler(event):
     if event.id in TELEGRAM_TO_TICKET:
         tickets_to_update = TELEGRAM_TO_TICKET[event.id]
     else:
-        # Récupération des ORPHELINS (Bloqués par doublon initialement)
+        # Récupération des ORPHELINS (bloqués par doublon, ou ouverts avant un redémarrage :
+        # TELEGRAM_TO_TICKET ne vit qu'en mémoire).
+        #
+        # (#104) Ce ramassage était aveugle : il prenait TOUTES les positions et TOUS les ordres
+        # du bot sur le symbole, quel que soit leur canal -- tous partagent MAGIC_NUMBER. Une
+        # édition d'un vieux message MDT sur XAUUSD réécrivait donc le SL et le TP des positions
+        # SABR, INDODOG et FTS ouvertes sur l'or. Constaté les 2 et 3 septembre sur une position
+        # SABR : « le bot a modifié le SL et le TP alors que SABR n'a rien dit », puis le TP
+        # modifié une seconde fois le lendemain. On n'accepte plus que les trades issus du MÊME
+        # canal que le message édité.
         sym = find_tradable_symbol(rsym)
         if not sym: return
-        
-        pos_list = await run_mt5(mt5.positions_get, symbol=sym)
-        if pos_list:
-            for p in pos_list:
-                if p.magic == MAGIC_NUMBER: tickets_to_update.append(p.ticket)
-        
-        ord_list = await run_mt5(mt5.orders_get, symbol=sym)
-        if ord_list:
-            for o in ord_list:
-                if o.magic == MAGIC_NUMBER: tickets_to_update.append(o.ticket)
+
+        base_edit = _channel_base_token(format_detected)
+        if not base_edit:
+            logger.warning("✏️ Édition ignorée : canal indéterminé (message %s)" % event.id)
+            return
+
+        def _meme_canal(ticket):
+            return _channel_base_token(ACTIVE_TRADE_SOURCES.get(ticket)) == base_edit
+
+        ignores = 0
+        for lot_mt5 in (await run_mt5(mt5.positions_get, symbol=sym),
+                        await run_mt5(mt5.orders_get, symbol=sym)):
+            for x in (lot_mt5 or []):
+                if x.magic != MAGIC_NUMBER:
+                    continue
+                if _meme_canal(x.ticket):
+                    tickets_to_update.append(x.ticket)
+                else:
+                    ignores += 1
+        if ignores:
+            logger.info("✏️ Édition %s (%s) : %d trade(s) d'un autre canal laissé(s) intacts"
+                        % (event.id, base_edit, ignores))
 
     if not tickets_to_update: return
 
@@ -7154,9 +7294,18 @@ async def edit_handler(event):
         res = await run_mt5(_send_order_blocking, req)
         if res and res.retcode == mt5.TRADE_RETCODE_DONE:
             success_count += 1
-            
+            # (#104) Tracé dans kairos.log, pas seulement en alerte Telegram : quand une
+            # position se faisait réécrire à tort, le journal n'en gardait aucune trace et
+            # l'enquête partait de rien.
+            logger.warning("✏️ Édition msg %s (%s) : ticket %s  SL %s -> %s  TP %s -> %s"
+                           % (event.id, _channel_base_token(format_detected), ticket,
+                              current_sl, new_sl, current_tp, new_tp))
+
     if success_count > 0:
-        await send_alert(f"✏️ **TRADES MODIFIÉS** (Édition)\n\n{success_count} ordres/positions mis à jour sur {rsym}.\nNouveau SL: {new_sl}\nNouveau TP: {new_tp}")
+        await send_alert(f"✏️ **TRADES MODIFIÉS** (Édition)\n\n"
+                         f"Canal : **{format_detected}**\n"
+                         f"{success_count} ordres/positions mis à jour sur {rsym}.\n"
+                         f"Nouveau SL: {new_sl}\nNouveau TP: {new_tp}")
         
 # --- GESTION DES SUPPRESSIONS (NOUVEAU) ---
 @client.on(events.MessageDeleted(chats=CHANNEL_LIST))
