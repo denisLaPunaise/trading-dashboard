@@ -5141,14 +5141,20 @@ async def monitor_positions():
                     
                     # 2️⃣ Nettoyage SABR (Préparation des groupes)
                     else:
-                        # On groupe les ordres en attente par Symbole, Sens et Source
-                        key = (o.symbol, o.type, src)
+                        # (#104) Le groupe est le SIGNAL, pas (symbole, sens, canal). Avec
+                        # l'ancienne clé, deux zones SABR VIP achat sur l'or n'en faisaient
+                        # qu'une : les ordres tout juste posés d'un nouveau signal étaient jugés
+                        # avec la position d'un signal précédent, et se faisaient annuler dans la
+                        # foulée. C'est le "trade SABR supprimé quelques secondes après avoir été
+                        # posé". INDODOG raisonne déjà par signal (cancel_pending_of_signal).
+                        sig = ACTIVE_TRADE_SIGNALS.get(o.ticket) or ("_tk%d" % o.ticket)
+                        key = (o.symbol, o.type, src, sig)
                         if key not in sabr_pending_groups:
                             sabr_pending_groups[key] = []
                         sabr_pending_groups[key].append(o)
-                        
+
                 # 3️⃣ Traitement des ordres SABR ("Parti sans nous")
-                for (sym, otype, src), pending_orders in sabr_pending_groups.items():
+                for (sym, otype, src, sig), pending_orders in sabr_pending_groups.items():
                     tick = mt5.symbol_info_tick(sym)
                     if not tick: continue
                     
@@ -5164,7 +5170,12 @@ async def monitor_positions():
 
                     if active_positions:
                         for p in active_positions:
-                            if p.magic == MAGIC_NUMBER and ACTIVE_TRADE_SOURCES.get(p.ticket, "") == src:
+                            # (#104) Même signal, et pas seulement même canal : une position
+                            # ouverte par un signal antérieur n'a rien à dire sur les ordres
+                            # d'un nouveau. C'est elle qui déclenchait la condition A (+150 pips)
+                            # sur des ordres à peine posés.
+                            if p.magic == MAGIC_NUMBER and \
+                               (ACTIVE_TRADE_SIGNALS.get(p.ticket) or ("_tk%d" % p.ticket)) == sig:
                                 if (is_buy and p.type == mt5.ORDER_TYPE_BUY) or (not is_buy and p.type == mt5.ORDER_TYPE_SELL):
                                     related_active_prices.append(p.price_open)
 
@@ -5172,8 +5183,13 @@ async def monitor_positions():
                     if not all_setup_prices: 
                         continue
 
-                    # --- NOUVELLE LOGIQUE DE DISTANCE ET D'ANNULATION ---
-                    key_dist = (sym, src)
+                    # --- LOGIQUE DE DISTANCE ET D'ANNULATION ---
+                    # (#104) La mémoire du "frôlement" est propre au SIGNAL. Sous l'ancienne clé
+                    # (symbole, canal) elle n'était effacée qu'à une annulation : un signal
+                    # suivant héritait donc d'un min_dist ≤ 50 laissé par le précédent, et une
+                    # nouvelle zone posée à plus de 400 pips satisfaisait la condition B dès le
+                    # premier passage -- annulation immédiate, sans que le marché ait rien fait.
+                    key_dist = (sym, src, sig)
                     if is_buy:
                         current_dist_to_zone = ((curr_price - max(all_setup_prices)) / pt) / div
                     else:
@@ -5196,17 +5212,26 @@ async def monitor_positions():
 
                     if cancel_orders:
                         src_clean = src.replace("CANAL ", "").replace("_", " ")
+                        # (#104) Motif exact, et surtout TRACÉ dans kairos.log : cette annulation
+                        # n'existait qu'en alerte Telegram. Quand un ordre disparaissait à tort,
+                        # le journal n'en gardait aucune trace et l'enquête partait de rien.
+                        motif = ("position ouverte sur ce signal et +%.0f pips au-dessus de la zone"
+                                 % current_dist_to_zone) if related_active_prices else (
+                                "zone frôlée à %.0f pips puis partie à %.0f pips"
+                                % (min_dist_reached, current_dist_to_zone))
                         count_cancelled = 0
                         for o in pending_orders:
                             req = {"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket}
                             res = await run_mt5(_send_order_blocking, req)
                             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                                 count_cancelled += 1
-                                
+                                logger.warning("🗑 SABR : ordre %s annule (%s) -- signal %s, %s"
+                                               % (o.ticket, src_clean, sig, motif))
+
                         if count_cancelled > 0:
                             await send_channel_alert(f"🗑️ **ORDRE SABR ANNULÉ**\n\n"
                                              f"Symbole: {sym}\nSource: {src_clean}\n"
-                                             f"Raison: Trade activé (+150p) OU Frôlé puis envolé (+400p).\n"
+                                             f"Raison: {motif}.\n"
                                              f"Ordres restants annulés: {count_cancelled}", src)
                         
                         if key_dist in SABR_ZONE_MIN_DIST: del SABR_ZONE_MIN_DIST[key_dist]

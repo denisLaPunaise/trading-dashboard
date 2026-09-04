@@ -219,7 +219,22 @@ du dossier (`EXE_PATTERN`, issue #66). Déposer le binaire suffit, aucune recopi
     porte désormais sur la borne *sélectionnée* la plus proche, sinon ne retenir que milieu+fin
     aurait déclenché un marché calculé sur une borne inutilisée. Un réglage vide retombe sur les
     trois bornes : un signal valide ne doit jamais être perdu sur un réglage.
-- **V15.13.0** — quatre points, tous nés de l'analyse des logs du 1<sup>er</sup> au 3 septembre.
+- **V15.13.0** — cinq points, tous nés de l'analyse des logs du 1<sup>er</sup> au 3 septembre.
+  - **L'annulation SABR raisonne par signal.** Le nettoyage « parti sans nous » groupait les
+    ordres en attente par `(symbole, sens, canal)` — donc deux zones SABR VIP achat sur l'or
+    n'en faisaient qu'une. Les ordres tout juste posés d'un nouveau signal étaient jugés avec la
+    position d'un signal **antérieur** : celle-ci étant à plus de 150 pips, la condition A
+    tombait au premier passage du moniteur et les annulait dans la foulée. C'est le « trade SABR
+    supprimé quelques secondes après avoir été mis ». Même défaut sur `SABR_ZONE_MIN_DIST`, qui
+    mémorise le frôlement de la zone : clé identique, effacée seulement lors d'une annulation,
+    donc un signal héritait du `min_dist ≤ 50` du précédent et toute nouvelle zone posée à plus
+    de 400 pips satisfaisait la condition B immédiatement. Tout est désormais indexé par signal
+    (`ACTIVE_TRADE_SIGNALS`), comme INDODOG le fait déjà. Vérifié sur 5 scénarios, conditions
+    extraites du source : les deux annulations parasites disparaissent, les deux légitimes
+    (+150 pips avec position du même signal, frôlé puis envolé) fonctionnent toujours.
+    Cette annulation-là non plus n'écrivait rien dans `kairos.log`, et le motif exact est
+    maintenant journalisé — les deux conditions se distinguaient jusqu'ici mal dans l'alerte,
+    qui annonçait « +150p **OU** +400p » sans dire laquelle.
   - **Une édition de message ne touche plus que son propre canal.** `edit_handler` a une branche
     « orphelins » pour les trades dont le message n'est plus en mémoire (`TELEGRAM_TO_TICKET` ne
     vit qu'en RAM, un redémarrage la vide). Elle ramassait **toutes** les positions et tous les
