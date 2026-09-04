@@ -3589,7 +3589,7 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
     # 3. Préparation des Lots et Prix (SABR vs CLASSIC)
     trades_to_execute = [] # Liste de tuples (TargetPrice, FixedLot) -> Si TargetPrice est None = Market
     
-    signal_defaut = False   # (#103) vrai si le repli SL/TP INDODOG a servi
+    signal_defaut = False   # (#103) vrai si le repli SL/TP a servi (INDODOG et FTS)
     if is_ladder_channel(channel_source):
         # (#84/#90) Canaux a echelle de TP : lot fixe. INDODOG peut donner une ZONE, traitee
         # comme SABR (trois ordres etages) ; FTS donne toujours un prix unique, la branche zone
@@ -5235,7 +5235,15 @@ async def monitor_positions():
                                              f"Ordres restants annulés: {count_cancelled}", src)
                         
                         if key_dist in SABR_ZONE_MIN_DIST: del SABR_ZONE_MIN_DIST[key_dist]
-            
+
+                # (#104) La clé porte maintenant le signal : sans purge, le dictionnaire
+                # gagnerait une entrée définitive par signal SABR au lieu d'une par symbole.
+                # Un signal dont plus aucun ordre n'est en attente n'a plus de distance à
+                # mémoriser -- il est rempli, annulé ou expiré.
+                _vivants = {(s, c, g) for (s, _t, c, g) in sabr_pending_groups}
+                for _k in [k for k in SABR_ZONE_MIN_DIST if k not in _vivants]:
+                    del SABR_ZONE_MIN_DIST[_k]
+
             # 3. Sécurité Drawdown
             # (#DD) Même logique que le gate de nouveau trade : check_daily_max_loss() met à
             # jour security_triggered, mais c'est ce verrou PERSISTANT qui décide si on reste
