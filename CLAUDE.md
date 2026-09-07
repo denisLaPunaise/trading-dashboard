@@ -38,11 +38,14 @@ chaque partie : un suffixe (`-beta`, `_test`…) lève une `ValueError` avalée 
 ### Endroits à mettre à jour à chaque bump
 
 1. `backend/bot_release13.py` → `VERSION_BOT`
-2. `Security Licence Check/admin_license_bot_V3.py` → `EXE_FILENAME`
-   (⚠️ implique de recopier ce fichier sur le VPS, cf. workflow manuel)
-3. `backend/Kairos_V<version>.spec` → nom du fichier + champ `name=`
-4. `Security Licence Check/INSTALLATION.txt` et `GUIDE_ADMIN.md`
-5. Le binaire compilé dans `Security Licence Check/`
+2. `backend/Kairos_V<version>.spec` → nom du fichier + champ `name=`
+3. `Security Licence Check/INSTALLATION.txt` et `GUIDE_ADMIN.md`
+4. Le binaire compilé dans `Security Licence Check/`
+
+~~`admin_license_bot_V3.py` → `EXE_FILENAME`~~ — **plus nécessaire depuis la V15.2.2** :
+le bot de licence détecte l'exe tout seul via `EXE_PATTERN`
+(`^Kairos_V(\d+(\.\d+){0,3})\.exe$`), il n'y a plus de nom en dur à synchroniser ni de
+recopie sur le VPS pour un simple bump.
 
 ### Historique
 
@@ -224,3 +227,79 @@ chaque partie : un suffixe (`-beta`, `_test`…) lève une `ValueError` avalée 
   avec sélecteur de période calé sur des journées entières. Côté dashboard uniquement : thème
   forcé en sombre — la palette suivait le thème du téléphone, d'où du texte noir sur fond noir
   chez un client en mode clair.
+- **V15.14.0** — journée de production perdue chez un client, sur trois pannes qui se
+  ressemblaient toutes à l'écran. Le fil conducteur : **le bot annonçait des choses qu'il ne
+  faisait pas.** Numéro 15.13.0 sauté, un exe portant ce nom circulait déjà hors dépôt.
+  - **Démarrage MT5.** « MetaTrader 5 fermé ou inaccessible » couvrait trois causes distinctes
+    sans jamais afficher `mt5.last_error()`, qui connaissait la réponse depuis le début. Le
+    client avait MT5 ouvert sous les yeux ; son compte démo avait expiré (journal MetaTrader :
+    `authorization failed (Invalid account)`), donc terminal ouvert mais **jamais connecté** —
+    le voyant bas-droite affichait `0 / 0 Kb`. Le code d'erreur est désormais affiché avec la
+    cause probable et les gestes dans l'ordre, dont le seul qui comptait ici : *vérifier que le
+    terminal est CONNECTÉ, pas seulement ouvert*.
+  - **`MT5_PATH` était un réglage mort.** Livré dans `settings.json`, documenté dans
+    `INSTALLATION.txt` (« doit pointer vers ton terminal64.exe »), et lu **nulle part** : les 7
+    appels à `mt5.initialize()` étaient nus. Il n'est retenu que s'il pointe sur un fichier
+    existant, l'auto-détection restant le repli — un chemin erroné ne doit pas faire échouer ce
+    que l'auto-détection aurait trouvé.
+  - **Aucune reprise après un échec MT5.** `main()` faisait `return`, mais le worker restait
+    vivant sur `run_until_disconnected()`. Et comme `alive.txt` n'était écrit qu'**après** ce
+    test (heartbeat démarré plus bas), la détection de gel du watchdog — gardée par
+    `if os.path.exists(WATCH_FILE)` — ne s'appliquait pas non plus. Le bot restait donc bloqué
+    à vie, même MT5 réparé. Désormais : pouls écrit **avant** le premier essai, 10 tentatives
+    espacées de 30 s, puis abandon volontaire — le watchdog voit un pouls qui vieillit, tue le
+    worker et le relance. La reprise ne dépend plus du client.
+  - **Garde-fou compte Netting.** Aucune occurrence de `margin_mode` dans 7 800 lignes, alors
+    que tout le suivi est **par ticket** (`ACTIVE_TRADE_SOURCES`, `close_partial` avec
+    `position=ticket`) et qu'une zone pose 3 ordres sur un même symbole. En netting MT5 les
+    fusionne : deux tickets sur trois disparaissent, le bot croit ces positions fermées alors
+    que le volume est au marché, les partiels sont rejetés, et un signal vendeur **réduit** la
+    position acheteuse d'un autre canal. Rien de tout ça ne remonte d'erreur — d'où un refus
+    de démarrer plutôt qu'un support de ce mode, qui voudrait dire réécrire le modèle entier.
+  - **Le trading algo se recoupe tout seul.** `Désactiver le trading algorithmique lors du
+    changement de compte` est **cochée par défaut** dans MT5 ; le journal du client le disait
+    noir sur blanc (`automated trading is disabled because the account has been changed`).
+    Signalé au démarrage et documenté.
+  - **Alerte de fermeture d'urgence en boucle.** Elle partait **avant** le filtre magic, donc
+    annonçait « Fermeture d'urgence » même quand le bot n'avait le droit de fermer aucune
+    position. Le commentaire du code supposait que `pos_panic` serait vide au tour suivant —
+    faux dès qu'une position est manuelle : elle reste ouverte, et le message repartait toutes
+    les 60 s. Tri avant l'alerte, envoi unique par épisode (`DD_PANIC_NOTIFIED`, remis à zéro
+    au déverrouillage et au changement de jour), et le message **nomme** les positions que le
+    bot ne peut pas fermer.
+  - **`TOUT COUPER` renvoyait `success: True` sans rien fermer.** Même filtre magic — c'est
+    voulu, le bot n'a pas à toucher aux trades manuels — mais le client cliquait, rien ne
+    bougeait, et aucun message ne le disait. Il compte désormais fermées / ignorées / échecs.
+    Au passage : `sendCommand()` résolvait bien le résultat mais ne le **retournait** pas, tout
+    appelant recevait `undefined`.
+  - **Le dashboard masquait des positions ouvertes.** `cascadeClose` (avec `forwards` et
+    `max-height: 0`) s'appliquait à **toutes** les cartes dès que le verrou DD était actif :
+    elles disparaissaient définitivement, boutons compris, alors que les positions non gérées
+    restaient ouvertes et en perte. Le client lisait « Trades Actifs (2) » au-dessus du vide.
+    L'animation ne concerne plus que ce que le bot ferme réellement, et un bandeau nomme le
+    reste.
+  - **Le disjoncteur drawdown mentait.** Il passait par `sendInstantToggle` : affichage
+    optimiste immédiat + envoi *fire-and-forget*, sans jamais vérifier que le bot recevait la
+    commande. Le client l'a basculé sur OFF, l'a **vu** sur OFF, puis s'est fait refuser le
+    déverrouillage — le bot ne l'avait jamais reçu, et le push d'état le remettait sur ON 4 s
+    plus tard. Un réglage de sécurité passe maintenant par `sendCommand` : attente visible sur
+    le bouton, échec affiché. Nouvelle commande **`/dd on|off`** en recours, écriture explicite
+    plutôt qu'une bascule aveugle : le disjoncteur n'existait qu'au dashboard, donc un
+    dashboard injoignable rendait tout verrou définitif.
+  - **Couplage caché SL Suiveur ↔ Soft SL.** Le Soft SL vit dans la branche
+    `if TRAILING_STOP_PIPS > 0` et se déclenche à `TRAILING_STOP_PIPS` sous le sommet : le même
+    champ sert d'**interrupteur** et de **distance de repli**. À 0, le réglage dort, et le
+    dashboard présentait les deux lignes comme indépendantes. Note contextuelle ajoutée, plus
+    un avertissement à l'activation côté Telegram.
+  - **Alerte Soft SL mensongère** : elle annonçait « Le reste court avec SL à BE » dans tous
+    les cas, alors que la mise à BE est posée plus bas et **uniquement** si `SL_SUIVEUR_ACTIVE`.
+    Avec le SL Suiveur sur OFF, le client lisait que son reliquat était protégé alors que son
+    stop n'avait pas bougé d'un pip.
+  - **Deux réglages poussés au dashboard mais jamais affichés** : `sabr_be_partiel` /
+    `sabr_be_partiel_pct` (le mode *Partiel* de la V15.7.0, atteignable uniquement par
+    `/be_partiel`) et `sabr_forward` — ce dernier n'avait même aucun chemin d'écriture côté
+    bot, d'où l'ajout de la clé dans `api_update_setting` plutôt qu'une nouvelle commande, pour
+    ne pas toucher la liste blanche des règles Firestore.
+  - Contrôle statique conservé en tête : **toute fonction affectant un drapeau d'état global
+    doit le déclarer `global`**. C'est ce qui avait attrapé le bug du verrou drawdown en
+    V15.10.0, et c'est ce qui a validé `DD_PANIC_NOTIFIED` ici.

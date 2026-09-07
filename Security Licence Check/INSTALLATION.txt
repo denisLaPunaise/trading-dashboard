@@ -3,7 +3,7 @@
 ===============================================================
 
 Ce dossier contient :
-  - Kairos_V15.12.0.exe   -> le programme
+  - Kairos_V15.14.0.exe   -> le programme
   - settings.json        -> ta configuration (déjà pré-remplie avec ta clé)
   - INSTALLATION.txt     -> ce guide
 
@@ -160,8 +160,33 @@ Si tu ne trouves pas le bouton :
    Menu "Outils" > "Options" > onglet "Expert Advisors",
    puis coche "Autoriser le trading algorithmique". Valide par OK.
 
+>> DANS CE MEME ONGLET, DECOCHE AUSSI :
+      "Desactiver le trading algorithmique lors du changement
+       de compte"
+   Cette case est COCHEE par defaut. Tant qu'elle l'est, MetaTrader
+   recoupe l'option tout seul des que tu changes de compte -- et
+   plus aucun ordre ne passe, sans que rien ne te previenne.
+
 A verifier apres chaque redemarrage de MetaTrader : selon les
 versions, l'option peut revenir a l'etat desactive.
+
+---------------------------------------------------------------
+ÉTAPE 3 ter — TON COMPTE DOIT ETRE EN MODE "HEDGING"
+---------------------------------------------------------------
+Regarde le TITRE de la fenetre MetaTrader. Il finit par "Hedge"
+ou par "Netting" :
+
+     12345678 - MonBroker - Hedge     -> OK
+     12345678 - MonBroker - Netting   -> INCOMPATIBLE
+
+En mode Netting, MetaTrader fusionne toutes les positions d'un
+meme symbole en une seule. Les 3 ordres d'une zone SABR se
+confondraient, les prises partielles seraient refusees, et un
+signal vendeur pourrait fermer un achat d'un autre canal.
+
+Kairos refuse de demarrer sur un compte Netting, et te le dira.
+Le mode ne se change pas : il faut ouvrir un compte en Hedging
+chez ton courtier. Les comptes prop (FTMO & co) le sont toujours.
 
 ---------------------------------------------------------------
 ÉTAPE 4 — Premier lancement
@@ -171,7 +196,7 @@ choix (ex: C:\Kairos). Les 3 fichiers doivent rester ENSEMBLE dans
 le même dossier — ne lance pas l'exe directement depuis le ZIP.
 
 1. Assure-toi que MetaTrader 5 est ouvert et connecté à ton compte.
-2. Double-clique sur Kairos_V15.12.0.exe.
+2. Double-clique sur Kairos_V15.14.0.exe.
 
 3. ⚠️ WINDOWS VA AFFICHER UN AVERTISSEMENT — C'EST NORMAL.
    Un écran bleu "Windows a protégé votre ordinateur" apparaît, avec
@@ -229,6 +254,48 @@ pas une raison de negliger le reglage des lots.
 CONSEIL : lance-toi d'abord sur un compte DEMO, ou avec les lots au
 minimum, pendant quelques jours. Tu verras comment le bot se
 comporte avant d'y mettre le montant qui compte.
+
+---------------------------------------------------------------
+EN CAS DE PROBLEME AU DEMARRAGE
+---------------------------------------------------------------
+
+"MetaTrader 5 : CONNEXION IMPOSSIBLE"
+
+Kairos affiche desormais le code d'erreur renvoye par MetaTrader
+et reessaie tout seul toutes les 30 secondes. Laisse la fenetre
+ouverte : des que MetaTrader est pret, la connexion se fait sans
+que tu aies à relancer quoi que ce soit.
+
+Verifie dans CET ORDRE :
+
+1. MetaTrader 5 est-il OUVERT ?
+
+2. Est-il CONNECTE a ton compte ?
+   C'est le point le plus souvent en cause, et le plus trompeur :
+   un MetaTrader ouvert n'est PAS forcement connecte.
+   Regarde le voyant tout en bas a DROITE de la fenetre :
+       vert, avec des kilo-octets qui montent  -> connecte
+       rouge, ou "0 / 0 Kb"                    -> PAS connecte
+   Pour te reconnecter : Fichier > Connexion au compte de trading.
+   Attention : un compte DEMO non utilise finit par etre supprime
+   par le serveur. Le journal de MetaTrader affiche alors
+   "authorization failed (Invalid account)". Dans ce cas il faut
+   simplement en ouvrir un nouveau.
+   (Le journal : Ctrl+T, puis onglet "Journal".)
+
+3. Kairos tourne en ADMINISTRATEUR. MetaTrader doit l'etre AUSSI.
+   Clic droit sur MetaTrader 5 > "Executer en tant
+   qu'administrateur". Si l'un des deux est administrateur et pas
+   l'autre, Windows les empeche de communiquer.
+
+4. Plusieurs MetaTrader installes ? N'en laisse qu'UN seul ouvert,
+   ou indique le bon dans "MT5_PATH" (settings.json).
+
+Rappel : le programme et son settings.json doivent rester dans le
+MEME dossier. Si tu as decompresse le ZIP ailleurs (Telechargements,
+Telegram Desktop...), ne recopie PAS ce settings.json par-dessus
+celui que tu as deja configure : tu ecraserais tes identifiants
+Telegram et le bot repartirait sur l'ecran de premiere connexion.
 
 ---------------------------------------------------------------
 BESOIN D'AIDE ?
