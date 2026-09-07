@@ -874,7 +874,7 @@ TIMEOUT_SECONDS = 300
 def update_pulse():
     """Le bot signale qu'il est vivant.
 
-    (#104) Ecriture ATOMIQUE. `open(WATCH_FILE, "w")` tronque le fichier AVANT d'ecrire : une
+    (#103) Ecriture ATOMIQUE. `open(WATCH_FILE, "w")` tronque le fichier AVANT d'ecrire : une
     lecture du watchdog tombant dans cet intervalle renvoie une valeur TRONQUEE -- "1757260"
     au lieu de "1757260000.12" -- soit un horodatage de 1970, donc un age enorme, donc un
     process.kill() sur un worker qui va parfaitement bien.

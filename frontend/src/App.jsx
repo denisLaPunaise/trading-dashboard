@@ -234,7 +234,7 @@ function App() {
   const [error, setError] = useState(null)
   const settingDebounce = useRef({}) // (#11) timers de debounce par clé de réglage
 
-  // (#104) Réglages envoyés au bot mais pas encore confirmés, superposés à l'état reçu.
+  // (#103) Réglages envoyés au bot mais pas encore confirmés, superposés à l'état reçu.
   //
   // L'ancien mécanisme pariait sur les délais : un booléen global `isUpdating` gelait TOUT le
   // document Firestore pendant 2,5 s, le temps que le bot renvoie son état. Sauf que le trajet
@@ -301,7 +301,7 @@ function App() {
     activeCommandUnsubs.current.clear();
   }, []);
 
-  // (#104) Retire une clé de la file d'attente et rend la main à l'état du bot.
+  // (#103) Retire une clé de la file d'attente et rend la main à l'état du bot.
   // `cmdId` protège de la ré-édition rapide : si une réponse arrive pour une commande plus
   // ancienne que la dernière saisie sur cette clé, on l'ignore -- sinon le `done` d'une
   // commande périmée effacerait une valeur que l'utilisateur vient tout juste de taper.
@@ -320,7 +320,7 @@ function App() {
     });
   }, []);
 
-  // (#104) Suit une commande de réglage jusqu'à sa confirmation.
+  // (#103) Suit une commande de réglage jusqu'à sa confirmation.
   // On se cale sur le STATUT de la commande, jamais sur l'égalité des valeurs : le bot écrête
   // (SABR_BE_PARTIEL_PCT à 1.0, les pourcentages de zone à 0.98...), donc une comparaison
   // valeur-envoyée / valeur-reçue ne correspondrait jamais et l'écran resterait bloqué sur la
@@ -339,7 +339,7 @@ function App() {
     activeCommandUnsubs.current.add(unsub);
   }, [userId, clearPending]);
 
-  // (#104) Pose la valeur à l'écran tout de suite, et arme le filet : bot éteint ou commande
+  // (#103) Pose la valeur à l'écran tout de suite, et arme le filet : bot éteint ou commande
   // jamais traitée, la file se vide au bout de PENDING_TIMEOUT_MS et l'état réel du bot
   // réapparaît -- plutôt que de laisser croire indéfiniment qu'un réglage est appliqué.
   const markPending = useCallback((key, value) => {
@@ -597,7 +597,7 @@ function App() {
           if (!snap.exists()) { return; }
           const data = snap.data();
           setBotOnline(data.bot_online === true);
-          // (#104) Plus de gel : l'état du bot est toujours appliqué. Les réglages non encore
+          // (#103) Plus de gel : l'état du bot est toujours appliqué. Les réglages non encore
           // confirmés sont reposés par-dessus au moment du rendu (cf. pendingSettings), donc
           // le solde et les trades continuent de vivre pendant qu'on règle le bot.
           setDashboardData(data);
@@ -758,7 +758,7 @@ function App() {
   // (poll 3s) avant de changer visuellement -- correct pour les actions à risque (fermer un trade,
   // panic, kill) mais ressenti comme un gros lag sur de simples interrupteurs. On flip donc l'état
   // local tout de suite ; l'état réel revient de toute façon via le snapshot du bot.
-  // (#104) Les interrupteurs n'avaient AUCUNE protection : ils écrivaient l'état optimiste
+  // (#103) Les interrupteurs n'avaient AUCUNE protection : ils écrivaient l'état optimiste
   // sans même poser l'ancien verrou `isUpdating`, donc le premier snapshot venu (au plus 4 s)
   // les remettait dans leur état d'avant si le bot n'avait pas encore traité la commande.
   // Ils passent par la même file d'attente que les réglages.
@@ -810,7 +810,7 @@ function App() {
   };
 
   const toggleMute = (channelName) => {
-    // (#104) La nouvelle liste se calcule à partir de la valeur EN ATTENTE quand il y en a
+    // (#103) La nouvelle liste se calcule à partir de la valeur EN ATTENTE quand il y en a
     // une, pas de l'état brut du bot. Sinon muter deux canaux coup sur coup repartait dans les
     // deux cas de la liste d'avant, et le second envoi effaçait le premier -- exactement le
     // symptôme qu'on corrige ici, mais sur les canaux au lieu des réglages.
@@ -888,7 +888,7 @@ function App() {
   }
 
 const { account, daily_stats, settings: settingsFromBot, active_trades } = dashboardData
-  // (#104) Superposition : l'état du bot d'abord, puis les réglages envoyés et pas encore
+  // (#103) Superposition : l'état du bot d'abord, puis les réglages envoyés et pas encore
   // confirmés par-dessus. C'est ici, au rendu, que la file d'attente reprend la main -- le
   // reste du document (solde, trades, stats) passe intact, plus aucun gel global.
   const settings = Object.keys(pendingSettings).length
@@ -970,7 +970,7 @@ const { account, daily_stats, settings: settingsFromBot, active_trades } = dashb
   const ddLimit = balanceMinuit * settings.max_dd;
   const currentLoss = daily_stats.total_pnl < 0 ? Math.abs(daily_stats.total_pnl) : 0;
   const riskPercent = (currentLoss / ddLimit) * 100;
-  // (#104) Le disjoncteur entre dans le calcul. Sans lui, relever le Max DD faisait bien
+  // (#103) Le disjoncteur entre dans le calcul. Sans lui, relever le Max DD faisait bien
   // passer l'affichage en orange (seuil plus atteint) alors que COUPER le disjoncteur le
   // laissait au rouge -- deux gestes qui débloquent pareil, deux rendus différents. Un
   // disjoncteur coupé, c'est par définition aucun seuil à approcher.
@@ -1122,7 +1122,7 @@ const { account, daily_stats, settings: settingsFromBot, active_trades } = dashb
             <AlertTriangle size={60} style={{ display: 'block', margin: '0 auto 10px' }} />
             SÉCURITÉ ACTIVÉE
           </div>
-          {/* (#104) "Positions clôturées" était affiché en toutes circonstances, y compris
+          {/* (#103) "Positions clôturées" était affiché en toutes circonstances, y compris
               quand des positions hors bot restaient grandes ouvertes et en perte -- le bot
               n'ayant pas le droit d'y toucher. C'est le message qu'un client a lu en plein
               écran pendant que ses deux positions continuaient de descendre. Le texte dit
@@ -1794,7 +1794,7 @@ const { account, daily_stats, settings: settingsFromBot, active_trades } = dashb
                 // aussi sur les trades SABR. (#pack) SL Suiveur / Soft SL en revanche ne
                 // touchent jamais SABR (positions déviées avant le bloc trailing) -> masqués
                 // pour un pack 100% SABR, comme dans /info.
-                // (#104) Le rouge est reservé à un evenement : la sécurité a été ATTEINTE et
+                // (#103) Le rouge est reservé à un evenement : la sécurité a été ATTEINTE et
                 // bloque le trading. Il signalait aussi le simple fait d'avoir mis le toggle
                 // sur OFF, ce qui laissait la ligne en alerte permanente pour un choix
                 // deliberé -- couper un interrupteur doit se comporter comme n'importe quel
@@ -1862,7 +1862,7 @@ const { account, daily_stats, settings: settingsFromBot, active_trades } = dashb
                   <div key={item.key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', background: item.alerte === 'hit' ? '#3a1f1f' : item.alerte === 'pending' ? '#3a331f' : '#2a2a2a', padding: '10px', borderRadius: '8px', border: item.alerte === 'hit' ? '1px solid #ff4444' : item.alerte === 'pending' ? '1px solid #ffc107' : '1px solid transparent' }}>
                     <span style={{ fontSize: '0.9rem', flex: 1 }}>
                       {item.label}
-                      {/* (#104) Marqueur d'attente : rend visible le seul flou qui subsiste.
+                      {/* (#103) Marqueur d'attente : rend visible le seul flou qui subsiste.
                           Tant que le bot n'a pas confirmé, la valeur affichée vient de la file
                           locale, pas de lui. Rouge s'il est hors ligne : dans ce cas le réglage
                           ne sera appliqué qu'à son prochain démarrage (la commande reste en
