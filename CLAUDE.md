@@ -68,6 +68,18 @@ Deux pièges vérifiés en production :
   Ne jamais se fier au code retour : vérifier que le binaire existe et que sa taille est
   cohérente avec le build précédent.
 
+### Marqueurs `(#nn)` dans les commentaires
+
+Ils identifient le **lot de travail** qui a écrit la ligne, pour retrouver le pourquoi d'un
+correctif des mois plus tard. Au-delà de **#69**, ils ne correspondent plus à des issues
+GitHub réelles — la numérotation a continué toute seule.
+
+**Vérifier le plus grand marqueur déjà employé avant d'en poser un nouveau**
+(`grep -o '(#[0-9]*)' backend/bot_release13.py | sort -u | tail`). Deux sessions parallèles
+ont toutes deux choisi `#103` en septembre 2026 : le marqueur désignait alors deux lots sans
+rapport, ce qui lui retirait exactement l'utilité qu'il est censé avoir. Un lot = un numéro,
+et on ne réutilise jamais.
+
 ### Historique
 
 - **V15.0.0** — audit sécurité v2 (issues #46-#62). Deux builds portent ce nom : le

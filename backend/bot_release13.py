@@ -314,7 +314,7 @@ INDO_MARKET_LOOKBACK_MIN = 5
 #   - l'ordre dort depuis plus de INDO_ORDER_EXPIRY_H heures : le signal n'est plus frais.
 INDO_APPROACH_PIPS = 30.0
 INDO_ORDER_EXPIRY_H = 24.0
-# (#103) Repli INDODOG quand le signal n'annonce ni SL ni TP, ou que le format a change et
+# (#104) Repli INDODOG quand le signal n'annonce ni SL ni TP, ou que le format a change et
 # qu'on n'a rien su lire. Sans ces valeurs, la position partait SANS protection : le canal a
 # deja cesse de numeroter ses TP une fois (V15.7.0), il recommencera.
 #   - SL a 100 pips : une position sans stop est le seul risque reellement inacceptable.
@@ -3615,7 +3615,7 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
     # 3. Préparation des Lots et Prix (SABR vs CLASSIC)
     trades_to_execute = [] # Liste de tuples (TargetPrice, FixedLot) -> Si TargetPrice est None = Market
     
-    signal_defaut = False   # (#103) vrai si le repli SL/TP a servi (INDODOG et FTS)
+    signal_defaut = False   # (#104) vrai si le repli SL/TP a servi (INDODOG et FTS)
     if is_ladder_channel(channel_source):
         # (#84/#90) Canaux a echelle de TP : lot fixe. INDODOG peut donner une ZONE, traitee
         # comme SABR (trois ordres etages) ; FTS donne toujours un prix unique, la branche zone
@@ -3626,7 +3626,7 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
         total_vol = round(ladder_fixed_lot(channel_source) * custom_lot_modifier, 2)
         if total_vol < 0.01: total_vol = 0.01
 
-        # (#103) Repli des canaux a echelle : SL et echelle de TP par defaut quand le signal
+        # (#104) Repli des canaux a echelle : SL et echelle de TP par defaut quand le signal
         # n'en donne pas. INDODOG et FTS ont la meme exposition -- un signal illisible partait
         # sans stop, ou avec un TP a 0 -- et le repli ne depend d'aucune particularite de canal.
         # Le prix de reference est la borne PROCHE d'une zone, sinon le prix annonce, sinon le
@@ -4053,7 +4053,7 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
         if tickets_opened:
             _sig = ACTIVE_TRADE_SIGNALS.get(tickets_opened[0]) or ("_tk%d" % tickets_opened[0])
             ladder_stats_open(channel_source, _sig, symbol, len(tp_ladder))
-            # (#103) Le marqueur voyage dans INDO_LEVELS_BY_SIGNAL, deja indexe par signal et
+            # (#104) Le marqueur voyage dans INDO_LEVELS_BY_SIGNAL, deja indexe par signal et
             # deja persiste : pas de nouvel etat a sauvegarder ni a recharger.
             if signal_defaut:
                 INDO_LEVELS_BY_SIGNAL.setdefault(_sig, set()).add(TAG_SIGNAL_DEFAUT)
@@ -5862,7 +5862,7 @@ async def monitor_positions():
                     if base_vol is None:
                         base_vol = round(sum(p.volume for p in positions), 2)
 
-                    # (#103) BE anticipé sur un signal dont on n'a pas su lire les TP : le
+                    # (#104) BE anticipé sur un signal dont on n'a pas su lire les TP : le
                     # premier palier de repli est à 50 pips, on sécurise dès 30. Ne s'applique
                     # QU'AUX signaux marqués, jamais aux signaux normaux -- eux gardent leur
                     # mise à BE au TP1, comme le canal le recommande.
