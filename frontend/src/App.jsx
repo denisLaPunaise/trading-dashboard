@@ -970,9 +970,14 @@ const { account, daily_stats, settings: settingsFromBot, active_trades } = dashb
   const ddLimit = balanceMinuit * settings.max_dd;
   const currentLoss = daily_stats.total_pnl < 0 ? Math.abs(daily_stats.total_pnl) : 0;
   const riskPercent = (currentLoss / ddLimit) * 100;
-  const isNearDD = riskPercent >= 80;
-  // (#DD) Jaune : verrouillé mais plus au-dessus du seuil critique (Max DD relevé) --
-  // il ne manque plus que le déverrouillage manuel pour repasser à la normale.
+  // (#104) Le disjoncteur entre dans le calcul. Sans lui, relever le Max DD faisait bien
+  // passer l'affichage en orange (seuil plus atteint) alors que COUPER le disjoncteur le
+  // laissait au rouge -- deux gestes qui débloquent pareil, deux rendus différents. Un
+  // disjoncteur coupé, c'est par définition aucun seuil à approcher.
+  const ddActif = settings.drawdown_active !== false;
+  const isNearDD = ddActif && riskPercent >= 80;
+  // (#DD) Jaune : verrouillé mais plus au-dessus du seuil critique (Max DD relevé ou
+  // disjoncteur coupé) -- il ne manque plus que le déverrouillage manuel.
   const isDDPendingUnlock = isLocked && !isNearDD;
 
   const currentHour = new Date().getHours();
@@ -1789,8 +1794,16 @@ const { account, daily_stats, settings: settingsFromBot, active_trades } = dashb
                 // aussi sur les trades SABR. (#pack) SL Suiveur / Soft SL en revanche ne
                 // touchent jamais SABR (positions déviées avant le bloc trailing) -> masqués
                 // pour un pack 100% SABR, comme dans /info.
+                // (#104) Le rouge est reservé à un evenement : la sécurité a été ATTEINTE et
+                // bloque le trading. Il signalait aussi le simple fait d'avoir mis le toggle
+                // sur OFF, ce qui laissait la ligne en alerte permanente pour un choix
+                // deliberé -- couper un interrupteur doit se comporter comme n'importe quel
+                // autre interrupteur, l'etat OFF du bouton suffit à le dire.
+                // Orange = verrouillé, mais les réglages actuels ne le justifient plus (seuil
+                // relevé OU disjoncteur coupé) : il ne reste que le déverrouillage à faire.
                 { label: 'Max Drawdown (%)', key: 'max_dd', val: settings.max_dd * 100, step: '1', mult: 100,
-                  toggleKey: 'drawdown_active', toggleFn: toggleDrawdown, warn: true },
+                  toggleKey: 'drawdown_active', toggleFn: toggleDrawdown,
+                  alerte: isLocked ? (isDDPendingUnlock ? 'pending' : 'hit') : null },
                 // (#103) Ces deux lignes ne sont PAS indépendantes, et rien ne le disait.
                 // Le Soft SL vit dans la branche `if TRAILING_STOP_PIPS > 0` et se déclenche
                 // à TRAILING_STOP_PIPS sous le sommet atteint : à 0 la branche n'est jamais
@@ -1846,7 +1859,7 @@ const { account, daily_stats, settings: settingsFromBot, active_trades } = dashb
                 const active = item.defaultOff ? settings[item.toggleKey] === true
                                                : settings[item.toggleKey] !== false;
                 return (
-                  <div key={item.key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', background: item.warn && !active ? '#3a1f1f' : '#2a2a2a', padding: '10px', borderRadius: '8px', border: item.warn && !active ? '1px solid #ff4444' : '1px solid transparent' }}>
+                  <div key={item.key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', background: item.alerte === 'hit' ? '#3a1f1f' : item.alerte === 'pending' ? '#3a331f' : '#2a2a2a', padding: '10px', borderRadius: '8px', border: item.alerte === 'hit' ? '1px solid #ff4444' : item.alerte === 'pending' ? '1px solid #ffc107' : '1px solid transparent' }}>
                     <span style={{ fontSize: '0.9rem', flex: 1 }}>
                       {item.label}
                       {/* (#104) Marqueur d'attente : rend visible le seul flou qui subsiste.
@@ -1859,7 +1872,8 @@ const { account, daily_stats, settings: settingsFromBot, active_trades } = dashb
                                                : "Bot hors ligne — sera appliqué à son prochain démarrage"}
                           style={{ color: botOnline ? '#ffc107' : '#ff6b6b', fontSize: '0.6rem', marginLeft: '6px', verticalAlign: 'middle' }}>●</span>
                       )}
-                      {item.warn && !active && <span style={{ color: '#ff6b6b', fontSize: '0.7rem', display: 'block' }}>⚠️ Protection désactivée</span>}
+                      {item.alerte === 'hit' && <span style={{ color: '#ff6b6b', fontSize: '0.7rem', display: 'block' }}>⚠️ Seuil atteint — trading bloqué</span>}
+                      {item.alerte === 'pending' && <span style={{ color: '#ffc107', fontSize: '0.7rem', display: 'block' }}>⏳ Déverrouillage requis — voir « Contrôle Système »</span>}
                       {/* (#103) Note contextuelle sous le libellé : sert à révéler les
                           dépendances entre réglages, que rien n'indiquait jusqu'ici. */}
                       {item.hint && <span style={{ color: '#ffc107', fontSize: '0.7rem', display: 'block', marginTop: '3px', lineHeight: 1.4 }}>{item.hint}</span>}
