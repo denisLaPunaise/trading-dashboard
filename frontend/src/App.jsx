@@ -250,6 +250,9 @@ function App() {
   const [pendingSettings, setPendingSettings] = useState({})
   const pendingCmdIds = useRef({})   // { clé: id de la DERNIÈRE commande envoyée }
   const pendingTimers = useRef({})   // { clé: filet de sécurité }
+  // (#105) Réglages confirmés par le bot mais dont on attend encore la poussée d'état :
+  // Map { clé -> cmdId }. Voir trackPendingCommand pour le pourquoi.
+  const pendingConfirmes = useRef(new Map())
   const PENDING_TIMEOUT_MS = 20000
   
   const [isTradesOpen, setIsTradesOpen] = useState(false) // (#9) fermé par défaut
@@ -323,6 +326,7 @@ function App() {
       delete pendingTimers.current[key];
     }
     delete pendingCmdIds.current[key];
+    pendingConfirmes.current.delete(key);
     setPendingSettings((prev) => {
       if (!(key in prev)) return prev;
       const next = { ...prev };
@@ -344,8 +348,18 @@ function App() {
       if (!d || d.status === 'pending') return;
       unsub();
       activeCommandUnsubs.current.delete(unsub);
-      if (d.status === 'error') alert(`❌ ${d.result?.message || 'Réglage refusé par le bot.'}`);
-      clearPending(key, cmdId);
+      if (d.status === 'error') {
+        alert(`❌ ${d.result?.message || 'Réglage refusé par le bot.'}`);
+        clearPending(key, cmdId);   // refusé : on rend la main tout de suite
+        return;
+      }
+      // (#105) Commande acceptée -- mais on NE retire PAS encore la valeur affichée.
+      // Le bot écrit deux fois dans Firestore : d'abord le statut de la commande, ensuite
+      // ses réglages à jour. Rendre la main dès le statut laissait l'ancienne valeur du bot
+      // réapparaître pendant l'intervalle entre les deux, d'où le clignotement de moins
+      // d'une seconde. On attend la POUSSÉE D'ÉTAT suivante (cf. l'effet plus bas), qui est
+      // le premier instant où le bot a vraiment quelque chose de neuf à afficher.
+      pendingConfirmes.current.set(key, cmdId);
     });
     activeCommandUnsubs.current.add(unsub);
   }, [userId, clearPending]);
@@ -359,6 +373,17 @@ function App() {
     pendingTimers.current[key] = setTimeout(
       () => clearPending(key, pendingCmdIds.current[key]), PENDING_TIMEOUT_MS);
   }, [clearPending]);
+
+  // (#105) Les réglages confirmés rendent la main ICI, à la première poussée d'état reçue
+  // après la confirmation -- jamais avant. On passe le `cmdId` mémorisé au moment de la
+  // confirmation, pas le courant : si l'utilisateur a re-modifié entre-temps, le garde-fou
+  // de clearPending voit un identifiant périmé et conserve la saisie la plus récente.
+  useEffect(() => {
+    if (!pendingConfirmes.current.size) return;
+    const aRendre = [...pendingConfirmes.current.entries()];
+    pendingConfirmes.current.clear();
+    aRendre.forEach(([cle, cmdId]) => clearPending(cle, cmdId));
+  }, [dashboardData, clearPending]);
 
 // Fonction ultra-sécurisée pour les retours haptiques (Vibrations)
   const triggerHaptic = (type = 'light') => {
