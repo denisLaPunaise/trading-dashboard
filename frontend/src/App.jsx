@@ -1117,7 +1117,24 @@ const { account, daily_stats, settings: settingsFromBot, active_trades } = dashb
             <AlertTriangle size={60} style={{ display: 'block', margin: '0 auto 10px' }} />
             SÉCURITÉ ACTIVÉE
           </div>
-          <p style={{ marginTop: '20px', fontSize: '1.2rem', color: '#aaa', fontWeight: 'bold' }}>Marché verrouillé. Positions clôturées.</p>
+          {/* (#104) "Positions clôturées" était affiché en toutes circonstances, y compris
+              quand des positions hors bot restaient grandes ouvertes et en perte -- le bot
+              n'ayant pas le droit d'y toucher. C'est le message qu'un client a lu en plein
+              écran pendant que ses deux positions continuaient de descendre. Le texte dit
+              maintenant ce qui s'est réellement passé. */}
+          {(() => {
+            const horsBot = displayedTrades.filter(t => !t.managed).length;
+            return (
+              <p style={{ marginTop: '20px', fontSize: '1.2rem', color: '#aaa', fontWeight: 'bold', textAlign: 'center', padding: '0 20px' }}>
+                Marché verrouillé.{' '}
+                {horsBot > 0
+                  ? <span style={{ color: '#ffc107' }}>
+                      {horsBot} position(s) NON clôturée(s) — le bot ne les gère pas.
+                    </span>
+                  : 'Positions clôturées.'}
+              </p>
+            );
+          })()}
         </div>
       )}
 

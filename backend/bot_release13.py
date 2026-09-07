@@ -860,10 +860,23 @@ TIMEOUT_SECONDS = 300
 # 💓 FONCTION POULS (A mettre dans ta logique Bot)
 # ==========================================
 def update_pulse():
-    """Le bot signale qu'il est vivant"""
+    """Le bot signale qu'il est vivant.
+
+    (#104) Ecriture ATOMIQUE. `open(WATCH_FILE, "w")` tronque le fichier AVANT d'ecrire : une
+    lecture du watchdog tombant dans cet intervalle renvoie une valeur TRONQUEE -- "1757260"
+    au lieu de "1757260000.12" -- soit un horodatage de 1970, donc un age enorme, donc un
+    process.kill() sur un worker qui va parfaitement bien.
+
+    Ni le `if content:` ni le `except: pass` du watchdog ne rattrapent ce cas : une troncature
+    parse tres bien en float. La course existait deja (pouls toutes les 10 s, relecture toutes
+    les 5 s) ; la boucle de reprise MT5 ecrivant plus souvent, autant la fermer pour de bon.
+    os.replace() est atomique sous Windows comme sous POSIX.
+    """
     try:
-        with open(WATCH_FILE, "w") as f:
+        tmp = WATCH_FILE + ".tmp"
+        with open(tmp, "w") as f:
             f.write(str(time.time()))
+        os.replace(tmp, WATCH_FILE)
     except: pass
 
 # ==========================================
