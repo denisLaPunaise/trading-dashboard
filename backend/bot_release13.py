@@ -174,6 +174,12 @@ API_ID = 0
 API_HASH = ""
 BOT_TOKEN = ""
 USER_LICENSE_KEY = ""
+# (#103) MT5_PATH etait livre dans settings.json et documente dans INSTALLATION.txt
+# ("le champ MT5_PATH doit pointer vers ton terminal64.exe"), mais AUCUNE ligne du code ne le
+# lisait : les appels a mt5.initialize() etaient tous nus. Un client avec plusieurs terminaux
+# installes pouvait corriger ce chemin pendant des heures sans le moindre effet. Il est lu ici,
+# avec les autres cles, parce que load_settings() ne tourne qu'APRES le test de connexion.
+MT5_PATH = ""
 
 if os.path.exists("settings.json"):
     try:
@@ -183,6 +189,7 @@ if os.path.exists("settings.json"):
             API_HASH = st_data.get("TELEGRAM_API_HASH", "")
             BOT_TOKEN = st_data.get("TELEGRAM_BOT_TOKEN", "")
             USER_LICENSE_KEY = st_data.get("USER_LICENSE_KEY", "")
+            MT5_PATH = (st_data.get("MT5_PATH", "") or "").strip()
     except Exception as e:
         print(f"Impossible de lire les clés API Telegram : {e}")
 
@@ -5389,11 +5396,24 @@ async def monitor_positions():
                                 if tag not in TRADES_PROCESSED_LEVELS[pos.ticket]:
                                     TRADES_PROCESSED_LEVELS[pos.ticket].add(tag); await run_bg(save_memory)
                                     pct_txt = int(SOFT_SL_PERCENT * 100)
-                                    
+
+                                    # (#103) Le message annoncait "Le reste court avec SL a BE"
+                                    # dans TOUS les cas. Or la mise a BE est posee plus bas et
+                                    # uniquement si SL_SUIVEUR_ACTIVE : avec le SL Suiveur sur
+                                    # OFF, le client lisait que son reliquat etait protege alors
+                                    # que son stop n'avait pas bouge d'un pip.
+                                    if not SL_SUIVEUR_ACTIVE:
+                                        suite_sl = ("⚠️ SL Suiveur désactivé : le stop n'a **pas** "
+                                                    "été déplacé, le reste court avec son SL d'origine.")
+                                    elif new_sl_price:
+                                        suite_sl = "Le reste court avec SL à BE."
+                                    else:
+                                        suite_sl = "Le reste court avec son SL actuel."
+
                                     await send_channel_alert(f"📉 **REPLI DÉTECTÉ (Soft SL)**\n\n"
                                                      f"Symbole: {sym} ({open_time})\n\n"
                                                      f"Sommet: +{int(current_max_pips)}p | Actuel: +{int(pips)}p\n"
-                                                     f"Action: Clôture {pct_txt}%. Le reste court avec SL à BE.", src_trade)
+                                                     f"Action: Clôture {pct_txt}%. {suite_sl}", src_trade)
 
                                     success = await close_partial(pos, SOFT_SL_PERCENT, "Soft Trailing", pips, etape="SL suiv")
                                     # Si ça rate (sauf petit lot), on enlève le tag pour réessayer
@@ -6241,7 +6261,12 @@ async def admin_commands(event):
         try:
             val = float(text.split()[1]); 
             if val > 1: val = val/100
-            SOFT_SL_PERCENT = val; await run_bg(save_settings); await event.reply(f"📉 Vente Soft SL : **{val*100:.0f}%**")
+            SOFT_SL_PERCENT = val; await run_bg(save_settings)
+            # (#103) Meme avertissement que le toggle : a SL Suiveur = 0, ce reglage dort.
+            avert = ("\n\n⚠️ Sans effet tant que **SL Suiveur** vaut 0 (`/sl_suiveur 85`) : "
+                     "ce champ active le mode ET fixe la distance de repli."
+                     ) if TRAILING_STOP_PIPS <= 0 else ""
+            await event.reply(f"📉 Vente Soft SL : **{val*100:.0f}%**{avert}")
         except: await event.reply("❌ Usage: /sl_sell 20")
 
 # --- 10.ter REGLAGE ANTI-DOUBLON SABR ---
@@ -7526,8 +7551,15 @@ async def handle_firebase_command(cmd_id: str, cmd_data: dict) -> None:
             global SOFT_SL_ACTIVE
             SOFT_SL_ACTIVE = not SOFT_SL_ACTIVE
             await run_bg(save_settings)
-            await send_alert(f"📉 Soft SL Vente : {'🟢 ACTIVÉ' if SOFT_SL_ACTIVE else '🔴 DÉSACTIVÉ'}")
-            set_status("done", {"success": True})
+            # (#103) Le Soft SL vit DANS la branche `if TRAILING_STOP_PIPS > 0`, et se
+            # declenche a TRAILING_STOP_PIPS sous le sommet : a 0, la branche n'est jamais
+            # prise et le reglage ne peut rien faire. Le dashboard presentant les deux lignes
+            # comme independantes, un client pouvait l'activer et attendre indefiniment.
+            avert = ("\n\n⚠️ **Sans effet tant que « SL Suiveur (pips) » vaut 0** : "
+                     "c'est ce champ qui active le mode ET qui fixe la distance de repli."
+                     ) if (SOFT_SL_ACTIVE and TRAILING_STOP_PIPS <= 0) else ""
+            await send_alert(f"📉 Soft SL Vente : {'🟢 ACTIVÉ' if SOFT_SL_ACTIVE else '🔴 DÉSACTIVÉ'}{avert}")
+            set_status("done", {"success": True, "message": avert.strip() or None})
 
         elif cmd_type == "toggle_sabr_doublon":
             # (#pack) Équivalent dashboard de /doublon_sabr -- l'état était déjà poussé au
@@ -7706,16 +7738,141 @@ async def mark_bot_offline_and_exit():
     os._exit(0)
 
 
+# (#103) Diagnostic de connexion MetaTrader.
+#
+# L'ancienne version tenait en trois lignes : un mt5.initialize() nu, un message unique
+# ("MetaTrader 5 fermé ou inaccessible") et un `return` sec. Trois causes tres differentes
+# aboutissaient donc au meme texte -- terminal ferme, terminal ouvert mais pas connecte a son
+# compte, ou niveaux d'elevation differents entre Kairos (toujours admin, cf. uac_admin) et
+# MetaTrader. Un client a passe un week-end a chercher, avec MT5 ouvert sous les yeux, alors
+# que son compte demo avait expire ("authorization failed (Invalid account)" dans le journal
+# MetaTrader). mt5.last_error() connaissait la reponse depuis le debut.
+MT5_CAUSES = {
+    -10005: "Le terminal ne répond pas (délai dépassé).",
+    -10004: "Connexion au terminal refusée.",
+    -10003: "Impossible d'initialiser le lien avec le terminal.",
+    -8:     "Le trading algorithmique est désactivé dans MetaTrader.",
+    -6:     "MetaTrader a refusé l'autorisation (compte non connecté ?).",
+    -4:     "Terminal MetaTrader introuvable sur ce PC.",
+}
+MT5_TENTATIVES = 10     # ~5 minutes avant de rendre la main au watchdog
+MT5_DELAI_S = 30
+
+
+def _tenter_connexion_mt5():
+    """Un essai de connexion. Renvoie (ok, code, libelle).
+
+    MT5_PATH n'est utilise que s'il pointe sur un fichier existant : un chemin errone dans
+    settings.json ferait echouer l'initialisation alors que l'auto-detection, elle, aurait
+    pu aboutir. On essaie donc le chemin configure d'abord, l'auto-detection ensuite.
+    """
+    tentatives = []
+    if MT5_PATH and os.path.exists(MT5_PATH):
+        tentatives.append({"path": MT5_PATH})
+    tentatives.append({})   # auto-detection (comportement historique)
+
+    for kwargs in tentatives:
+        try:
+            if mt5.initialize(**kwargs):
+                return True, 0, ""
+        except Exception as e:
+            logger.warning(f"⚠️ mt5.initialize({kwargs}) a levé : {e}")
+    try:
+        code, libelle = mt5.last_error()
+    except Exception:
+        code, libelle = 0, "inconnue"
+    return False, code, libelle
+
+
+def _banniere_echec_mt5(code, libelle, essai, total):
+    """Message client : le code brut, la cause probable, et les gestes dans l'ordre."""
+    lignes = [
+        "", "█" * 68,
+        " ⚠️  METATRADER 5 : CONNEXION IMPOSSIBLE ".center(67, "█"),
+        "█" * 68, "",
+        f" Code MetaTrader : {code}  ({libelle})",
+    ]
+    if code in MT5_CAUSES:
+        lignes.append(f" Cause probable  : {MT5_CAUSES[code]}")
+    if MT5_PATH and not os.path.exists(MT5_PATH):
+        lignes += ["",
+                   " ❗ Le chemin MT5_PATH de settings.json n'existe pas :",
+                   f"    {MT5_PATH}",
+                   "    Corrigez-le, ou videz-le pour laisser Kairos chercher tout seul."]
+    lignes += [
+        "",
+        " À VÉRIFIER, DANS CET ORDRE :",
+        "",
+        " 1. MetaTrader 5 est-il bien OUVERT ?",
+        "",
+        " 2. Est-il CONNECTÉ à votre compte ?",
+        "    Regardez le voyant tout en bas à DROITE de MetaTrader :",
+        "      • vert, avec des kilo-octets qui montent = connecté",
+        "      • rouge, ou « 0 / 0 Kb »                 = PAS connecté",
+        "    Un terminal ouvert mais déconnecté ne suffit pas.",
+        "    Reconnectez-vous : Fichier > Connexion au compte de trading.",
+        "    (Un compte démo non utilisé finit par être supprimé par le serveur.)",
+        "",
+        " 3. Kairos tourne en administrateur : MetaTrader doit l'être AUSSI.",
+        "    Clic droit sur MetaTrader 5 > Exécuter en tant qu'administrateur.",
+        "",
+        " 4. Plusieurs MetaTrader installés ? N'en laissez qu'UN seul ouvert,",
+        "    ou indiquez le bon dans MT5_PATH (settings.json).",
+        "",
+        f" Nouvel essai dans {MT5_DELAI_S} s  (tentative {essai}/{total})",
+        " Laissez cette fenêtre ouverte : la connexion se fera toute seule",
+        " dès que MetaTrader sera prêt.",
+        "█" * 68, "",
+    ]
+    return "\n".join(lignes)
+
+
+async def connexion_mt5():
+    """Connexion a MetaTrader, avec diagnostic et reprise. True si connecte.
+
+    L'ancienne version testait UNE fois puis faisait `return` : le worker restait ensuite
+    vivant sur run_until_disconnected() sans jamais retenter, et comme alive.txt n'avait pas
+    encore ete ecrit, la detection de gel du watchdog (`if os.path.exists(WATCH_FILE)`) ne
+    s'appliquait pas non plus. Le bot restait donc bloque indefiniment, meme une fois MT5
+    repare, jusqu'a ce que le client relance l'exe a la main.
+
+    Le pouls est ecrit AVANT le premier essai : si on finit par abandonner, le watchdog voit
+    un alive.txt qui vieillit, tue le worker et le relance -- la reprise devient automatique
+    au lieu de dependre du client.
+    """
+    for essai in range(1, MT5_TENTATIVES + 1):
+        update_pulse()
+        ok, code, libelle = _tenter_connexion_mt5()
+        if ok:
+            if essai > 1:
+                client_status(f"✔️ MetaTrader 5 connecté (après {essai} tentatives).")
+            return True
+        logger.critical(f"❌ MT5 injoignable [{code}] {libelle} (essai {essai}/{MT5_TENTATIVES})")
+        client_status(_banniere_echec_mt5(code, libelle, essai, MT5_TENTATIVES))
+        if essai < MT5_TENTATIVES:
+            for _ in range(MT5_DELAI_S):
+                await asyncio.sleep(1)
+                update_pulse()
+    client_status("❌ MetaTrader 5 toujours injoignable — redémarrage automatique du bot...")
+    return False
+
+
 async def main():
     logger.info("\n" + "—"*50)
     logger.info("🔄 INITIALISATION DES COMPOSANTS...")
-    
-    if not mt5.initialize():
-        logger.critical("❌ Erreur Critique : MetaTrader 5 fermé ou inaccessible.")
-        client_status("❌ Erreur : MetaTrader 5 fermé ou inaccessible.")
+
+    if not await connexion_mt5():
         return
-    logger.info(f"✔️ Terminal MT5 Connecté (Compte: {mt5.account_info().login})")
-    client_status(f"✔️ MetaTrader 5 connecté (compte {mt5.account_info().login})")
+    acc_init = mt5.account_info()
+    # (#103) account_info() peut etre None sur un terminal connecte sans compte : l'ancien
+    # `mt5.account_info().login` levait alors un AttributeError remonte en "Crash Fatal Worker".
+    if acc_init is None:
+        logger.critical("❌ Terminal joignable mais aucun compte connecté.")
+        client_status("❌ MetaTrader répond, mais aucun compte n'est connecté.\n"
+                      "   Fichier > Connexion au compte de trading, puis relancez Kairos.")
+        return
+    logger.info(f"✔️ Terminal MT5 Connecté (Compte: {acc_init.login})")
+    client_status(f"✔️ MetaTrader 5 connecté (compte {acc_init.login})")
 
     # (#69) Sans "Trading algorithmique" coché dans MT5, la connexion réussit, les signaux
     # arrivent, mais CHAQUE ordre est rejeté (retcode 10027). Le client voyait un bot qui
@@ -7734,10 +7891,49 @@ async def main():
                 "    de la barre d'outils : il doit devenir VERT.\n\n"
                 " Si le bouton est absent : menu Outils > Options > Expert Advisors,\n"
                 " puis cochez « Autoriser le trading algorithmique ».\n\n"
+                " ⚠️ DÉCOCHEZ AUSSI, dans ce même onglet :\n"
+                "    « Désactiver le trading algorithmique lors du changement\n"
+                "      de compte » — sinon MetaTrader recoupe l'option tout seul\n"
+                "    à chaque fois que vous changez de compte, et plus aucun\n"
+                "    ordre ne passe.\n\n"
                 " Aucun redémarrage nécessaire, l'activation est prise en compte\n"
                 " immédiatement.\n" + "█" * 65 + "\n")
     except Exception as e:
         logger.warning(f"⚠️ Vérification du trading algorithmique impossible : {e}")
+
+    # (#103) Mode de compte. Kairos suit ses positions PAR TICKET : ACTIVE_TRADE_SOURCES est
+    # indexe par ticket, close_partial() envoie "position": pos.ticket, et une zone SABR /
+    # INDODOG / FTS pose jusqu'a 3 ordres sur le MEME symbole. Sur un compte NETTING, MT5
+    # fusionne tout ce qui touche un symbole en UNE position : deux des trois tickets
+    # disparaissent, le bot croit ces positions fermees alors que le volume est au marche,
+    # les partiels sont rejetes, et un signal vendeur d'un canal REDUIT la position acheteuse
+    # d'un autre canal. Rien de tout cela ne remonte une erreur : on refuse de demarrer.
+    try:
+        acc_mode = mt5.account_info()
+        if acc_mode is not None and acc_mode.margin_mode != mt5.ACCOUNT_MARGIN_MODE_RETAIL_HEDGING:
+            logger.critical(f"❌ Compte NON hedging (margin_mode={acc_mode.margin_mode}). Arrêt.")
+            client_status(
+                "\n" + "█" * 68 + "\n" +
+                " ⛔  COMPTE INCOMPATIBLE : MODE « NETTING » ".center(67, "█") + "\n" +
+                "█" * 68 + "\n\n"
+                " Votre compte MetaTrader est en mode NETTING. Kairos a besoin\n"
+                " d'un compte en mode HEDGING pour fonctionner.\n\n"
+                " Pourquoi : en netting, MetaTrader fusionne toutes les positions\n"
+                " d'un même symbole en une seule. Les 3 ordres d'une zone SABR se\n"
+                " confondraient, les prises partielles seraient refusées, et un\n"
+                " signal vendeur pourrait fermer un achat d'un autre canal.\n\n"
+                " 👉 Le mode est écrit dans le TITRE de la fenêtre MetaTrader :\n"
+                "    « 12345678 - MonBroker - Netting » ou « ... - Hedge ».\n\n"
+                " Il ne se change pas : il faut ouvrir un compte en Hedging chez\n"
+                " votre courtier. Les comptes prop (FTMO & co) le sont toujours.\n\n"
+                " Le bot ne démarrera pas tant que ce compte est utilisé.\n"
+                + "█" * 68 + "\n")
+            return
+    except AttributeError:
+        # Vieux paquet MetaTrader5 sans la constante : on n'invente pas un blocage.
+        logger.warning("⚠️ margin_mode indisponible dans ce paquet MetaTrader5 — contrôle ignoré.")
+    except Exception as e:
+        logger.warning(f"⚠️ Vérification du mode de compte impossible : {e}")
 
     await bot_user.start(bot_token=BOT_TOKEN)
     logger.info("✔️ Interface interactive Telegram chargée.")
