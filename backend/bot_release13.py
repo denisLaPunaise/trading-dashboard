@@ -158,7 +158,7 @@ SECURITY_PIN = str(secrets.randbelow(900000) + 100000)
 # ==========================================
 # 🔐 CONFIGURATION DISTRIBUTION (LICENCE)
 # ==========================================
-VERSION_BOT = "15.13.0"
+VERSION_BOT = "15.14.0"
 # (URL_LICENCE retire — licence verifiee via Firestore, Phase 4)
 
 # ==========================================
@@ -174,6 +174,12 @@ API_ID = 0
 API_HASH = ""
 BOT_TOKEN = ""
 USER_LICENSE_KEY = ""
+# (#103) MT5_PATH etait livre dans settings.json et documente dans INSTALLATION.txt
+# ("le champ MT5_PATH doit pointer vers ton terminal64.exe"), mais AUCUNE ligne du code ne le
+# lisait : les appels a mt5.initialize() etaient tous nus. Un client avec plusieurs terminaux
+# installes pouvait corriger ce chemin pendant des heures sans le moindre effet. Il est lu ici,
+# avec les autres cles, parce que load_settings() ne tourne qu'APRES le test de connexion.
+MT5_PATH = ""
 
 if os.path.exists("settings.json"):
     try:
@@ -183,6 +189,7 @@ if os.path.exists("settings.json"):
             API_HASH = st_data.get("TELEGRAM_API_HASH", "")
             BOT_TOKEN = st_data.get("TELEGRAM_BOT_TOKEN", "")
             USER_LICENSE_KEY = st_data.get("USER_LICENSE_KEY", "")
+            MT5_PATH = (st_data.get("MT5_PATH", "") or "").strip()
     except Exception as e:
         print(f"Impossible de lire les clés API Telegram : {e}")
 
@@ -747,6 +754,11 @@ TELEGRAM_TO_TICKET = {}
 MANAGED_MANUAL_TICKETS = set()
 NOTIFIED_MANUAL_TICKETS = set()
 security_triggered = False
+# (#103) Alerte de fermeture d'urgence : envoyée UNE fois par épisode de verrou, pas à chaque
+# tour de boucle. Remis à False partout où security_triggered retombe (déverrouillage manuel,
+# changement de jour) -- sinon un client dont aucune position n'est gérée par le bot recevait
+# le même message toutes les 60 s indéfiniment, la boucle ne pouvant jamais vider pos_panic.
+DD_PANIC_NOTIFIED = False
 PENDING_MESSAGES = {} # Key: ID, Value: Texte du message
 # --- Mémoire pour les canaux en 2 temps (Ligue) ---
 # Stocke : { "channel_id": { "symbol": "BTCUSD", "action": "ACHAT", "price": 88000, "timestamp": 123456 } }
@@ -860,10 +872,23 @@ TIMEOUT_SECONDS = 300
 # 💓 FONCTION POULS (A mettre dans ta logique Bot)
 # ==========================================
 def update_pulse():
-    """Le bot signale qu'il est vivant"""
+    """Le bot signale qu'il est vivant.
+
+    (#104) Ecriture ATOMIQUE. `open(WATCH_FILE, "w")` tronque le fichier AVANT d'ecrire : une
+    lecture du watchdog tombant dans cet intervalle renvoie une valeur TRONQUEE -- "1757260"
+    au lieu de "1757260000.12" -- soit un horodatage de 1970, donc un age enorme, donc un
+    process.kill() sur un worker qui va parfaitement bien.
+
+    Ni le `if content:` ni le `except: pass` du watchdog ne rattrapent ce cas : une troncature
+    parse tres bien en float. La course existait deja (pouls toutes les 10 s, relecture toutes
+    les 5 s) ; la boucle de reprise MT5 ecrivant plus souvent, autant la fermer pour de bon.
+    os.replace() est atomique sous Windows comme sous POSIX.
+    """
     try:
-        with open(WATCH_FILE, "w") as f:
+        tmp = WATCH_FILE + ".tmp"
+        with open(tmp, "w") as f:
             f.write(str(time.time()))
+        os.replace(tmp, WATCH_FILE)
     except: pass
 
 # ==========================================
@@ -2648,7 +2673,7 @@ async def send_daily_report(acc, pnl_eur, pnl_pct):
     #await send_alert(lt_msg)
 
 async def update_daily_stats():
-    global daily_start_balance, current_trade_day, daily_stats, active_trades_max_pips, NOTIFIED_MANUAL_TICKETS, security_triggered
+    global daily_start_balance, current_trade_day, daily_stats, active_trades_max_pips, NOTIFIED_MANUAL_TICKETS, security_triggered, DD_PANIC_NOTIFIED
     
     # On calcule l'heure Broker actuelle via l'horloge système (UTC + Offset)
     # C'est ce qui permet de fonctionner le week-end quand le marché est mort.
@@ -2695,6 +2720,7 @@ async def update_daily_stats():
         # il survit desormais a un redemarrage (cf. save_state_and_stats).
         _verrou_leve = security_triggered
         security_triggered = False
+        DD_PANIC_NOTIFIED = False   # (#103) nouveau jour = nouvel épisode possible
         
         # 4. Logique Hebdomadaire
         if weekday == 0: # Lundi
@@ -4750,7 +4776,7 @@ async def api_update_setting(data: SettingUpdate):
     global FIXED_LOT_SABR_VIP, FIXED_LOT_SABR_FREE, RISK_PERCENT_SABR_OTHER, SABR_ZONE_EQUAL_SPLIT, SABR_ZONE_PCT1, SABR_ZONE_PCT2, SABR_ZONE_BORNES
     global MAX_DAILY_DRAWDOWN, TRAILING_STOP_PIPS, SOFT_SL_PERCENT
     global BE_OFFSET_PIPS, SABR_TRAILING_PIPS, FIXED_LOT_INDODOG, FIXED_LOT_FTS
-    global SABR_BE_PARTIEL_ACTIVE, SABR_BE_PARTIEL_PCT
+    global SABR_BE_PARTIEL_ACTIVE, SABR_BE_PARTIEL_PCT, SABR_FORWARD_ACTIVE
     global PRIME_HOURS, TIME_OFF_PEAK_FACTOR
 
     k = data.key
@@ -4792,6 +4818,11 @@ async def api_update_setting(data: SettingUpdate):
         if _b: SABR_ZONE_BORNES = _b
     elif k == "sabr_be_partiel": SABR_BE_PARTIEL_ACTIVE = bool(v)
     elif k == "sabr_be_partiel_pct": SABR_BE_PARTIEL_PCT = max(0.01, min(1.0, float(v)))
+    # (#103) sabr_forward etait pousse au dashboard mais n'avait aucun chemin d'ecriture :
+    # ni cle update_setting, ni commande toggle_. Il n'etait donc reglable que par
+    # /forward_sabr. On passe par update_setting plutot que par une nouvelle commande, pour
+    # ne pas avoir a toucher la liste blanche des regles Firestore.
+    elif k == "sabr_forward": SABR_FORWARD_ACTIVE = bool(v)
     elif k == "sabr_zone_pct1": SABR_ZONE_PCT1 = max(0.01, min(0.98, float(v)))
     elif k == "sabr_zone_pct2": SABR_ZONE_PCT2 = max(0.01, min(0.98, float(v)))
     elif k == "max_dd": MAX_DAILY_DRAWDOWN = float(v)
@@ -5045,7 +5076,10 @@ async def close_volume_across(positions, vol_target, label, pips, etape_mt5=None
 
 
 async def monitor_positions():
-    global watched_tickets, PENDING_ORDER_TICKETS
+    # (#103) DD_PANIC_NOTIFIED doit être déclaré global : sans lui l'affectation plus bas
+    # créerait une variable LOCALE et l'alerte repartirait à chaque tour, exactement le
+    # piège du verrou drawdown en V15.10.0.
+    global watched_tickets, PENDING_ORDER_TICKETS, DD_PANIC_NOTIFIED
 
     logger.info("⏳ Warm-up: Attente stabilisation Telegram (10s)...")
     await asyncio.sleep(10) 
@@ -5248,33 +5282,87 @@ async def monitor_positions():
             # (#DD) Même logique que le gate de nouveau trade : check_daily_max_loss() met à
             # jour security_triggered, mais c'est ce verrou PERSISTANT qui décide si on reste
             # en pause -- une fois déclenché, relever le Max DD ne suffit plus à lui seul à
-            # sortir de cette boucle (pos_panic sera de toute façon vide après la 1ère
-            # fermeture, donc pas de ré-envoi d'alerte/ordres inutiles).
+            # sortir de cette boucle.
             check_daily_max_loss()
             if security_triggered:
                 pos_panic = await run_mt5(mt5.positions_get)
-                if pos_panic:
-                    await send_alert("🚨 **URGENCE : DD QUOTIDIEN DÉPASSÉ !**\nFermeture d'urgence.")
-                    for p in pos_panic:
-                        if p.magic == MAGIC_NUMBER or p.ticket in MANAGED_MANUAL_TICKETS:
-                            otype = mt5.ORDER_TYPE_SELL if p.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
-                            
-                            # Ajout du prix obligatoire ici aussi !
-                            tick_p = mt5.symbol_info_tick(p.symbol)
-                            price_p = tick_p.bid if otype == mt5.ORDER_TYPE_SELL else tick_p.ask
-                            
-                            req = {
-                                "action": mt5.TRADE_ACTION_DEAL, "symbol": p.symbol, "volume": p.volume, 
-                                "type": otype, "position": p.ticket, "price": price_p, 
-                                "magic": MAGIC_NUMBER, "type_filling": mt5.ORDER_FILLING_IOC
-                            }
-                            await run_mt5(_send_order_blocking, req)
-                    
-                    orders_panic = await run_mt5(mt5.orders_get)
-                    if orders_panic:
-                        for o in orders_panic:
-                            if o.magic == MAGIC_NUMBER:
-                                await run_mt5(_send_order_blocking, {"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
+
+                # (#103) Le tri se fait AVANT l'alerte. L'ancienne version annonçait
+                # "Fermeture d'urgence" dès qu'UNE position existait, sans regarder si le bot
+                # avait le droit d'y toucher. Sur un compte où les positions sont manuelles
+                # (magic != MAGIC_NUMBER et jamais adoptées via /suivi), il annonçait donc une
+                # fermeture qu'il ne faisait pas -- et comme ces positions restent ouvertes,
+                # pos_panic ne se vidait jamais et le message repartait toutes les 60 s.
+                a_fermer, hors_bot = [], []
+                for p in (pos_panic or []):
+                    gere = (p.magic == MAGIC_NUMBER or p.ticket in MANAGED_MANUAL_TICKETS)
+                    (a_fermer if gere else hors_bot).append(p)
+
+                if not DD_PANIC_NOTIFIED:
+                    DD_PANIC_NOTIFIED = True
+                    lignes = ["🚨 **URGENCE : DD QUOTIDIEN DÉPASSÉ !**", ""]
+                    if a_fermer:
+                        lignes.append(f"Fermeture d'urgence de **{len(a_fermer)}** position(s).")
+                    if hors_bot:
+                        syms = ", ".join(sorted({p.symbol for p in hors_bot}))
+                        lignes += [
+                            "",
+                            f"⚠️ **{len(hors_bot)} position(s) hors bot** ({syms}) : elles n'ont "
+                            "pas été ouvertes par Kairos, il n'a pas le droit d'y toucher. "
+                            "Elles restent **OUVERTES**.",
+                            "👉 Ferme-les toi-même dans MetaTrader 5, ou envoie "
+                            "`/suivi <ticket>` pour que le bot les prenne en charge.",
+                        ]
+                    if not a_fermer and not hors_bot:
+                        lignes.append("Aucune position ouverte.")
+                    # (#103) Ne pas se contenter de "/unlock pour reprendre" : le
+                    # deverrouillage REFUSE tant que la perte du jour depasse le seuil, ce qui
+                    # est precisement le cas quand des positions hors bot restent ouvertes en
+                    # perte -- le bot ne pouvant pas les fermer, la perte ne redescend pas
+                    # toute seule. Envoyer le client sur une commande qui va echouer, c'est le
+                    # mur sur lequel il vient de perdre une matinee. On donne la sequence qui
+                    # marche, en une fois.
+                    lignes += ["", "**POUR REPRENDRE LE TRADING**"]
+                    if hors_bot:
+                        lignes += [
+                            "`/unlock` sera **refusé** tant que ces positions restent ouvertes "
+                            "en perte (le bot ne peut pas les fermer, donc la perte du jour ne "
+                            "redescend pas).",
+                            "",
+                            "1. Ferme-les dans MetaTrader 5 — ou laisse-les si tu les assumes",
+                            "2. `/dd off`   (coupe le disjoncteur pour aujourd'hui)",
+                            "3. `/unlock`",
+                            "",
+                            "_Puis `/dd on` demain, une fois le compteur du jour remis à zéro._",
+                        ]
+                    else:
+                        lignes += [
+                            "`/unlock` — s'il refuse, la perte du jour dépasse encore le seuil :",
+                            "`/dd off` puis `/unlock`, et `/dd on` demain.",
+                        ]
+                    await send_alert("\n".join(lignes))
+
+                for p in a_fermer:
+                    otype = mt5.ORDER_TYPE_SELL if p.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
+
+                    # Ajout du prix obligatoire ici aussi !
+                    tick_p = mt5.symbol_info_tick(p.symbol)
+                    if not tick_p:
+                        continue
+                    price_p = tick_p.bid if otype == mt5.ORDER_TYPE_SELL else tick_p.ask
+
+                    req = {
+                        "action": mt5.TRADE_ACTION_DEAL, "symbol": p.symbol, "volume": p.volume,
+                        "type": otype, "position": p.ticket, "price": price_p,
+                        "magic": MAGIC_NUMBER, "type_filling": mt5.ORDER_FILLING_IOC
+                    }
+                    await run_mt5(_send_order_blocking, req)
+
+                orders_panic = await run_mt5(mt5.orders_get)
+                if orders_panic:
+                    for o in orders_panic:
+                        if o.magic == MAGIC_NUMBER:
+                            await run_mt5(_send_order_blocking, {"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
                 await asyncio.sleep(60)
                 continue
 
@@ -5507,11 +5595,24 @@ async def monitor_positions():
                                 if tag not in TRADES_PROCESSED_LEVELS[pos.ticket]:
                                     TRADES_PROCESSED_LEVELS[pos.ticket].add(tag); await run_bg(save_memory)
                                     pct_txt = int(SOFT_SL_PERCENT * 100)
-                                    
+
+                                    # (#103) Le message annoncait "Le reste court avec SL a BE"
+                                    # dans TOUS les cas. Or la mise a BE est posee plus bas et
+                                    # uniquement si SL_SUIVEUR_ACTIVE : avec le SL Suiveur sur
+                                    # OFF, le client lisait que son reliquat etait protege alors
+                                    # que son stop n'avait pas bouge d'un pip.
+                                    if not SL_SUIVEUR_ACTIVE:
+                                        suite_sl = ("⚠️ SL Suiveur désactivé : le stop n'a **pas** "
+                                                    "été déplacé, le reste court avec son SL d'origine.")
+                                    elif new_sl_price:
+                                        suite_sl = "Le reste court avec SL à BE."
+                                    else:
+                                        suite_sl = "Le reste court avec son SL actuel."
+
                                     await send_channel_alert(f"📉 **REPLI DÉTECTÉ (Soft SL)**\n\n"
                                                      f"Symbole: {sym} ({open_time})\n\n"
                                                      f"Sommet: +{int(current_max_pips)}p | Actuel: +{int(pips)}p\n"
-                                                     f"Action: Clôture {pct_txt}%. Le reste court avec SL à BE.", src_trade)
+                                                     f"Action: Clôture {pct_txt}%. {suite_sl}", src_trade)
 
                                     success = await close_partial(pos, SOFT_SL_PERCENT, "Soft Trailing", pips, etape="SL suiv")
                                     # Si ça rate (sauf petit lot), on enlève le tag pour réessayer
@@ -5907,7 +6008,7 @@ async def pairing_handler(event):
 
 @client.on(events.NewMessage())
 async def admin_commands(event):
-    global RISK_PERCENT_GOLD, RISK_PERCENT_OTHER, security_triggered
+    global RISK_PERCENT_GOLD, RISK_PERCENT_OTHER, security_triggered, DD_PANIC_NOTIFIED
     global RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE
     global FIXED_LOT_SABR_VIP, FIXED_LOT_SABR_FREE
     global RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO
@@ -6324,10 +6425,45 @@ async def admin_commands(event):
         # -- il faut d'abord relever le seuil, sinon on ne ferait que ré-autoriser une
         # seconde puis re-déclencher la fermeture d'urgence au cycle suivant.
         if check_daily_max_loss():
-            await event.reply("⛔ Augmente d'abord le **Max DD** -- la perte du jour dépasse toujours la limite actuelle.")
+            await event.reply("⛔ Augmente d'abord le **Max DD** (`/max_dd 10`) ou coupe le "
+                              "disjoncteur (`/dd off`) -- la perte du jour dépasse toujours "
+                              "la limite actuelle.")
         else:
             security_triggered = False
+            DD_PANIC_NOTIFIED = False   # (#103) ré-arme l'alerte pour le prochain épisode
             await event.reply("🔓 **SÉCURITÉ DÉVERROUILLÉE**")
+
+# --- 6 bis. DISJONCTEUR DRAWDOWN ---
+    # (#103) Le disjoncteur n'existait QU'au dashboard (commande Firestore toggle_drawdown).
+    # Quand le dashboard ne répond pas -- ou quand son toggle n'atteint pas le bot, ce qui
+    # était silencieux avant ce correctif -- le client n'avait aucun moyen de le couper, donc
+    # aucun moyen de lever un verrou déclenché. Ici l'état est LU puis ÉCRIT explicitement
+    # (`on`/`off`), jamais basculé à l'aveugle : deux appels successifs donnent le même
+    # résultat, contrairement au `not DRAWDOWN_ACTIVE` du dashboard.
+    elif text.startswith("/dd"):
+        global DRAWDOWN_ACTIVE
+        arg = text.split()[1].lower() if len(text.split()) > 1 else ""
+        if arg in ("on", "1", "actif"):
+            DRAWDOWN_ACTIVE = True
+            await run_bg(save_settings)
+        elif arg in ("off", "0", "inactif"):
+            DRAWDOWN_ACTIVE = False
+            await run_bg(save_settings)
+        elif arg:
+            await event.reply("❌ Usage: `/dd on` ou `/dd off` (sans argument : état actuel)")
+            return
+        if DRAWDOWN_ACTIVE:
+            await event.reply(
+                f"📉 **Disjoncteur drawdown : 🟢 ACTIF**\n\n"
+                f"Seuil : **{MAX_DAILY_DRAWDOWN*100:.1f} %** de la balance de minuit.\n"
+                f"Verrou en cours : {'🔴 OUI' if security_triggered else '🟢 non'}\n\n"
+                f"_Le couper : `/dd off` · changer le seuil : `/max_dd 10`_")
+        else:
+            await event.reply(
+                "📉 **Disjoncteur drawdown : 🔴 COUPÉ**\n\n"
+                "Plus aucune fermeture d'urgence ni blocage sur perte journalière.\n"
+                f"Verrou en cours : {'🔴 OUI -- fais `/unlock` maintenant' if security_triggered else '🟢 non'}\n\n"
+                "⚠️ _N'oublie pas de le remettre : `/dd on`_")
 
 # --- 7. SUIVI MANUEL ---
     elif text.startswith("/suivi"):
@@ -6365,7 +6501,12 @@ async def admin_commands(event):
         try:
             val = float(text.split()[1]); 
             if val > 1: val = val/100
-            SOFT_SL_PERCENT = val; await run_bg(save_settings); await event.reply(f"📉 Vente Soft SL : **{val*100:.0f}%**")
+            SOFT_SL_PERCENT = val; await run_bg(save_settings)
+            # (#103) Meme avertissement que le toggle : a SL Suiveur = 0, ce reglage dort.
+            avert = ("\n\n⚠️ Sans effet tant que **SL Suiveur** vaut 0 (`/sl_suiveur 85`) : "
+                     "ce champ active le mode ET fixe la distance de repli."
+                     ) if TRAILING_STOP_PIPS <= 0 else ""
+            await event.reply(f"📉 Vente Soft SL : **{val*100:.0f}%**{avert}")
         except: await event.reply("❌ Usage: /sl_sell 20")
 
 # --- 10.ter REGLAGE ANTI-DOUBLON SABR ---
@@ -7565,16 +7706,41 @@ async def handle_firebase_command(cmd_id: str, cmd_data: dict) -> None:
                 set_status("error", {"success": False, "message": "Trade introuvable"})
 
         elif cmd_type == "panic":
+            # (#103) "TOUT COUPER" ne ferme que ce que le bot gère -- c'est voulu, il n'a pas
+            # à toucher aux trades manuels du client. Mais il renvoyait success:True même
+            # quand il n'avait fermé RIEN DU TOUT : le client cliquait, aucune position ne
+            # bougeait, et aucun message ne le lui disait. On compte désormais les deux cas
+            # et on remonte le détail.
             pos_list = await run_mt5(mt5.positions_get)
-            if pos_list:
-                for p in pos_list:
-                    if p.magic == MAGIC_NUMBER or p.ticket in MANAGED_MANUAL_TICKETS:
-                        otype = mt5.ORDER_TYPE_SELL if p.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
-                        req = {"action": mt5.TRADE_ACTION_DEAL, "symbol": p.symbol, "volume": p.volume,
-                               "type": otype, "position": p.ticket, "magic": MAGIC_NUMBER,
-                               "type_filling": mt5.ORDER_FILLING_IOC}
-                        await run_mt5(_send_order_blocking, req)
-            set_status("done", {"success": True})
+            fermees, ignorees, echecs = 0, [], 0
+            for p in (pos_list or []):
+                if not (p.magic == MAGIC_NUMBER or p.ticket in MANAGED_MANUAL_TICKETS):
+                    ignorees.append(p)
+                    continue
+                otype = mt5.ORDER_TYPE_SELL if p.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
+                req = {"action": mt5.TRADE_ACTION_DEAL, "symbol": p.symbol, "volume": p.volume,
+                       "type": otype, "position": p.ticket, "magic": MAGIC_NUMBER,
+                       "type_filling": mt5.ORDER_FILLING_IOC}
+                res = await run_mt5(_send_order_blocking, req)
+                if res and getattr(res, "retcode", None) == mt5.TRADE_RETCODE_DONE:
+                    fermees += 1
+                else:
+                    echecs += 1
+
+            if ignorees:
+                syms = ", ".join(sorted({p.symbol for p in ignorees}))
+                msg = (f"{fermees} position(s) fermée(s). "
+                       f"⚠️ {len(ignorees)} position(s) non gérée(s) par le bot ({syms}) "
+                       f"n'ont PAS été touchées : ferme-les dans MetaTrader 5, ou adopte-les "
+                       f"avec /suivi <ticket>.")
+            elif echecs:
+                msg = f"{fermees} position(s) fermée(s), {echecs} refusée(s) par le courtier."
+            elif fermees:
+                msg = f"{fermees} position(s) fermée(s)."
+            else:
+                msg = "Aucune position à fermer."
+            set_status("done", {"success": echecs == 0, "message": msg,
+                                "fermees": fermees, "ignorees": len(ignorees)})
 
         # (#98) Ajout / suppression d'une ligne de stats manuelle, depuis le dashboard.
         # Le refus est fait ICI : la liste blanche des regles Firestore autorise le type de
@@ -7634,14 +7800,15 @@ async def handle_firebase_command(cmd_id: str, cmd_data: dict) -> None:
                         set_status("error", {"success": False, "message": "Écriture impossible."})
 
         elif cmd_type == "unlock":
-            global security_triggered
+            global security_triggered, DD_PANIC_NOTIFIED
             # (#DD) Refuse le déverrouillage si la perte du jour dépasse ENCORE le Max DD
             # actuel -- il faut d'abord relever le seuil (dashboard), sinon on ne ferait que
             # ré-autoriser une seconde puis re-déclencher la fermeture d'urgence juste après.
             if check_daily_max_loss():
-                set_status("error", {"success": False, "message": "Augmente d'abord le Max DD -- la perte du jour dépasse toujours la limite actuelle."})
+                set_status("error", {"success": False, "message": "Augmente d'abord le Max DD -- la perte du jour dépasse toujours la limite actuelle. Ou coupe le disjoncteur (/dd off)."})
             else:
                 security_triggered = False
+                DD_PANIC_NOTIFIED = False   # (#103) ré-arme l'alerte pour le prochain épisode
                 set_status("done", {"success": True})
 
         elif cmd_type == "suivre":
@@ -7683,8 +7850,15 @@ async def handle_firebase_command(cmd_id: str, cmd_data: dict) -> None:
             global SOFT_SL_ACTIVE
             SOFT_SL_ACTIVE = not SOFT_SL_ACTIVE
             await run_bg(save_settings)
-            await send_alert(f"📉 Soft SL Vente : {'🟢 ACTIVÉ' if SOFT_SL_ACTIVE else '🔴 DÉSACTIVÉ'}")
-            set_status("done", {"success": True})
+            # (#103) Le Soft SL vit DANS la branche `if TRAILING_STOP_PIPS > 0`, et se
+            # declenche a TRAILING_STOP_PIPS sous le sommet : a 0, la branche n'est jamais
+            # prise et le reglage ne peut rien faire. Le dashboard presentant les deux lignes
+            # comme independantes, un client pouvait l'activer et attendre indefiniment.
+            avert = ("\n\n⚠️ **Sans effet tant que « SL Suiveur (pips) » vaut 0** : "
+                     "c'est ce champ qui active le mode ET qui fixe la distance de repli."
+                     ) if (SOFT_SL_ACTIVE and TRAILING_STOP_PIPS <= 0) else ""
+            await send_alert(f"📉 Soft SL Vente : {'🟢 ACTIVÉ' if SOFT_SL_ACTIVE else '🔴 DÉSACTIVÉ'}{avert}")
+            set_status("done", {"success": True, "message": avert.strip() or None})
 
         elif cmd_type == "toggle_sabr_doublon":
             # (#pack) Équivalent dashboard de /doublon_sabr -- l'état était déjà poussé au
@@ -7863,16 +8037,141 @@ async def mark_bot_offline_and_exit():
     os._exit(0)
 
 
+# (#103) Diagnostic de connexion MetaTrader.
+#
+# L'ancienne version tenait en trois lignes : un mt5.initialize() nu, un message unique
+# ("MetaTrader 5 fermé ou inaccessible") et un `return` sec. Trois causes tres differentes
+# aboutissaient donc au meme texte -- terminal ferme, terminal ouvert mais pas connecte a son
+# compte, ou niveaux d'elevation differents entre Kairos (toujours admin, cf. uac_admin) et
+# MetaTrader. Un client a passe un week-end a chercher, avec MT5 ouvert sous les yeux, alors
+# que son compte demo avait expire ("authorization failed (Invalid account)" dans le journal
+# MetaTrader). mt5.last_error() connaissait la reponse depuis le debut.
+MT5_CAUSES = {
+    -10005: "Le terminal ne répond pas (délai dépassé).",
+    -10004: "Connexion au terminal refusée.",
+    -10003: "Impossible d'initialiser le lien avec le terminal.",
+    -8:     "Le trading algorithmique est désactivé dans MetaTrader.",
+    -6:     "MetaTrader a refusé l'autorisation (compte non connecté ?).",
+    -4:     "Terminal MetaTrader introuvable sur ce PC.",
+}
+MT5_TENTATIVES = 10     # ~5 minutes avant de rendre la main au watchdog
+MT5_DELAI_S = 30
+
+
+def _tenter_connexion_mt5():
+    """Un essai de connexion. Renvoie (ok, code, libelle).
+
+    MT5_PATH n'est utilise que s'il pointe sur un fichier existant : un chemin errone dans
+    settings.json ferait echouer l'initialisation alors que l'auto-detection, elle, aurait
+    pu aboutir. On essaie donc le chemin configure d'abord, l'auto-detection ensuite.
+    """
+    tentatives = []
+    if MT5_PATH and os.path.exists(MT5_PATH):
+        tentatives.append({"path": MT5_PATH})
+    tentatives.append({})   # auto-detection (comportement historique)
+
+    for kwargs in tentatives:
+        try:
+            if mt5.initialize(**kwargs):
+                return True, 0, ""
+        except Exception as e:
+            logger.warning(f"⚠️ mt5.initialize({kwargs}) a levé : {e}")
+    try:
+        code, libelle = mt5.last_error()
+    except Exception:
+        code, libelle = 0, "inconnue"
+    return False, code, libelle
+
+
+def _banniere_echec_mt5(code, libelle, essai, total):
+    """Message client : le code brut, la cause probable, et les gestes dans l'ordre."""
+    lignes = [
+        "", "█" * 68,
+        " ⚠️  METATRADER 5 : CONNEXION IMPOSSIBLE ".center(67, "█"),
+        "█" * 68, "",
+        f" Code MetaTrader : {code}  ({libelle})",
+    ]
+    if code in MT5_CAUSES:
+        lignes.append(f" Cause probable  : {MT5_CAUSES[code]}")
+    if MT5_PATH and not os.path.exists(MT5_PATH):
+        lignes += ["",
+                   " ❗ Le chemin MT5_PATH de settings.json n'existe pas :",
+                   f"    {MT5_PATH}",
+                   "    Corrigez-le, ou videz-le pour laisser Kairos chercher tout seul."]
+    lignes += [
+        "",
+        " À VÉRIFIER, DANS CET ORDRE :",
+        "",
+        " 1. MetaTrader 5 est-il bien OUVERT ?",
+        "",
+        " 2. Est-il CONNECTÉ à votre compte ?",
+        "    Regardez le voyant tout en bas à DROITE de MetaTrader :",
+        "      • vert, avec des kilo-octets qui montent = connecté",
+        "      • rouge, ou « 0 / 0 Kb »                 = PAS connecté",
+        "    Un terminal ouvert mais déconnecté ne suffit pas.",
+        "    Reconnectez-vous : Fichier > Connexion au compte de trading.",
+        "    (Un compte démo non utilisé finit par être supprimé par le serveur.)",
+        "",
+        " 3. Kairos tourne en administrateur : MetaTrader doit l'être AUSSI.",
+        "    Clic droit sur MetaTrader 5 > Exécuter en tant qu'administrateur.",
+        "",
+        " 4. Plusieurs MetaTrader installés ? N'en laissez qu'UN seul ouvert,",
+        "    ou indiquez le bon dans MT5_PATH (settings.json).",
+        "",
+        f" Nouvel essai dans {MT5_DELAI_S} s  (tentative {essai}/{total})",
+        " Laissez cette fenêtre ouverte : la connexion se fera toute seule",
+        " dès que MetaTrader sera prêt.",
+        "█" * 68, "",
+    ]
+    return "\n".join(lignes)
+
+
+async def connexion_mt5():
+    """Connexion a MetaTrader, avec diagnostic et reprise. True si connecte.
+
+    L'ancienne version testait UNE fois puis faisait `return` : le worker restait ensuite
+    vivant sur run_until_disconnected() sans jamais retenter, et comme alive.txt n'avait pas
+    encore ete ecrit, la detection de gel du watchdog (`if os.path.exists(WATCH_FILE)`) ne
+    s'appliquait pas non plus. Le bot restait donc bloque indefiniment, meme une fois MT5
+    repare, jusqu'a ce que le client relance l'exe a la main.
+
+    Le pouls est ecrit AVANT le premier essai : si on finit par abandonner, le watchdog voit
+    un alive.txt qui vieillit, tue le worker et le relance -- la reprise devient automatique
+    au lieu de dependre du client.
+    """
+    for essai in range(1, MT5_TENTATIVES + 1):
+        update_pulse()
+        ok, code, libelle = _tenter_connexion_mt5()
+        if ok:
+            if essai > 1:
+                client_status(f"✔️ MetaTrader 5 connecté (après {essai} tentatives).")
+            return True
+        logger.critical(f"❌ MT5 injoignable [{code}] {libelle} (essai {essai}/{MT5_TENTATIVES})")
+        client_status(_banniere_echec_mt5(code, libelle, essai, MT5_TENTATIVES))
+        if essai < MT5_TENTATIVES:
+            for _ in range(MT5_DELAI_S):
+                await asyncio.sleep(1)
+                update_pulse()
+    client_status("❌ MetaTrader 5 toujours injoignable — redémarrage automatique du bot...")
+    return False
+
+
 async def main():
     logger.info("\n" + "—"*50)
     logger.info("🔄 INITIALISATION DES COMPOSANTS...")
-    
-    if not mt5.initialize():
-        logger.critical("❌ Erreur Critique : MetaTrader 5 fermé ou inaccessible.")
-        client_status("❌ Erreur : MetaTrader 5 fermé ou inaccessible.")
+
+    if not await connexion_mt5():
         return
-    logger.info(f"✔️ Terminal MT5 Connecté (Compte: {mt5.account_info().login})")
-    client_status(f"✔️ MetaTrader 5 connecté (compte {mt5.account_info().login})")
+    acc_init = mt5.account_info()
+    # (#103) account_info() peut etre None sur un terminal connecte sans compte : l'ancien
+    # `mt5.account_info().login` levait alors un AttributeError remonte en "Crash Fatal Worker".
+    if acc_init is None:
+        logger.critical("❌ Terminal joignable mais aucun compte connecté.")
+        client_status("❌ MetaTrader répond, mais aucun compte n'est connecté.\n"
+                      "   Fichier > Connexion au compte de trading, puis relancez Kairos.")
+        return
+    logger.info(f"✔️ Terminal MT5 Connecté (Compte: {acc_init.login})")
+    client_status(f"✔️ MetaTrader 5 connecté (compte {acc_init.login})")
 
     # (#69) Sans "Trading algorithmique" coché dans MT5, la connexion réussit, les signaux
     # arrivent, mais CHAQUE ordre est rejeté (retcode 10027). Le client voyait un bot qui
@@ -7891,10 +8190,49 @@ async def main():
                 "    de la barre d'outils : il doit devenir VERT.\n\n"
                 " Si le bouton est absent : menu Outils > Options > Expert Advisors,\n"
                 " puis cochez « Autoriser le trading algorithmique ».\n\n"
+                " ⚠️ DÉCOCHEZ AUSSI, dans ce même onglet :\n"
+                "    « Désactiver le trading algorithmique lors du changement\n"
+                "      de compte » — sinon MetaTrader recoupe l'option tout seul\n"
+                "    à chaque fois que vous changez de compte, et plus aucun\n"
+                "    ordre ne passe.\n\n"
                 " Aucun redémarrage nécessaire, l'activation est prise en compte\n"
                 " immédiatement.\n" + "█" * 65 + "\n")
     except Exception as e:
         logger.warning(f"⚠️ Vérification du trading algorithmique impossible : {e}")
+
+    # (#103) Mode de compte. Kairos suit ses positions PAR TICKET : ACTIVE_TRADE_SOURCES est
+    # indexe par ticket, close_partial() envoie "position": pos.ticket, et une zone SABR /
+    # INDODOG / FTS pose jusqu'a 3 ordres sur le MEME symbole. Sur un compte NETTING, MT5
+    # fusionne tout ce qui touche un symbole en UNE position : deux des trois tickets
+    # disparaissent, le bot croit ces positions fermees alors que le volume est au marche,
+    # les partiels sont rejetes, et un signal vendeur d'un canal REDUIT la position acheteuse
+    # d'un autre canal. Rien de tout cela ne remonte une erreur : on refuse de demarrer.
+    try:
+        acc_mode = mt5.account_info()
+        if acc_mode is not None and acc_mode.margin_mode != mt5.ACCOUNT_MARGIN_MODE_RETAIL_HEDGING:
+            logger.critical(f"❌ Compte NON hedging (margin_mode={acc_mode.margin_mode}). Arrêt.")
+            client_status(
+                "\n" + "█" * 68 + "\n" +
+                " ⛔  COMPTE INCOMPATIBLE : MODE « NETTING » ".center(67, "█") + "\n" +
+                "█" * 68 + "\n\n"
+                " Votre compte MetaTrader est en mode NETTING. Kairos a besoin\n"
+                " d'un compte en mode HEDGING pour fonctionner.\n\n"
+                " Pourquoi : en netting, MetaTrader fusionne toutes les positions\n"
+                " d'un même symbole en une seule. Les 3 ordres d'une zone SABR se\n"
+                " confondraient, les prises partielles seraient refusées, et un\n"
+                " signal vendeur pourrait fermer un achat d'un autre canal.\n\n"
+                " 👉 Le mode est écrit dans le TITRE de la fenêtre MetaTrader :\n"
+                "    « 12345678 - MonBroker - Netting » ou « ... - Hedge ».\n\n"
+                " Il ne se change pas : il faut ouvrir un compte en Hedging chez\n"
+                " votre courtier. Les comptes prop (FTMO & co) le sont toujours.\n\n"
+                " Le bot ne démarrera pas tant que ce compte est utilisé.\n"
+                + "█" * 68 + "\n")
+            return
+    except AttributeError:
+        # Vieux paquet MetaTrader5 sans la constante : on n'invente pas un blocage.
+        logger.warning("⚠️ margin_mode indisponible dans ce paquet MetaTrader5 — contrôle ignoré.")
+    except Exception as e:
+        logger.warning(f"⚠️ Vérification du mode de compte impossible : {e}")
 
     await bot_user.start(bot_token=BOT_TOKEN)
     logger.info("✔️ Interface interactive Telegram chargée.")

@@ -49,7 +49,7 @@ illimité).
 
 Le bot répond avec un récap (clé, pack, version) **et envoie automatiquement un fichier
 ZIP** `Kairos_Prenom.zip` dans le canal, contenant :
-- `Kairos_V15.13.0.exe`
+- `Kairos_V15.14.0.exe`
 - `settings.json` **déjà pré-rempli** (clé de licence + identifiants Firebase générés)
 - `INSTALLATION.txt` (guide pas-à-pas pour le client)
 
