@@ -735,6 +735,11 @@ TELEGRAM_TO_TICKET = {}
 MANAGED_MANUAL_TICKETS = set()
 NOTIFIED_MANUAL_TICKETS = set()
 security_triggered = False
+# (#103) Alerte de fermeture d'urgence : envoyée UNE fois par épisode de verrou, pas à chaque
+# tour de boucle. Remis à False partout où security_triggered retombe (déverrouillage manuel,
+# changement de jour) -- sinon un client dont aucune position n'est gérée par le bot recevait
+# le même message toutes les 60 s indéfiniment, la boucle ne pouvant jamais vider pos_panic.
+DD_PANIC_NOTIFIED = False
 PENDING_MESSAGES = {} # Key: ID, Value: Texte du message
 # --- Mémoire pour les canaux en 2 temps (Ligue) ---
 # Stocke : { "channel_id": { "symbol": "BTCUSD", "action": "ACHAT", "price": 88000, "timestamp": 123456 } }
@@ -2636,7 +2641,7 @@ async def send_daily_report(acc, pnl_eur, pnl_pct):
     #await send_alert(lt_msg)
 
 async def update_daily_stats():
-    global daily_start_balance, current_trade_day, daily_stats, active_trades_max_pips, NOTIFIED_MANUAL_TICKETS, security_triggered
+    global daily_start_balance, current_trade_day, daily_stats, active_trades_max_pips, NOTIFIED_MANUAL_TICKETS, security_triggered, DD_PANIC_NOTIFIED
     
     # On calcule l'heure Broker actuelle via l'horloge système (UTC + Offset)
     # C'est ce qui permet de fonctionner le week-end quand le marché est mort.
@@ -2683,6 +2688,7 @@ async def update_daily_stats():
         # il survit desormais a un redemarrage (cf. save_state_and_stats).
         _verrou_leve = security_triggered
         security_triggered = False
+        DD_PANIC_NOTIFIED = False   # (#103) nouveau jour = nouvel épisode possible
         
         # 4. Logique Hebdomadaire
         if weekday == 0: # Lundi
@@ -4921,7 +4927,10 @@ async def close_volume_across(positions, vol_target, label, pips, etape_mt5=None
 
 
 async def monitor_positions():
-    global watched_tickets, PENDING_ORDER_TICKETS
+    # (#103) DD_PANIC_NOTIFIED doit être déclaré global : sans lui l'affectation plus bas
+    # créerait une variable LOCALE et l'alerte repartirait à chaque tour, exactement le
+    # piège du verrou drawdown en V15.10.0.
+    global watched_tickets, PENDING_ORDER_TICKETS, DD_PANIC_NOTIFIED
 
     logger.info("⏳ Warm-up: Attente stabilisation Telegram (10s)...")
     await asyncio.sleep(10) 
@@ -5091,33 +5100,63 @@ async def monitor_positions():
             # (#DD) Même logique que le gate de nouveau trade : check_daily_max_loss() met à
             # jour security_triggered, mais c'est ce verrou PERSISTANT qui décide si on reste
             # en pause -- une fois déclenché, relever le Max DD ne suffit plus à lui seul à
-            # sortir de cette boucle (pos_panic sera de toute façon vide après la 1ère
-            # fermeture, donc pas de ré-envoi d'alerte/ordres inutiles).
+            # sortir de cette boucle.
             check_daily_max_loss()
             if security_triggered:
                 pos_panic = await run_mt5(mt5.positions_get)
-                if pos_panic:
-                    await send_alert("🚨 **URGENCE : DD QUOTIDIEN DÉPASSÉ !**\nFermeture d'urgence.")
-                    for p in pos_panic:
-                        if p.magic == MAGIC_NUMBER or p.ticket in MANAGED_MANUAL_TICKETS:
-                            otype = mt5.ORDER_TYPE_SELL if p.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
-                            
-                            # Ajout du prix obligatoire ici aussi !
-                            tick_p = mt5.symbol_info_tick(p.symbol)
-                            price_p = tick_p.bid if otype == mt5.ORDER_TYPE_SELL else tick_p.ask
-                            
-                            req = {
-                                "action": mt5.TRADE_ACTION_DEAL, "symbol": p.symbol, "volume": p.volume, 
-                                "type": otype, "position": p.ticket, "price": price_p, 
-                                "magic": MAGIC_NUMBER, "type_filling": mt5.ORDER_FILLING_IOC
-                            }
-                            await run_mt5(_send_order_blocking, req)
-                    
-                    orders_panic = await run_mt5(mt5.orders_get)
-                    if orders_panic:
-                        for o in orders_panic:
-                            if o.magic == MAGIC_NUMBER:
-                                await run_mt5(_send_order_blocking, {"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
+
+                # (#103) Le tri se fait AVANT l'alerte. L'ancienne version annonçait
+                # "Fermeture d'urgence" dès qu'UNE position existait, sans regarder si le bot
+                # avait le droit d'y toucher. Sur un compte où les positions sont manuelles
+                # (magic != MAGIC_NUMBER et jamais adoptées via /suivi), il annonçait donc une
+                # fermeture qu'il ne faisait pas -- et comme ces positions restent ouvertes,
+                # pos_panic ne se vidait jamais et le message repartait toutes les 60 s.
+                a_fermer, hors_bot = [], []
+                for p in (pos_panic or []):
+                    gere = (p.magic == MAGIC_NUMBER or p.ticket in MANAGED_MANUAL_TICKETS)
+                    (a_fermer if gere else hors_bot).append(p)
+
+                if not DD_PANIC_NOTIFIED:
+                    DD_PANIC_NOTIFIED = True
+                    lignes = ["🚨 **URGENCE : DD QUOTIDIEN DÉPASSÉ !**", ""]
+                    if a_fermer:
+                        lignes.append(f"Fermeture d'urgence de **{len(a_fermer)}** position(s).")
+                    if hors_bot:
+                        syms = ", ".join(sorted({p.symbol for p in hors_bot}))
+                        lignes += [
+                            "",
+                            f"⚠️ **{len(hors_bot)} position(s) hors bot** ({syms}) : elles n'ont "
+                            "pas été ouvertes par Kairos, il n'a pas le droit d'y toucher. "
+                            "Elles restent **OUVERTES**.",
+                            "👉 Ferme-les toi-même dans MetaTrader 5, ou envoie "
+                            "`/suivi <ticket>` pour que le bot les prenne en charge.",
+                        ]
+                    if not a_fermer and not hors_bot:
+                        lignes.append("Aucune position ouverte.")
+                    lignes += ["", "_Trading en pause. `/unlock` pour reprendre._"]
+                    await send_alert("\n".join(lignes))
+
+                for p in a_fermer:
+                    otype = mt5.ORDER_TYPE_SELL if p.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
+
+                    # Ajout du prix obligatoire ici aussi !
+                    tick_p = mt5.symbol_info_tick(p.symbol)
+                    if not tick_p:
+                        continue
+                    price_p = tick_p.bid if otype == mt5.ORDER_TYPE_SELL else tick_p.ask
+
+                    req = {
+                        "action": mt5.TRADE_ACTION_DEAL, "symbol": p.symbol, "volume": p.volume,
+                        "type": otype, "position": p.ticket, "price": price_p,
+                        "magic": MAGIC_NUMBER, "type_filling": mt5.ORDER_FILLING_IOC
+                    }
+                    await run_mt5(_send_order_blocking, req)
+
+                orders_panic = await run_mt5(mt5.orders_get)
+                if orders_panic:
+                    for o in orders_panic:
+                        if o.magic == MAGIC_NUMBER:
+                            await run_mt5(_send_order_blocking, {"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
                 await asyncio.sleep(60)
                 continue
 
@@ -5723,7 +5762,7 @@ async def pairing_handler(event):
 
 @client.on(events.NewMessage())
 async def admin_commands(event):
-    global RISK_PERCENT_GOLD, RISK_PERCENT_OTHER, security_triggered
+    global RISK_PERCENT_GOLD, RISK_PERCENT_OTHER, security_triggered, DD_PANIC_NOTIFIED
     global RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE
     global FIXED_LOT_SABR_VIP, FIXED_LOT_SABR_FREE
     global RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO
@@ -6126,10 +6165,45 @@ async def admin_commands(event):
         # -- il faut d'abord relever le seuil, sinon on ne ferait que ré-autoriser une
         # seconde puis re-déclencher la fermeture d'urgence au cycle suivant.
         if check_daily_max_loss():
-            await event.reply("⛔ Augmente d'abord le **Max DD** -- la perte du jour dépasse toujours la limite actuelle.")
+            await event.reply("⛔ Augmente d'abord le **Max DD** (`/max_dd 10`) ou coupe le "
+                              "disjoncteur (`/dd off`) -- la perte du jour dépasse toujours "
+                              "la limite actuelle.")
         else:
             security_triggered = False
+            DD_PANIC_NOTIFIED = False   # (#103) ré-arme l'alerte pour le prochain épisode
             await event.reply("🔓 **SÉCURITÉ DÉVERROUILLÉE**")
+
+# --- 6 bis. DISJONCTEUR DRAWDOWN ---
+    # (#103) Le disjoncteur n'existait QU'au dashboard (commande Firestore toggle_drawdown).
+    # Quand le dashboard ne répond pas -- ou quand son toggle n'atteint pas le bot, ce qui
+    # était silencieux avant ce correctif -- le client n'avait aucun moyen de le couper, donc
+    # aucun moyen de lever un verrou déclenché. Ici l'état est LU puis ÉCRIT explicitement
+    # (`on`/`off`), jamais basculé à l'aveugle : deux appels successifs donnent le même
+    # résultat, contrairement au `not DRAWDOWN_ACTIVE` du dashboard.
+    elif text.startswith("/dd"):
+        global DRAWDOWN_ACTIVE
+        arg = text.split()[1].lower() if len(text.split()) > 1 else ""
+        if arg in ("on", "1", "actif"):
+            DRAWDOWN_ACTIVE = True
+            await run_bg(save_settings)
+        elif arg in ("off", "0", "inactif"):
+            DRAWDOWN_ACTIVE = False
+            await run_bg(save_settings)
+        elif arg:
+            await event.reply("❌ Usage: `/dd on` ou `/dd off` (sans argument : état actuel)")
+            return
+        if DRAWDOWN_ACTIVE:
+            await event.reply(
+                f"📉 **Disjoncteur drawdown : 🟢 ACTIF**\n\n"
+                f"Seuil : **{MAX_DAILY_DRAWDOWN*100:.1f} %** de la balance de minuit.\n"
+                f"Verrou en cours : {'🔴 OUI' if security_triggered else '🟢 non'}\n\n"
+                f"_Le couper : `/dd off` · changer le seuil : `/max_dd 10`_")
+        else:
+            await event.reply(
+                "📉 **Disjoncteur drawdown : 🔴 COUPÉ**\n\n"
+                "Plus aucune fermeture d'urgence ni blocage sur perte journalière.\n"
+                f"Verrou en cours : {'🔴 OUI -- fais `/unlock` maintenant' if security_triggered else '🟢 non'}\n\n"
+                "⚠️ _N'oublie pas de le remettre : `/dd on`_")
 
 # --- 7. SUIVI MANUEL ---
     elif text.startswith("/suivi"):
@@ -7308,16 +7382,41 @@ async def handle_firebase_command(cmd_id: str, cmd_data: dict) -> None:
                 set_status("error", {"success": False, "message": "Trade introuvable"})
 
         elif cmd_type == "panic":
+            # (#103) "TOUT COUPER" ne ferme que ce que le bot gère -- c'est voulu, il n'a pas
+            # à toucher aux trades manuels du client. Mais il renvoyait success:True même
+            # quand il n'avait fermé RIEN DU TOUT : le client cliquait, aucune position ne
+            # bougeait, et aucun message ne le lui disait. On compte désormais les deux cas
+            # et on remonte le détail.
             pos_list = await run_mt5(mt5.positions_get)
-            if pos_list:
-                for p in pos_list:
-                    if p.magic == MAGIC_NUMBER or p.ticket in MANAGED_MANUAL_TICKETS:
-                        otype = mt5.ORDER_TYPE_SELL if p.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
-                        req = {"action": mt5.TRADE_ACTION_DEAL, "symbol": p.symbol, "volume": p.volume,
-                               "type": otype, "position": p.ticket, "magic": MAGIC_NUMBER,
-                               "type_filling": mt5.ORDER_FILLING_IOC}
-                        await run_mt5(_send_order_blocking, req)
-            set_status("done", {"success": True})
+            fermees, ignorees, echecs = 0, [], 0
+            for p in (pos_list or []):
+                if not (p.magic == MAGIC_NUMBER or p.ticket in MANAGED_MANUAL_TICKETS):
+                    ignorees.append(p)
+                    continue
+                otype = mt5.ORDER_TYPE_SELL if p.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
+                req = {"action": mt5.TRADE_ACTION_DEAL, "symbol": p.symbol, "volume": p.volume,
+                       "type": otype, "position": p.ticket, "magic": MAGIC_NUMBER,
+                       "type_filling": mt5.ORDER_FILLING_IOC}
+                res = await run_mt5(_send_order_blocking, req)
+                if res and getattr(res, "retcode", None) == mt5.TRADE_RETCODE_DONE:
+                    fermees += 1
+                else:
+                    echecs += 1
+
+            if ignorees:
+                syms = ", ".join(sorted({p.symbol for p in ignorees}))
+                msg = (f"{fermees} position(s) fermée(s). "
+                       f"⚠️ {len(ignorees)} position(s) non gérée(s) par le bot ({syms}) "
+                       f"n'ont PAS été touchées : ferme-les dans MetaTrader 5, ou adopte-les "
+                       f"avec /suivi <ticket>.")
+            elif echecs:
+                msg = f"{fermees} position(s) fermée(s), {echecs} refusée(s) par le courtier."
+            elif fermees:
+                msg = f"{fermees} position(s) fermée(s)."
+            else:
+                msg = "Aucune position à fermer."
+            set_status("done", {"success": echecs == 0, "message": msg,
+                                "fermees": fermees, "ignorees": len(ignorees)})
 
         # (#98) Ajout / suppression d'une ligne de stats manuelle, depuis le dashboard.
         # Le refus est fait ICI : la liste blanche des regles Firestore autorise le type de
@@ -7377,14 +7476,15 @@ async def handle_firebase_command(cmd_id: str, cmd_data: dict) -> None:
                         set_status("error", {"success": False, "message": "Écriture impossible."})
 
         elif cmd_type == "unlock":
-            global security_triggered
+            global security_triggered, DD_PANIC_NOTIFIED
             # (#DD) Refuse le déverrouillage si la perte du jour dépasse ENCORE le Max DD
             # actuel -- il faut d'abord relever le seuil (dashboard), sinon on ne ferait que
             # ré-autoriser une seconde puis re-déclencher la fermeture d'urgence juste après.
             if check_daily_max_loss():
-                set_status("error", {"success": False, "message": "Augmente d'abord le Max DD -- la perte du jour dépasse toujours la limite actuelle."})
+                set_status("error", {"success": False, "message": "Augmente d'abord le Max DD -- la perte du jour dépasse toujours la limite actuelle. Ou coupe le disjoncteur (/dd off)."})
             else:
                 security_triggered = False
+                DD_PANIC_NOTIFIED = False   # (#103) ré-arme l'alerte pour le prochain épisode
                 set_status("done", {"success": True})
 
         elif cmd_type == "suivre":

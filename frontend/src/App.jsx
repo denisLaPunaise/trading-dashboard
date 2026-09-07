@@ -582,7 +582,10 @@ function App() {
       const cmdRef = await addDoc(collection(db, 'users', userId, 'commands'), {
         type, payload, status: 'pending', created_at: serverTimestamp(), expire_at: commandExpiry(),
       });
-      await new Promise((resolve, reject) => {
+      // (#103) Le résultat était bien résolu mais jamais retourné : tout appelant recevait
+      // undefined, donc impossible de dire au client ce que le bot a réellement fait
+      // (ex: "TOUT COUPER" qui n'a fermé aucune position).
+      const result = await new Promise((resolve, reject) => {
         const unsub = onSnapshot(doc(db, 'users', userId, 'commands', cmdRef.id), (snap) => {
           const d = snap.data();
           if (!d) return;
@@ -596,6 +599,7 @@ function App() {
         }, 15000);
       });
       triggerHaptic('success');
+      return result;
     } catch (err) {
       console.error('Commande échouée :', err);
       triggerHaptic('error');
@@ -626,7 +630,11 @@ function App() {
 
   const handlePanic = () => {
     requestConfirm("🚨 ALERTE ROUGE : Veux-tu VRAIMENT fermer TOUTES les positions en cours ?", async () => {
-      await sendCommand('panic', {}, 'panic');
+      const res = await sendCommand('panic', {}, 'panic');
+      // (#103) Le bot ne ferme que les positions qu'il gère. S'il en laisse ouvertes
+      // (trades ouverts à la main dans MT5), il faut le DIRE : sinon le client repart en
+      // croyant que tout est coupé alors qu'il reste exposé.
+      if (res?.message) alert(`${res.ignorees > 0 ? '⚠️' : '✅'} ${res.message}`);
     }, 'danger');
   };
 
