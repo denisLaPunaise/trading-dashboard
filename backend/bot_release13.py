@@ -5145,7 +5145,31 @@ async def monitor_positions():
                         ]
                     if not a_fermer and not hors_bot:
                         lignes.append("Aucune position ouverte.")
-                    lignes += ["", "_Trading en pause. `/unlock` pour reprendre._"]
+                    # (#103) Ne pas se contenter de "/unlock pour reprendre" : le
+                    # deverrouillage REFUSE tant que la perte du jour depasse le seuil, ce qui
+                    # est precisement le cas quand des positions hors bot restent ouvertes en
+                    # perte -- le bot ne pouvant pas les fermer, la perte ne redescend pas
+                    # toute seule. Envoyer le client sur une commande qui va echouer, c'est le
+                    # mur sur lequel il vient de perdre une matinee. On donne la sequence qui
+                    # marche, en une fois.
+                    lignes += ["", "**POUR REPRENDRE LE TRADING**"]
+                    if hors_bot:
+                        lignes += [
+                            "`/unlock` sera **refusé** tant que ces positions restent ouvertes "
+                            "en perte (le bot ne peut pas les fermer, donc la perte du jour ne "
+                            "redescend pas).",
+                            "",
+                            "1. Ferme-les dans MetaTrader 5 — ou laisse-les si tu les assumes",
+                            "2. `/dd off`   (coupe le disjoncteur pour aujourd'hui)",
+                            "3. `/unlock`",
+                            "",
+                            "_Puis `/dd on` demain, une fois le compteur du jour remis à zéro._",
+                        ]
+                    else:
+                        lignes += [
+                            "`/unlock` — s'il refuse, la perte du jour dépasse encore le seuil :",
+                            "`/dd off` puis `/unlock`, et `/dd on` demain.",
+                        ]
                     await send_alert("\n".join(lignes))
 
                 for p in a_fermer:
