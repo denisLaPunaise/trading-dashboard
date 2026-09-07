@@ -736,8 +736,15 @@ function App() {
     sendInstantToggle('toggle_mute', { channel: channelName }, 'muted_channels', next);
   };
 
-  const toggleDrawdown = () => {
-    sendInstantToggle('toggle_drawdown', {}, 'drawdown_active', !(dashboardData?.settings?.drawdown_active !== false));
+  // (#103) Le disjoncteur drawdown ne passe volontairement PAS par sendInstantToggle :
+  // celui-ci affiche le nouvel état tout de suite et envoie en fire-and-forget, sans jamais
+  // vérifier que le bot a reçu la commande. Un client a basculé ce toggle sur OFF, l'a vu
+  // passer sur OFF, puis s'est fait refuser le déverrouillage DD — le bot ne l'avait jamais
+  // reçu, et le push d'état le remettait sur ON 4 s plus tard. Sur un réglage de sécurité on
+  // attend la confirmation du bot, et l'échec est affiché.
+  const toggleDrawdown = async () => {
+    triggerHaptic('medium');
+    await sendCommand('toggle_drawdown', {}, 'drawdown_active');
   };
 
   const toggleSlSuiveur = () => {
@@ -757,6 +764,19 @@ function App() {
   // allume alors qu'il ne l'est pas.
   const toggleSabrTrailing = () => {
     sendInstantToggle('toggle_sabr_trailing', {}, 'sabr_trailing_active', !(dashboardData?.settings?.sabr_trailing_active === true));
+  };
+
+  // (#93/#103) Le bot n'expose pas de commande toggle_ dédiée pour le BE Partiel : les deux
+  // réglages passent par update_setting (clés sabr_be_partiel / sabr_be_partiel_pct), qui
+  // était déjà câblé côté bot. Seule l'interface manquait.
+  const toggleSabrBePartiel = () => {
+    triggerHaptic('medium');
+    updateSetting('sabr_be_partiel', !(dashboardData?.settings?.sabr_be_partiel === true), { debounce: false });
+  };
+
+  const toggleSabrForward = () => {
+    triggerHaptic('medium');
+    updateSetting('sabr_forward', !(dashboardData?.settings?.sabr_forward !== false), { debounce: false });
   };
 
   // --- RENDU ---
@@ -1140,6 +1160,16 @@ const { account, daily_stats, settings, active_trades } = dashboardData
       <div style={{ display: 'grid', gridTemplateRows: isTradesOpen ? '1fr' : '0fr', transition: 'grid-template-rows 0.4s ease-out' }}>
         <div style={{ overflow: 'hidden' }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '30px', paddingTop: '5px' }}>
+          {/* (#103) Verrou DD actif + positions hors bot : le client doit savoir que la
+              sécurité ne les fermera pas. Sans ce message, il repart en croyant que tout a
+              été coupé alors qu'il reste exposé. */}
+          {isLocked && displayedTrades.some(t => !t.managed) && (
+            <div style={{ background: 'rgba(255, 193, 7, 0.08)', border: '1px solid #ffc107', color: '#ffc107', borderRadius: '10px', padding: '12px 14px', fontSize: '0.8rem', lineHeight: 1.5 }}>
+              ⚠️ <strong>{displayedTrades.filter(t => !t.managed).length} position(s) non gérée(s) par le bot.</strong><br />
+              La sécurité drawdown ne peut pas les fermer : elles n'ont pas été ouvertes par Kairos.
+              Ferme-les dans MetaTrader 5, ou clique <strong>« Suivre »</strong> pour que le bot les prenne en charge.
+            </div>
+          )}
           {active_trades.length === 0 && displayedTrades.length === 0 ? (
             <div style={{ textAlign: 'center', padding: '30px', color: '#666', background: '#1e1e1e', borderRadius: '10px' }}>Aucune position.</div>
           ) : (
@@ -1158,7 +1188,13 @@ const { account, daily_stats, settings, active_trades } = dashboardData
                 alignItems: 'center',
 
                 overflow: 'hidden',
-                animation: isLocked ? `cascadeClose 1.2s ease-in-out forwards ${2 + (index * 0.2)}s` : trade.isClosing ? (trade.profit >= 0 ? 'slideOutGain 0.5s forwards' : 'slideOutLoss 0.5s forwards') : 'fadeIn 0.3s ease-out'
+                /* (#103) L'animation de lockdown ne s'applique QU'aux positions que le bot
+                   ferme réellement. Elle était appliquée à toutes : `forwards` + max-height:0
+                   les faisait disparaître définitivement, boutons compris, alors que les
+                   positions non gérées (ouvertes à la main dans MT5) restaient bien ouvertes
+                   et en perte. Le client voyait « Trades Actifs (2) » au-dessus du vide, sans
+                   aucun moyen d'agir. */
+                animation: (isLocked && trade.managed) ? `cascadeClose 1.2s ease-in-out forwards ${2 + (index * 0.2)}s` : trade.isClosing ? (trade.profit >= 0 ? 'slideOutGain 0.5s forwards' : 'slideOutLoss 0.5s forwards') : 'fadeIn 0.3s ease-out'
               }}>
                 
                 {/* --- COLONNE 1 : SYMBOLE ET PRIX --- */}
@@ -1649,10 +1685,18 @@ const { account, daily_stats, settings, active_trades } = dashboardData
                 // pour un pack 100% SABR, comme dans /info.
                 { label: 'Max Drawdown (%)', key: 'max_dd', val: settings.max_dd * 100, step: '1', mult: 100,
                   toggleKey: 'drawdown_active', toggleFn: toggleDrawdown, warn: true },
+                // (#103) Ces deux lignes ne sont PAS indépendantes, et rien ne le disait.
+                // Le Soft SL vit dans la branche `if TRAILING_STOP_PIPS > 0` et se déclenche
+                // à TRAILING_STOP_PIPS sous le sommet atteint : à 0 la branche n'est jamais
+                // prise, et le même champ sert donc d'interrupteur ET de distance de repli.
                 { label: 'SL Suiveur (pips)', key: 'sl_suiveur', val: settings.sl_suiveur, step: '1', mult: 1,
-                  toggleKey: 'sl_suiveur_active', toggleFn: toggleSlSuiveur, riskEngineOnly: true },
+                  toggleKey: 'sl_suiveur_active', toggleFn: toggleSlSuiveur, riskEngineOnly: true,
+                  hint: (settings.soft_sl_active !== false && settings.sl_suiveur > 0)
+                        ? 'Fixe aussi la distance de repli du Soft SL ci-dessous' : null },
                 { label: 'Soft SL Vente (%)', key: 'sl_sell', val: settings.sl_sell * 100, step: '1', mult: 100,
-                  toggleKey: 'soft_sl_active', toggleFn: toggleSoftSl, riskEngineOnly: true },
+                  toggleKey: 'soft_sl_active', toggleFn: toggleSoftSl, riskEngineOnly: true,
+                  hint: (settings.soft_sl_active !== false && !(settings.sl_suiveur > 0))
+                        ? '⚠️ Sans effet tant que « SL Suiveur » vaut 0' : null },
                 // (#pack) Anti-Doublon SABR : son état était déjà affiché dans /info et poussé
                 // au dashboard, mais sans aucun moyen de le changer ailleurs qu'en tapant
                 // /doublon_sabr. Pas de valeur numérique -> ligne en ON/OFF seul (noValue).
@@ -1664,6 +1708,23 @@ const { account, daily_stats, settings, active_trades } = dashboardData
                   val: settings.sabr_trailing_pips ?? 100, step: '1', mult: 1,
                   toggleKey: 'sabr_trailing_active', toggleFn: toggleSabrTrailing,
                   defaultOff: true, sabrOnly: true },
+                // (#93/#103) Mise a BE SABR : le mode "Partiel" existait cote bot depuis la
+                // V15.7.0, ses deux cles etaient poussees au dashboard et acceptees par
+                // update_setting -- mais aucune ligne ne les affichait. La fonctionnalite
+                // n'etait donc atteignable qu'en tapant /be_partiel sur Telegram, et un
+                // client qui regle son bot au dashboard passait completement a cote.
+                // ON  = le SL ne bouge pas a +100 pips ; si le prix revient sur l'entree, on
+                //       vend ce pourcentage du volume ENCORE OUVERT.
+                // OFF = mise a BE classique (le SL remonte au prix d'entree).
+                { label: 'BE Partiel SABR (%)', key: 'sabr_be_partiel_pct',
+                  val: (settings.sabr_be_partiel_pct ?? 0.5) * 100, step: '1', mult: 100,
+                  toggleKey: 'sabr_be_partiel', toggleFn: toggleSabrBePartiel,
+                  defaultOff: true, sabrOnly: true },
+                // (#103) Meme oubli que ci-dessus : sabr_forward etait pousse au dashboard
+                // mais reglable uniquement via /forward_sabr. Visible seulement si le pack
+                // contient le canal de copie, seul endroit ou le transfert a un sens.
+                { label: 'Transfert msg SABR', key: 'sabr_forward', noValue: true,
+                  toggleKey: 'sabr_forward', toggleFn: toggleSabrForward, copieOnly: true },
                 // (#72) Decalage du SL lors d'une mise a BE. Valeur signee, donc pas
                 // d'interrupteur : 0 = SL pile au prix d'entree.
                 // (#86) signed -> bouton ± : le pave numerique du mobile n'a pas de touche
@@ -1671,6 +1732,7 @@ const { account, daily_stats, settings, active_trades } = dashboardData
                 { label: 'Décalage BE (pips)', key: 'be_offset_pips',
                   val: settings.be_offset_pips ?? 0, step: '1', mult: 1, noToggle: true, signed: true }
               ].filter((item) => (!item.riskEngineOnly || usesRiskEngine)
+                                 && (!item.copieOnly || isChannelVisible('CANAL SABR_COPIE'))
                                  && (!item.sabrOnly || isChannelVisible('CANAL SABR_VIP')
                                      || isChannelVisible('CANAL SABR_FREE'))).map((item) => {
                 // defaultOff : reglage dont l'etat par defaut est ETEINT -- il faut un `true`
@@ -1682,6 +1744,9 @@ const { account, daily_stats, settings, active_trades } = dashboardData
                     <span style={{ fontSize: '0.9rem', flex: 1 }}>
                       {item.label}
                       {item.warn && !active && <span style={{ color: '#ff6b6b', fontSize: '0.7rem', display: 'block' }}>⚠️ Protection désactivée</span>}
+                      {/* (#103) Note contextuelle sous le libellé : sert à révéler les
+                          dépendances entre réglages, que rien n'indiquait jusqu'ici. */}
+                      {item.hint && <span style={{ color: '#ffc107', fontSize: '0.7rem', display: 'block', marginTop: '3px', lineHeight: 1.4 }}>{item.hint}</span>}
                     </span>
                     {!item.noValue && (
                       <div style={{ marginRight: '8px' }}>
@@ -1692,8 +1757,13 @@ const { account, daily_stats, settings, active_trades } = dashboardData
                       </div>
                     )}
                     {!item.noToggle && (
-                      <button onClick={item.toggleFn} style={{ padding: '6px 14px', borderRadius: '20px', border: 'none', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'bold', background: active ? '#00c853' : '#ff4444', color: '#fff', minWidth: '70px' }}>
-                        {active ? 'ON 🟢' : 'OFF 🔴'}
+                      /* (#103) Les toggles confirmés par le bot (sendCommand) posent
+                         loadingAction : on montre l'attente au lieu de laisser croire que
+                         c'est déjà appliqué. Les autres passent en fire-and-forget et ne
+                         déclenchent simplement pas cet état. */
+                      <button onClick={item.toggleFn} disabled={loadingAction === item.toggleKey}
+                        style={{ padding: '6px 14px', borderRadius: '20px', border: 'none', cursor: loadingAction === item.toggleKey ? 'wait' : 'pointer', fontSize: '0.75rem', fontWeight: 'bold', background: active ? '#00c853' : '#ff4444', color: '#fff', minWidth: '70px', opacity: loadingAction === item.toggleKey ? 0.6 : 1 }}>
+                        {loadingAction === item.toggleKey ? '…' : (active ? 'ON 🟢' : 'OFF 🔴')}
                       </button>
                     )}
                   </div>

@@ -4650,7 +4650,7 @@ async def api_update_setting(data: SettingUpdate):
     global FIXED_LOT_SABR_VIP, FIXED_LOT_SABR_FREE, RISK_PERCENT_SABR_OTHER, SABR_ZONE_EQUAL_SPLIT, SABR_ZONE_PCT1, SABR_ZONE_PCT2, SABR_ZONE_BORNES
     global MAX_DAILY_DRAWDOWN, TRAILING_STOP_PIPS, SOFT_SL_PERCENT
     global BE_OFFSET_PIPS, SABR_TRAILING_PIPS, FIXED_LOT_INDODOG, FIXED_LOT_FTS
-    global SABR_BE_PARTIEL_ACTIVE, SABR_BE_PARTIEL_PCT
+    global SABR_BE_PARTIEL_ACTIVE, SABR_BE_PARTIEL_PCT, SABR_FORWARD_ACTIVE
     global PRIME_HOURS, TIME_OFF_PEAK_FACTOR
 
     k = data.key
@@ -4692,6 +4692,11 @@ async def api_update_setting(data: SettingUpdate):
         if _b: SABR_ZONE_BORNES = _b
     elif k == "sabr_be_partiel": SABR_BE_PARTIEL_ACTIVE = bool(v)
     elif k == "sabr_be_partiel_pct": SABR_BE_PARTIEL_PCT = max(0.01, min(1.0, float(v)))
+    # (#103) sabr_forward etait pousse au dashboard mais n'avait aucun chemin d'ecriture :
+    # ni cle update_setting, ni commande toggle_. Il n'etait donc reglable que par
+    # /forward_sabr. On passe par update_setting plutot que par une nouvelle commande, pour
+    # ne pas avoir a toucher la liste blanche des regles Firestore.
+    elif k == "sabr_forward": SABR_FORWARD_ACTIVE = bool(v)
     elif k == "sabr_zone_pct1": SABR_ZONE_PCT1 = max(0.01, min(0.98, float(v)))
     elif k == "sabr_zone_pct2": SABR_ZONE_PCT2 = max(0.01, min(0.98, float(v)))
     elif k == "max_dd": MAX_DAILY_DRAWDOWN = float(v)
