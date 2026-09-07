@@ -301,6 +301,17 @@ function App() {
     activeCommandUnsubs.current.clear();
   }, []);
 
+  // --- FIREBASE SAAS ---
+  // (#105) Déclaré ICI, avant la file d'attente des réglages. `trackPendingCommand` liste
+  // `userId` dans son tableau de dépendances, et un tableau de dépendances est évalué À
+  // CHAQUE RENDU -- pas au moment où le callback s'exécute. Déclarer `userId` plus bas
+  // laissait donc le rendu lire un `const` encore dans sa zone morte temporelle :
+  // « Cannot access 'userId' before initialization », attrapé par l'Error Boundary, écran
+  // noir au lancement du dashboard. Le build Vite ne le voit pas, c'est une erreur d'exécution.
+  const [userId, setUserId] = useState(null);
+  const [loadingAction, setLoadingAction] = useState(null); // ex: 'close_123456', 'panic'
+  const [botOnline, setBotOnline] = useState(false);
+
   // (#103) Retire une clé de la file d'attente et rend la main à l'état du bot.
   // `cmdId` protège de la ré-édition rapide : si une réponse arrive pour une commande plus
   // ancienne que la dernière saisie sur cette clé, on l'ignore -- sinon le `done` d'une
@@ -348,11 +359,6 @@ function App() {
     pendingTimers.current[key] = setTimeout(
       () => clearPending(key, pendingCmdIds.current[key]), PENDING_TIMEOUT_MS);
   }, [clearPending]);
-
-  // --- FIREBASE SAAS ---
-  const [userId, setUserId] = useState(null);
-  const [loadingAction, setLoadingAction] = useState(null); // ex: 'close_123456', 'panic'
-  const [botOnline, setBotOnline] = useState(false);
 
 // Fonction ultra-sécurisée pour les retours haptiques (Vibrations)
   const triggerHaptic = (type = 'light') => {
