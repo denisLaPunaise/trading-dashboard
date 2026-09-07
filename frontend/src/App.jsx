@@ -232,9 +232,25 @@ const EquityChart = ({ points, loading }) => {
 function App() {
   const [dashboardData, setDashboardData] = useState(null)
   const [error, setError] = useState(null)
-  const isUpdating = useRef(false)
-  const updateTimeout = useRef(null)
   const settingDebounce = useRef({}) // (#11) timers de debounce par clé de réglage
+
+  // (#104) Réglages envoyés au bot mais pas encore confirmés, superposés à l'état reçu.
+  //
+  // L'ancien mécanisme pariait sur les délais : un booléen global `isUpdating` gelait TOUT le
+  // document Firestore pendant 2,5 s, le temps que le bot renvoie son état. Sauf que le trajet
+  // réel dure jusqu'à ~7,5 s (500 ms de debounce + jusqu'à 3 s de polling côté bot + jusqu'à
+  // 4 s avant le push suivant). Passé 2,5 s, le premier push encore porteur de l'ANCIENNE
+  // valeur écrasait la saisie -- et comme le bot pousse toutes les 4 s, il tombait dedans à
+  // presque tous les coups. Le bot poussant le document ENTIER, changer deux réglages coup sur
+  // coup faisait systématiquement revenir le second : au moment du push, seul le premier avait
+  // été traité.
+  //
+  // On ne gèle donc plus rien. L'état du bot circule librement, et ces valeurs-ci sont
+  // reposées par-dessus jusqu'à ce que le bot confirme.
+  const [pendingSettings, setPendingSettings] = useState({})
+  const pendingCmdIds = useRef({})   // { clé: id de la DERNIÈRE commande envoyée }
+  const pendingTimers = useRef({})   // { clé: filet de sécurité }
+  const PENDING_TIMEOUT_MS = 20000
   
   const [isTradesOpen, setIsTradesOpen] = useState(false) // (#9) fermé par défaut
   const [isSettingsOpen, setIsSettingsOpen] = useState(false) // (#9) fermé par défaut
@@ -284,6 +300,54 @@ function App() {
     activeCommandUnsubs.current.forEach((unsub) => unsub());
     activeCommandUnsubs.current.clear();
   }, []);
+
+  // (#104) Retire une clé de la file d'attente et rend la main à l'état du bot.
+  // `cmdId` protège de la ré-édition rapide : si une réponse arrive pour une commande plus
+  // ancienne que la dernière saisie sur cette clé, on l'ignore -- sinon le `done` d'une
+  // commande périmée effacerait une valeur que l'utilisateur vient tout juste de taper.
+  const clearPending = useCallback((key, cmdId) => {
+    if (cmdId && pendingCmdIds.current[key] !== cmdId) return;
+    if (pendingTimers.current[key]) {
+      clearTimeout(pendingTimers.current[key]);
+      delete pendingTimers.current[key];
+    }
+    delete pendingCmdIds.current[key];
+    setPendingSettings((prev) => {
+      if (!(key in prev)) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  }, []);
+
+  // (#104) Suit une commande de réglage jusqu'à sa confirmation.
+  // On se cale sur le STATUT de la commande, jamais sur l'égalité des valeurs : le bot écrête
+  // (SABR_BE_PARTIEL_PCT à 1.0, les pourcentages de zone à 0.98...), donc une comparaison
+  // valeur-envoyée / valeur-reçue ne correspondrait jamais et l'écran resterait bloqué sur la
+  // saisie hors bornes.
+  const trackPendingCommand = useCallback((key, cmdId) => {
+    if (!userId) return;
+    pendingCmdIds.current[key] = cmdId;
+    const unsub = onSnapshot(doc(db, 'users', userId, 'commands', cmdId), (snap) => {
+      const d = snap.data();
+      if (!d || d.status === 'pending') return;
+      unsub();
+      activeCommandUnsubs.current.delete(unsub);
+      if (d.status === 'error') alert(`❌ ${d.result?.message || 'Réglage refusé par le bot.'}`);
+      clearPending(key, cmdId);
+    });
+    activeCommandUnsubs.current.add(unsub);
+  }, [userId, clearPending]);
+
+  // (#104) Pose la valeur à l'écran tout de suite, et arme le filet : bot éteint ou commande
+  // jamais traitée, la file se vide au bout de PENDING_TIMEOUT_MS et l'état réel du bot
+  // réapparaît -- plutôt que de laisser croire indéfiniment qu'un réglage est appliqué.
+  const markPending = useCallback((key, value) => {
+    setPendingSettings((prev) => ({ ...prev, [key]: value }));
+    if (pendingTimers.current[key]) clearTimeout(pendingTimers.current[key]);
+    pendingTimers.current[key] = setTimeout(
+      () => clearPending(key, pendingCmdIds.current[key]), PENDING_TIMEOUT_MS);
+  }, [clearPending]);
 
   // --- FIREBASE SAAS ---
   const [userId, setUserId] = useState(null);
@@ -533,7 +597,10 @@ function App() {
           if (!snap.exists()) { return; }
           const data = snap.data();
           setBotOnline(data.bot_online === true);
-          if (!isUpdating.current) setDashboardData(data);
+          // (#104) Plus de gel : l'état du bot est toujours appliqué. Les réglages non encore
+          // confirmés sont reposés par-dessus au moment du rendu (cf. pendingSettings), donc
+          // le solde et les trades continuent de vivre pendant qu'on règle le bot.
+          setDashboardData(data);
           setError(null);
         }, (err) => {
           console.error('Firestore error:', err);
@@ -661,27 +728,29 @@ function App() {
     // (#86) Garde-fou : un champ vidé produisait parseFloat('') = NaN, poussé tel quel dans
     // l'état optimiste PUIS envoyé au bot (?? ne rattrape que null/undefined, jamais NaN).
     if (typeof value === 'number' && !Number.isFinite(value)) return;
-    isUpdating.current = true;
-    if (updateTimeout.current) clearTimeout(updateTimeout.current);
-    // 1. Affichage optimiste immédiat (curseur fluide)
-    setDashboardData(prev => prev ? { ...prev, settings: { ...prev.settings, [key]: value } } : prev);
+    // 1. Affichage immédiat (curseur fluide), superposé à l'état du bot jusqu'à confirmation.
+    markPending(key, value);
 
     // 2. Envoi (débouncé pour les sliders, immédiat sinon)
     if (settingDebounce.current[key]) clearTimeout(settingDebounce.current[key]);
-    const sendUpdate = () => {
+    const sendUpdate = async () => {
       if (!userId) return;
-      addDoc(collection(db, 'users', userId, 'commands'), {
-        type: 'update_setting', payload: { key, value }, status: 'pending', created_at: serverTimestamp(), expire_at: commandExpiry(),
-      }).catch((err) => console.error('update_setting échoué', err));
+      try {
+        const cmdRef = await addDoc(collection(db, 'users', userId, 'commands'), {
+          type: 'update_setting', payload: { key, value }, status: 'pending', created_at: serverTimestamp(), expire_at: commandExpiry(),
+        });
+        // 3. La file se vide sur la RÉPONSE du bot, plus sur un minuteur aveugle.
+        trackPendingCommand(key, cmdRef.id);
+      } catch (err) {
+        console.error('update_setting échoué', err);
+        clearPending(key);   // l'écriture n'est jamais partie : on rend la main tout de suite
+      }
     };
     if (debounce) {
       settingDebounce.current[key] = setTimeout(sendUpdate, 500);
     } else {
       sendUpdate();
     }
-
-    // 3. On rouvre l'écoute des snapshots après stabilisation (bot a le temps de renvoyer l'état)
-    updateTimeout.current = setTimeout(() => { isUpdating.current = false; }, 2500);
   };
 
   // (#17) Toggles instantanés (drawdown, SL suiveur, soft SL, mute) : optimiste + fire-and-forget,
@@ -689,13 +758,23 @@ function App() {
   // (poll 3s) avant de changer visuellement -- correct pour les actions à risque (fermer un trade,
   // panic, kill) mais ressenti comme un gros lag sur de simples interrupteurs. On flip donc l'état
   // local tout de suite ; l'état réel revient de toute façon via le snapshot du bot.
-  const sendInstantToggle = (type, payload, settingKey, settingValue) => {
+  // (#104) Les interrupteurs n'avaient AUCUNE protection : ils écrivaient l'état optimiste
+  // sans même poser l'ancien verrou `isUpdating`, donc le premier snapshot venu (au plus 4 s)
+  // les remettait dans leur état d'avant si le bot n'avait pas encore traité la commande.
+  // Ils passent par la même file d'attente que les réglages.
+  const sendInstantToggle = async (type, payload, settingKey, settingValue) => {
     triggerHaptic('medium');
-    setDashboardData(prev => prev ? { ...prev, settings: { ...prev.settings, [settingKey]: settingValue } } : prev);
     if (!userId) return;
-    addDoc(collection(db, 'users', userId, 'commands'), {
-      type, payload, status: 'pending', created_at: serverTimestamp(), expire_at: commandExpiry(),
-    }).catch((err) => console.error(`${type} échoué`, err));
+    markPending(settingKey, settingValue);
+    try {
+      const cmdRef = await addDoc(collection(db, 'users', userId, 'commands'), {
+        type, payload, status: 'pending', created_at: serverTimestamp(), expire_at: commandExpiry(),
+      });
+      trackPendingCommand(settingKey, cmdRef.id);
+    } catch (err) {
+      console.error(`${type} échoué`, err);
+      clearPending(settingKey);
+    }
   };
 
   // (#29) Anti-spam 1 message / 15 min / client -- basé sur le dernier signalement connu.
@@ -731,7 +810,11 @@ function App() {
   };
 
   const toggleMute = (channelName) => {
-    const current = dashboardData?.settings?.muted_channels || [];
+    // (#104) La nouvelle liste se calcule à partir de la valeur EN ATTENTE quand il y en a
+    // une, pas de l'état brut du bot. Sinon muter deux canaux coup sur coup repartait dans les
+    // deux cas de la liste d'avant, et le second envoi effaçait le premier -- exactement le
+    // symptôme qu'on corrige ici, mais sur les canaux au lieu des réglages.
+    const current = pendingSettings.muted_channels ?? dashboardData?.settings?.muted_channels ?? [];
     const next = current.includes(channelName) ? current.filter(c => c !== channelName) : [...current, channelName];
     sendInstantToggle('toggle_mute', { channel: channelName }, 'muted_channels', next);
   };
@@ -804,7 +887,13 @@ function App() {
     );
   }
 
-const { account, daily_stats, settings, active_trades } = dashboardData
+const { account, daily_stats, settings: settingsFromBot, active_trades } = dashboardData
+  // (#104) Superposition : l'état du bot d'abord, puis les réglages envoyés et pas encore
+  // confirmés par-dessus. C'est ici, au rendu, que la file d'attente reprend la main -- le
+  // reste du document (solde, trades, stats) passe intact, plus aucun gel global.
+  const settings = Object.keys(pendingSettings).length
+    ? { ...settingsFromBot, ...pendingSettings }
+    : settingsFromBot
   // (#74) Historique des trades sur la période choisie, poussé par le bot en réponse à
   // request_history. Remplace l'ancien `closed_trades`, qui ne couvrait que la journée en cours.
   const tradesHistory = dashboardData[`trades_history_${historyPeriod}`] || []
@@ -1743,6 +1832,16 @@ const { account, daily_stats, settings, active_trades } = dashboardData
                   <div key={item.key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', background: item.warn && !active ? '#3a1f1f' : '#2a2a2a', padding: '10px', borderRadius: '8px', border: item.warn && !active ? '1px solid #ff4444' : '1px solid transparent' }}>
                     <span style={{ fontSize: '0.9rem', flex: 1 }}>
                       {item.label}
+                      {/* (#104) Marqueur d'attente : rend visible le seul flou qui subsiste.
+                          Tant que le bot n'a pas confirmé, la valeur affichée vient de la file
+                          locale, pas de lui. Rouge s'il est hors ligne : dans ce cas le réglage
+                          ne sera appliqué qu'à son prochain démarrage (la commande reste en
+                          attente dans Firestore, elle n'est pas perdue). */}
+                      {(pendingSettings[item.key] !== undefined || pendingSettings[item.toggleKey] !== undefined) && (
+                        <span title={botOnline ? 'Envoyé — en attente de confirmation du bot'
+                                               : "Bot hors ligne — sera appliqué à son prochain démarrage"}
+                          style={{ color: botOnline ? '#ffc107' : '#ff6b6b', fontSize: '0.6rem', marginLeft: '6px', verticalAlign: 'middle' }}>●</span>
+                      )}
                       {item.warn && !active && <span style={{ color: '#ff6b6b', fontSize: '0.7rem', display: 'block' }}>⚠️ Protection désactivée</span>}
                       {/* (#103) Note contextuelle sous le libellé : sert à révéler les
                           dépendances entre réglages, que rien n'indiquait jusqu'ici. */}
