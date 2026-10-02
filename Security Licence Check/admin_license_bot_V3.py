@@ -714,7 +714,7 @@ def update_sheet(license_key, pc_id):
 
             else:
                 record_hwid_event(license_key, "theft", f"attendu={current_hwid} recu={pc_id}")
-                print(f"⚠️ CONFLIT ID !")
+                print("⚠️ CONFLIT ID !")
                 return "CONFLICT"
         else:
             return "NOT_FOUND"
@@ -770,7 +770,9 @@ def set_default_version(new_ver):
         # On écrit la version dans H2, en TEXTE (sinon Sheets la convertit en date)
         sheet.update_cell(ROW_CONFIG_VER, COL_CONFIG_VER, sheet_text(new_ver))
         return True
-    except Exception as e: return False
+    except Exception as e:
+        print(f"⚠️ Écriture de la version minimale dans Google Sheets impossible : {e}")  # (#106) échec jusque-là silencieux
+        return False
     
 # --- FONCTIONS UTILITAIRES ---
 
@@ -1062,7 +1064,7 @@ async def main_handler(event):
                         f"`/history {licence}` pour voir l'historique de cette clé."
                     )
                 elif result == "EXPIRED":
-                    await event.reply(f"⛔ **LICENCE EXPIRÉE**\nAccès refusé.")
+                    await event.reply("⛔ **LICENCE EXPIRÉE**\nAccès refusé.")
                 elif result == "NOT_FOUND":
                     print(f"Clé inconnue: {licence}")
         except Exception as e:

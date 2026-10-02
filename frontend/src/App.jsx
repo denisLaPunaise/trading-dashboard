@@ -522,7 +522,6 @@ function App() {
     const wantChannel = statsTab === 'canal';
     if (!wantWeek && !wantGlobal && !wantChannel) return;
     const period = wantWeek ? '7' : (wantChannel ? channelPeriod : globalPeriod);
-    const periodKey = wantChannel ? `channels_period_${period}` : `global_period_${period}`;
     // (#stats) On ne se fie PAS à la présence de la clé dans Firestore pour éviter la requête :
     // ces champs sont persistants et peuvent dater d'une version antérieure du bot. C'était la
     // cause d'un affichage figé où "14j" montrait plus de trades que "1M", et où 3M et 6M
@@ -538,11 +537,13 @@ function App() {
     let cancelled = false;
     let unsub = null;
     let timer = null;
+    let envoye = false;
     (async () => {
       try {
         const cmdRef = await addDoc(collection(db, 'users', userId, 'commands'), {
           type: 'request_stats', payload: { days: period }, status: 'pending', created_at: serverTimestamp(), expire_at: commandExpiry(),
         });
+        envoye = true;
         if (cancelled) return;
         await new Promise((resolve) => {
           unsub = onSnapshot(doc(db, 'users', userId, 'commands', cmdRef.id), (snap) => {
@@ -551,7 +552,12 @@ function App() {
           });
           timer = setTimeout(() => { unsub(); resolve(); }, 20000);
         });
-      } catch { /* silencieux */ }
+      } catch {
+        // (#106) La période était marquée « demandée » AVANT l'envoi : un envoi raté (réseau
+        // mobile qui décroche) la laissait bloquée jusqu'au rechargement complet de la page.
+        // On la libère pour qu'elle soit redemandée au prochain affichage.
+        if (!envoye) requestedPeriods.current.delete(reqKey);
+      }
       if (!cancelled) setIsLoadingStats(false);
     })();
     return () => {
@@ -559,7 +565,6 @@ function App() {
       if (unsub) unsub();
       if (timer) clearTimeout(timer);
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- dashboardData lu volontairement sans redéclencher la requête (cf. commentaire ci-dessus)
   }, [isStatsOpen, statsTab, dayWeekToggle, globalPeriod, channelPeriod, userId]);
 
   // (#74) Historique des trades : demandé au bot à l'ouverture de la section et à chaque
@@ -570,16 +575,19 @@ function App() {
     if (!isClosedTradesOpen || !userId) return;
     if (requestedHistory.current.has(historyPeriod)) return;
     requestedHistory.current.add(historyPeriod);
-    let cancelled = false;
     (async () => {
       try {
         await addDoc(collection(db, 'users', userId, 'commands'), {
           type: 'request_history', payload: { period: historyPeriod },
           status: 'pending', created_at: serverTimestamp(), expire_at: commandExpiry(),
         });
-      } catch { /* silencieux */ }
+      } catch {
+        // (#106) Même piège que les stats : marquée « demandée » avant l'envoi, la période
+        // restait bloquée après un échec. Un `cancelled` avait été déclaré pour ce cas mais
+        // jamais relu -- c'est lui que signalait le linter.
+        requestedHistory.current.delete(historyPeriod);
+      }
     })();
-    return () => { cancelled = true; };
   }, [isClosedTradesOpen, historyPeriod, userId]);
 
   // Authentification Firebase + abonnement temps réel Firestore
