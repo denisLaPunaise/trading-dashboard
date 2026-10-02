@@ -262,9 +262,14 @@ EN CAS DE PROBLEME AU DEMARRAGE
 "MetaTrader 5 : CONNEXION IMPOSSIBLE"
 
 Kairos affiche desormais le code d'erreur renvoye par MetaTrader
-et reessaie tout seul toutes les 30 secondes. Laisse la fenetre
-ouverte : des que MetaTrader est pret, la connexion se fait sans
-que tu aies à relancer quoi que ce soit.
+et reessaie tout seul, sans limite : d'abord apres 30 s, puis de
+plus en plus espace, jusqu'a toutes les 5 minutes. Laisse la
+fenetre ouverte : des que MetaTrader est pret, la connexion se fait
+sans que tu aies a relancer quoi que ce soit.
+
+Si MetaTrader reste injoignable plus de 10 a 15 minutes, tu recois
+un message Telegram de ton bot, puis un second quand tout est
+reparti. Utile sur un VPS, ou personne ne regarde la fenetre.
 
 Verifie dans CET ORDRE :
 

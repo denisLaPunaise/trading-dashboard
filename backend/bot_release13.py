@@ -180,6 +180,7 @@ USER_LICENSE_KEY = ""
 # installes pouvait corriger ce chemin pendant des heures sans le moindre effet. Il est lu ici,
 # avec les autres cles, parce que load_settings() ne tourne qu'APRES le test de connexion.
 MT5_PATH = ""
+ALERTE_CHAT_ID = 0
 
 if os.path.exists("settings.json"):
     try:
@@ -190,6 +191,10 @@ if os.path.exists("settings.json"):
             BOT_TOKEN = st_data.get("TELEGRAM_BOT_TOKEN", "")
             USER_LICENSE_KEY = st_data.get("USER_LICENSE_KEY", "")
             MT5_PATH = (st_data.get("MT5_PATH", "") or "").strip()
+            # (#106) Destinataire des alertes, connu AVANT la connexion MT5 : ADMIN_ID n'est
+            # charge que par load_settings(), qui tourne apres. Sert a prevenir le client
+            # quand MetaTrader reste injoignable (cf. connexion_mt5).
+            ALERTE_CHAT_ID = int(st_data.get("TELEGRAM_DESTINATION_ID", 0) or 0)
     except Exception as e:
         print(f"Impossible de lire les clés API Telegram : {e}")
 
@@ -8176,8 +8181,12 @@ MT5_CAUSES = {
     -6:     "MetaTrader a refusé l'autorisation (compte non connecté ?).",
     -4:     "Terminal MetaTrader introuvable sur ce PC.",
 }
-MT5_TENTATIVES = 10     # ~5 minutes avant de rendre la main au watchdog
-MT5_DELAI_S = 30
+# (#106) Delais entre deux essais : ils s'allongent, puis plafonnent a 5 min, indefiniment.
+# La V15.14.0 abandonnait au bout de 10 essais et laissait le watchdog relancer TOUT le worker
+# (connexion Telegram, verification de licence...) : un cycle complet toutes les ~6 min tant
+# que MT5 restait ferme, soit ~80 redemarrages sur une nuit, pour rien.
+MT5_DELAIS_S = (30, 60, 120, 300)
+MT5_ALERTE_APRES_S = 600   # alerte Telegram au bout de 10 min d'echec
 
 
 def _tenter_connexion_mt5():
@@ -8202,10 +8211,16 @@ def _tenter_connexion_mt5():
         code, libelle = mt5.last_error()
     except Exception:
         code, libelle = 0, "inconnue"
+    # (#106) On ne relance plus le processus entre deux essais : on remet donc a zero
+    # explicitement le lien avec le terminal, comme le faisait de fait un redemarrage.
+    try:
+        mt5.shutdown()
+    except Exception:
+        pass
     return False, code, libelle
 
 
-def _banniere_echec_mt5(code, libelle, essai, total):
+def _banniere_echec_mt5(code, libelle, essai, delai):
     """Message client : le code brut, la cause probable, et les gestes dans l'ordre."""
     lignes = [
         "", "█" * 68,
@@ -8240,7 +8255,7 @@ def _banniere_echec_mt5(code, libelle, essai, total):
         " 4. Plusieurs MetaTrader installés ? N'en laissez qu'UN seul ouvert,",
         "    ou indiquez le bon dans MT5_PATH (settings.json).",
         "",
-        f" Nouvel essai dans {MT5_DELAI_S} s  (tentative {essai}/{total})",
+        f" Nouvel essai dans {delai} s  (tentative {essai})",
         " Laissez cette fenêtre ouverte : la connexion se fera toute seule",
         " dès que MetaTrader sera prêt.",
         "█" * 68, "",
@@ -8248,35 +8263,96 @@ def _banniere_echec_mt5(code, libelle, essai, total):
     return "\n".join(lignes)
 
 
-async def connexion_mt5():
-    """Connexion a MetaTrader, avec diagnostic et reprise. True si connecte.
+def _alerte_directe(texte):
+    """(#106) Message Telegram envoye par l'API HTTP du bot, sans passer par bot_user.
 
-    L'ancienne version testait UNE fois puis faisait `return` : le worker restait ensuite
-    vivant sur run_until_disconnected() sans jamais retenter, et comme alive.txt n'avait pas
-    encore ete ecrit, la detection de gel du watchdog (`if os.path.exists(WATCH_FILE)`) ne
-    s'appliquait pas non plus. Le bot restait donc bloque indefiniment, meme une fois MT5
-    repare, jusqu'a ce que le client relance l'exe a la main.
-
-    Le pouls est ecrit AVANT le premier essai : si on finit par abandonner, le watchdog voit
-    un alive.txt qui vieillit, tue le worker et le relance -- la reprise devient automatique
-    au lieu de dependre du client.
+    Pendant la connexion a MT5, rien n'est encore pret pour send_alert() : bot_user n'est
+    demarre qu'apres, et ADMIN_ID n'est charge que par load_settings(). Avancer ces deux
+    etapes aurait permis a des commandes Telegram d'arriver avant le chargement des reglages.
+    Le jeton du bot et le destinataire, eux, sont lus des l'import. Texte brut : pas de
+    Markdown, dont la syntaxe differe entre Telethon et l'API HTTP. True si envoye.
     """
-    for essai in range(1, MT5_TENTATIVES + 1):
+    if not (BOT_TOKEN and ALERTE_CHAT_ID):
+        return False
+    try:
+        r = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                          json={"chat_id": ALERTE_CHAT_ID, "text": texte}, timeout=10)
+        return r.status_code == 200
+    except Exception as e:
+        logger.warning(f"⚠️ Alerte Telegram directe impossible : {e}")
+        return False
+
+
+async def _avec_pouls(coro):
+    """(#106) Attend `coro` en entretenant le pouls toutes les 5 s.
+
+    mt5.initialize() peut bloquer jusqu'a 60 s a lui seul, et un essai de connexion en fait
+    jusqu'a deux (MT5_PATH puis auto-detection). Sans pouls pendant ce temps, le watchdog
+    (seuil 60 s) pouvait tuer un worker qui attendait simplement le terminal.
+    """
+    tache = asyncio.ensure_future(coro)
+    while not tache.done():
         update_pulse()
-        ok, code, libelle = _tenter_connexion_mt5()
+        await asyncio.wait({tache}, timeout=5)
+    return tache.result()
+
+
+async def connexion_mt5():
+    """Connexion a MetaTrader, avec diagnostic et reprise. Ne rend la main qu'une fois connecte.
+
+    Historique : la toute premiere version testait UNE fois puis faisait `return`, et le bot
+    restait bloque a vie (#103). La V15.14.0 retentait 10 fois puis abandonnait, laissant le
+    watchdog relancer tout le worker -- un redemarrage complet toutes les ~6 min tant que MT5
+    restait ferme.
+
+    (#106) On ne rend plus la main : les essais s'espacent (30 s, 1, 2 puis 5 min), le pouls
+    est entretenu pour que le watchdog laisse faire, et la connexion se fait toujours dans les
+    5 min qui suivent le retour de MT5. Surtout, le client est PREVENU : sur un VPS personne ne
+    regarde la console, et la banniere de diagnostic s'affichait dans une fenetre que
+    personne ne voyait. Une alerte part au bout de 10 min, une autre au retour.
+    """
+    debut = time.time()
+    essai = 0
+    dernier_code = None
+    alerte_envoyee = False
+    while True:
+        essai += 1
+        update_pulse()
+        ok, code, libelle = await _avec_pouls(run_mt5(_tenter_connexion_mt5))
         if ok:
             if essai > 1:
-                client_status(f"✔️ MetaTrader 5 connecté (après {essai} tentatives).")
+                duree = int((time.time() - debut) // 60)
+                client_status(f"✔️ MetaTrader 5 connecté (après {essai} tentatives, {duree} min).")
+                if alerte_envoyee:
+                    await run_bg(_alerte_directe,
+                                 f"✅ MetaTrader 5 de nouveau joignable après {duree} min. "
+                                 f"Le bot démarre normalement.")
             return True
-        logger.critical(f"❌ MT5 injoignable [{code}] {libelle} (essai {essai}/{MT5_TENTATIVES})")
-        client_status(_banniere_echec_mt5(code, libelle, essai, MT5_TENTATIVES))
-        if essai < MT5_TENTATIVES:
-            for _ in range(MT5_DELAI_S):
-                await asyncio.sleep(1)
-                update_pulse()
-    client_status("❌ MetaTrader 5 toujours injoignable — redémarrage automatique du bot...")
-    return False
 
+        delai = MT5_DELAIS_S[min(essai - 1, len(MT5_DELAIS_S) - 1)]
+        logger.critical(f"❌ MT5 injoignable [{code}] {libelle} (essai {essai}, prochain dans {delai} s)")
+        # Banniere complete au premier echec ou quand la cause change ; sinon une ligne, pour
+        # ne pas noyer la console sous des dizaines de bannieres identiques.
+        if code != dernier_code:
+            client_status(_banniere_echec_mt5(code, libelle, essai, delai))
+            dernier_code = code
+        else:
+            client_status(f"⏳ MetaTrader 5 toujours injoignable [{code}] — essai {essai}, "
+                          f"prochain dans {delai} s.")
+
+        if not alerte_envoyee and time.time() - debut >= MT5_ALERTE_APRES_S:
+            minutes = int((time.time() - debut) // 60)
+            alerte_envoyee = await run_bg(
+                _alerte_directe,
+                f"⚠️ MetaTrader 5 injoignable depuis {minutes} min.\n\n"
+                f"Code : {code} ({libelle})\n\n"
+                f"Le bot ne peut pas trader. Vérifie que MetaTrader est ouvert ET connecté à "
+                f"ton compte (voyant vert en bas à droite). Le bot reprendra tout seul.")
+
+        for t in range(delai):
+            await asyncio.sleep(1)
+            if t % 5 == 0:
+                update_pulse()
 
 async def main():
     logger.info("\n" + "—"*50)
