@@ -25,6 +25,7 @@ try:
 except Exception as e:
     FIREBASE_ENABLED = False
     _fb_db = None
+    _FB_ERREUR = str(e)   # (#106) repris par main() pour l'alerte Telegram
     print(f"⚠️ Firebase non disponible (mode dégradé) : {e}")
 
 def fb_sync_license(key, user, status, ver_min=None, hwid=None, date_fin=None, allowed_channels=None):
@@ -1937,8 +1938,43 @@ async def feedback_relay():
             await asyncio.sleep(20)
 
 
+async def _alerte_mode_degrade():
+    """(#106) Le mode degrade se signalait par UNE ligne de console, aussitot suivie de
+    "Pret a gerer les licences" : tout avait l'air normal. Or sans Firebase, aucune commande
+    n'atteint Firestore -- un /gen ne permet pas au client de se connecter, un ban ne l'empeche
+    pas de trader. Constate au passage sur un VPS remonte : firebase-admin manquait, et seule
+    cette ligne le disait. Bandeau en console ET message dans le canal de securite, pour que
+    ca se voie aussi quand personne ne regarde la fenetre du VPS."""
+    raison = globals().get("_FB_ERREUR", "inconnue")
+    print("\n" + "█" * 70)
+    print(" ⛔  BOT DE LICENCE EN MODE DÉGRADÉ — FIREBASE INDISPONIBLE ".center(69, "█"))
+    print("█" * 70)
+    print(f" Cause : {raison}")
+    print(" Les licences NE SONT PAS synchronisées : /gen, ban, prolongation...")
+    print(" restent dans Google Sheets et n'atteignent jamais les bots clients.")
+    print(" 👉 py -m pip install -r requirements.txt   (et serviceAccountKey.json")
+    print("    doit être dans ce dossier), puis relance ce script.")
+    print("█" * 70 + "\n")
+    if not SECURITY_BOT_TOKEN:
+        return
+    texte = ("⛔ BOT DE LICENCE EN MODE DÉGRADÉ\n\n"
+             f"Firebase indisponible : {raison}\n\n"
+             "Les commandes (/gen, ban, prolongation) ne sont PAS synchronisées vers les "
+             "bots clients. Corrige puis relance le bot de licence.")
+    try:
+        def _send():
+            requests.post(f"https://api.telegram.org/bot{SECURITY_BOT_TOKEN}/sendMessage",
+                          json={"chat_id": SECURITY_CHANNEL_ID, "text": texte}, timeout=10)
+        await asyncio.to_thread(_send)
+    except Exception as e:
+        print(f"⚠️ alerte mode dégradé non envoyée : {e}")
+
+
 async def main():
-    print("🤖 ADMIN BOT : Prêt à gérer les licences.")
+    if not FIREBASE_ENABLED:
+        await _alerte_mode_degrade()
+    print("🤖 ADMIN BOT : Prêt à gérer les licences."
+          + ("" if FIREBASE_ENABLED else "  (⛔ MODE DÉGRADÉ, voir ci-dessus)"))
     asyncio.create_task(security_events_relay())
     asyncio.create_task(feedback_relay())
     await client_tg.run_until_disconnected()

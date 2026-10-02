@@ -1,0 +1,12 @@
+# Dependances du bot de licence (admin_license_bot_V3.py), a installer sur le VPS :
+#
+#     py -m pip install -r requirements.txt
+#
+# Liste relevee sur les imports du script. firebase-admin est la plus importante : sans
+# elle le bot DEMARRE quand meme, mais en mode degrade -- aucune commande n'atteint les
+# bots clients (cf. GUIDE_ADMIN.md, « Installer ou reinstaller le bot de licence »).
+gspread
+oauth2client
+telethon
+requests
+firebase-admin

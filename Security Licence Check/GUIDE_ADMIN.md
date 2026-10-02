@@ -6,6 +6,26 @@ commandes du canal support (mailbox retour client).
 
 ---
 
+## 🖥️ Installer ou réinstaller le bot de licence (VPS)
+
+À refaire à chaque changement de machine. Depuis le dossier `Security Licence Check` :
+
+```
+py -m pip install -r requirements.txt
+py .\admin_license_bot_V3.py
+```
+
+- Utilise **`py`**, pas `python` : l'installeur de python.org n'ajoute pas `python` au PATH
+  par défaut, alors que le lanceur `py` est toujours là.
+- Trois fichiers doivent être dans le dossier, à côté du script : `license_secrets.json`,
+  `serviceAccountKey.json` (clé Firebase) et `service_account.json` (accès Google Sheets).
+- Au démarrage tu dois lire **`✅ Firebase Admin initialisé.`** Si tu vois à la place un
+  bandeau **« MODE DÉGRADÉ »** (un message part aussi dans le canal sécurité) : le bot
+  répond, mais tes commandes n'atteignent **pas** les bots clients — un `/gen` ne permet pas
+  au client de se connecter, un ban ne l'empêche pas de trader. Corrige avant de t'en servir.
+
+---
+
 ## ⚠️ Pré-requis : ADMIN_IDS
 
 Depuis le dernier lot de correctifs (2026-07-27), le bot de licence **n'accepte plus aucune
