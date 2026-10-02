@@ -519,6 +519,9 @@ BASE_LOTS_FOR_01_PCT = {
 
 # --- Système ---
 DATA_FILENAME = "ftmo_state.txt"
+# (#106) Reference de minuit PAR COMPTE (cf. save_state_and_stats). ftmo_state.txt reste ecrit
+# pour la compatibilite descendante, mais c'est ce fichier-ci qui fait foi.
+REFS_FILENAME = "daily_refs.json"
 STATS_FILENAME = "daily_stats.json"
 HISTORY_FILENAME = "history.csv"
 MEMORY_FILENAME = "trades_memory.json"
@@ -744,6 +747,11 @@ SABR_FORWARD_ACTIVE = True  # Active ou désactive le transfert des messages SAB
 daily_start_equity = 0.0
 daily_start_balance = 0.0 
 current_trade_day = -1
+# (#106) Compte MT5 auquel se rapporte daily_start_balance. Il n'etait lu qu'au demarrage, pour
+# l'afficher : un changement de compte en cours de route passait totalement inapercu.
+CURRENT_ACCOUNT_LOGIN = 0
+# (#106) {"date": "AAAA-MM-JJ", "comptes": {"<login>": {"ref": float, "verrou": bool}}}
+DAILY_REFS = {"date": "", "comptes": {}}
 watched_tickets = set()
 # Mémorise quels TPs ont déjà été touchés pour chaque ticket
 # Format : { 123456: ["TP1"], 789012: ["TP1", "TP2"] }
@@ -1802,8 +1810,33 @@ def save_channel_data():
         with open(SIGNALS_MEMORY_FILE, "w") as f: json.dump(ACTIVE_TRADE_SIGNALS, f)
     except: pass
 
+def _date_broker():
+    """(#106) Date du jour en heure BROKER, au format AAAA-MM-JJ."""
+    return (datetime.now(timezone.utc) + timedelta(hours=BROKER_TIME_OFFSET)).strftime("%Y-%m-%d")
+
+
 def save_state_and_stats(day, balance_snapshot):
-    # On sauvegarde le jour et la BALANCE de référence
+    global DAILY_REFS
+    # (#106) Reference de minuit PAR COMPTE. ftmo_state.txt ne gardait que "jour|balance" :
+    # ni le compte, ni le mois. Au redemarrage, la balance etait reprise des que le numero du
+    # jour concordait, QUEL QUE SOIT le compte connecte -- passer d'un compte de 10 000 EUR a un
+    # compte de 50 000 EUR dans la journee faisait croire a +40 000 EUR de gain et neutralisait
+    # le drawdown jusqu'a minuit, sans aucun symptome ; dans l'autre sens, verrou instantane.
+    # On garde une reference par compte, verrou compris, pour la journee : un aller-retour
+    # prop -> demo -> prop retrouve la perte du matin au lieu de repartir de zero, ce qui
+    # aurait autorise a reperdre la totalite du seuil une seconde fois.
+    aujourd_hui = _date_broker()
+    if DAILY_REFS.get("date") != aujourd_hui:
+        DAILY_REFS = {"date": aujourd_hui, "comptes": {}}   # nouveau jour : on repart a vide
+    if CURRENT_ACCOUNT_LOGIN:
+        DAILY_REFS["comptes"][str(CURRENT_ACCOUNT_LOGIN)] = {
+            "ref": float(balance_snapshot), "verrou": bool(security_triggered)}
+    try:
+        with open(REFS_FILENAME, "w") as f:
+            json.dump(DAILY_REFS, f)
+    except: pass
+
+    # Format historique conserve : un exe plus ancien relance par-dessus retrouve ses petits.
     try:
         with open(DATA_FILENAME, "w") as f: 
             f.write(f"{day}|{balance_snapshot}")
@@ -1822,23 +1855,48 @@ def save_state_and_stats(day, balance_snapshot):
     except: pass
 
 def load_daily_state(server_day):
-    global daily_stats, active_trades_max_pips, active_trades_min_pips, security_triggered
+    global daily_stats, active_trades_max_pips, active_trades_min_pips, security_triggered, DAILY_REFS
     saved_balance = None
-    
-    # Lecture du fichier ftmo_state.txt
-    if os.path.exists(DATA_FILENAME):
+    meme_jour = False       # (#106) les COMPTEURS du jour sont communs a tous les comptes
+    verrou_compte = None    # (#106) le VERROU, lui, appartient au compte
+
+    # (#106) Source de verite : la reference du compte connecte, pour la date complete du jour.
+    refs = None
+    if os.path.exists(REFS_FILENAME):
+        try:
+            with open(REFS_FILENAME, "r") as f:
+                refs = json.load(f)
+        except Exception:
+            refs = None
+    if isinstance(refs, dict):
+        if refs.get("date") == _date_broker():
+            DAILY_REFS = {"date": refs["date"], "comptes": dict(refs.get("comptes") or {})}
+            meme_jour = True
+            entree = DAILY_REFS["comptes"].get(str(CURRENT_ACCOUNT_LOGIN))
+            if entree:
+                saved_balance = float(entree["ref"])
+                verrou_compte = bool(entree.get("verrou"))
+            else:
+                # Compte jamais vu aujourd'hui : nouvelle reference, et aucun verrou herite
+                # d'un autre compte.
+                verrou_compte = False
+    # Repli : premier demarrage apres la mise a jour, seul l'ancien format existe. Le numero du
+    # jour seul ne dit ni le mois ni le compte, d'ou son remplacement -- mais l'ignorer ici
+    # fausserait la journee de chaque client au moment precis ou il installe la mise a jour.
+    elif os.path.exists(DATA_FILENAME):
         try:
             with open(DATA_FILENAME, "r") as f:
                 c = f.read().strip()
                 if "|" in c:
-                    d, b = c.split('|')
+                    d, b = c.split('|')[:2]
                     # Si c'est bien le même jour qu'aujourd'hui, on récupère la balance de minuit
                     if int(d) == server_day: 
                         saved_balance = float(b)
+                        meme_jour = True
         except: pass
         
-    # Chargement des stats (inchangé)
-    if os.path.exists(STATS_FILENAME) and saved_balance is not None:
+    # Chargement des stats
+    if os.path.exists(STATS_FILENAME) and meme_jour:
         try:
             with open(STATS_FILENAME, "r") as f: 
                 loaded = json.load(f)
@@ -1853,7 +1911,10 @@ def load_daily_state(server_day):
                 # minuit, on ne repasse pas par ce chemin : le verrou tombe de lui-meme, ce qui
                 # est exactement la regle voulue -- il saute au changement de jour.
                 if "security_triggered" in loaded:
-                    security_triggered = bool(loaded["security_triggered"])
+                    # (#106) Le verrou du COMPTE connecte prime : daily_stats.json garde celui du
+                    # dernier compte actif, qui n'est pas forcement le meme.
+                    security_triggered = (verrou_compte if verrou_compte is not None
+                                          else bool(loaded["security_triggered"]))
                     del loaded["security_triggered"]
                     if security_triggered:
                         logger.warning("🔒 Verrou drawdown restaure : le trading reste bloque "
@@ -1862,6 +1923,11 @@ def load_daily_state(server_day):
         except: pass
     else:
         daily_stats = DEFAULT_STATS.copy()
+
+    # (#106) Filet si daily_stats.json n'a pas la cle (fichier ancien ou corrompu) : le verrou
+    # memorise pour CE compte s'applique quand meme.
+    if verrou_compte is not None:
+        security_triggered = verrou_compte
 
     return saved_balance
 
@@ -2573,7 +2639,7 @@ def get_accurate_daily_stats():
 # ==========================================
 
 async def init_daily_stats():
-    global daily_start_balance, current_trade_day
+    global daily_start_balance, current_trade_day, CURRENT_ACCOUNT_LOGIN
     
     # Connexion simple
     if not mt5.initialize(): return False
@@ -2592,6 +2658,8 @@ async def init_daily_stats():
     current_trade_day = day
     
     acc = mt5.account_info()
+    # (#106) Le compte doit etre connu AVANT de relire la reference : elle est rangee par compte.
+    CURRENT_ACCOUNT_LOGIN = acc.login if acc else 0
     
     # On essaie de charger la balance de minuit depuis le fichier
     saved = load_daily_state(day)
@@ -2599,7 +2667,10 @@ async def init_daily_stats():
     if saved is not None:
         # CAS 1 : On a déjà lancé le bot aujourd'hui, on reprend le point de référence
         daily_start_balance = saved
-        await send_alert(f"🔄 **BOT RELANCÉ**\n\nSession restaurée.\nBalance Minuit Ref: {daily_start_balance:.2f}€")
+        # (#106) Reecrit tout de suite : au premier demarrage apres la mise a jour, c'est ce qui
+        # convertit l'ancien ftmo_state.txt au nouveau format, sans attendre la boucle (60 s).
+        save_state_and_stats(day, daily_start_balance)
+        await send_alert(f"🔄 **BOT RELANCÉ**\n\nSession restaurée (compte {CURRENT_ACCOUNT_LOGIN}).\nBalance Minuit Ref: {daily_start_balance:.2f}€")
     else:
         # CAS 2 : C'est la première fois aujourd'hui (ou changement de jour)
         # On prend la balance ACTUELLE comme référence pour la journée
@@ -2687,6 +2758,7 @@ async def update_daily_stats():
     if not mt5.initialize(): return
     acc = mt5.account_info()
     if not acc: return
+    _verifier_changement_compte(acc)   # (#106) au cas ou le DD serait coupe
 
     # SI ON CHANGE DE JOUR (MINUIT PILE DÉTECTÉ)
     if day != current_trade_day:
@@ -2739,6 +2811,52 @@ async def update_daily_stats():
         # Sauvegarde silencieuse de l'état actuel
         save_state_and_stats(current_trade_day, daily_start_balance)
 
+def _verifier_changement_compte(acc):
+    """(#106) Detecte un changement de compte MT5 et bascule la reference du jour. True si bascule.
+
+    Appelee en TETE de check_daily_max_loss(), qui tourne chaque seconde, et pas seulement dans
+    update_daily_stats(), qui ne tourne qu'une fois par minute : pendant cette minute, le
+    drawdown se serait calcule avec la reference de l'ANCIEN compte. Vers un compte plus petit,
+    il voyait une perte enorme, posait le verrou, et la fermeture d'urgence fermait les
+    positions du bot sur le NOUVEAU compte.
+    """
+    global CURRENT_ACCOUNT_LOGIN, daily_start_balance, security_triggered, DD_PANIC_NOTIFIED
+    if not CURRENT_ACCOUNT_LOGIN or not acc or not getattr(acc, "login", 0):
+        return False
+    if acc.login == CURRENT_ACCOUNT_LOGIN:
+        return False
+
+    ancien = CURRENT_ACCOUNT_LOGIN
+    # 1. On fige l'ancien compte (reference + verrou) : il retrouvera son etat s'il revient.
+    save_state_and_stats(current_trade_day, daily_start_balance)
+
+    # 2. Bascule : reference deja connue pour ce compte aujourd'hui, sinon balance actuelle.
+    CURRENT_ACCOUNT_LOGIN = acc.login
+    entree = DAILY_REFS.get("comptes", {}).get(str(acc.login))
+    if entree:
+        daily_start_balance = float(entree["ref"])
+        security_triggered = bool(entree.get("verrou"))
+        origine = "reprise de sa référence du jour"
+    else:
+        daily_start_balance = acc.balance
+        security_triggered = False
+        origine = "nouvelle référence"
+    DD_PANIC_NOTIFIED = False
+    save_state_and_stats(current_trade_day, daily_start_balance)
+
+    msg = (f"🔄 **CHANGEMENT DE COMPTE DÉTECTÉ**\n\n"
+           f"{ancien} → **{acc.login}**\n"
+           f"Balance de référence du jour : **{daily_start_balance:.2f}€** ({origine})\n"
+           f"Sécurité drawdown : {'🔴 verrouillée sur ce compte' if security_triggered else '🟢 libre'}")
+    logger.warning(f"🔄 Changement de compte MT5 : {ancien} -> {acc.login} "
+                   f"(ref {daily_start_balance:.2f}, {origine}, verrou={security_triggered})")
+    try:
+        asyncio.get_event_loop().create_task(send_alert(msg))
+    except Exception:
+        pass
+    return True
+
+
 def check_daily_max_loss():
     """Retourne True si la perte du jour dépasse la limite ACTUELLE (recalculée à chaque
     appel avec le MAX_DAILY_DRAWDOWN courant). Effet de bord : passe security_triggered à
@@ -2749,6 +2867,10 @@ def check_daily_max_loss():
     retourne encore True. Avant ce correctif, security_triggered n'était jamais mis à True
     nulle part -- augmenter le Max DD suffisait donc, seul, à réactiver le trading."""
     global security_triggered
+    # (#106) AVANT tout calcul : une reference appartenant a un autre compte fausserait le
+    # resultat, et un verrou pose sur cette base declencherait la fermeture d'urgence.
+    _verifier_changement_compte(mt5.account_info())
+
     # (#8) Disjoncteur désactivé -> on ne bloque rien (ni nouveaux trades ni close d'urgence)
     if not DRAWDOWN_ACTIVE:
         return False
