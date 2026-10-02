@@ -1,4 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
+# V15.15.0 — Reference DD par compte, relances MT5 espacees + alerte Telegram
 # V15.14.0 — Diagnostic MT5, garde-fous hedging/algo, correctifs securite drawdown
 #             + edition de message limitee a son canal, SL auto au risque regle,
 #               annulation SABR par signal (fusion de la ligne V15.13.0)
@@ -47,7 +48,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='Kairos_V15.14.0',
+    name='Kairos_V15.15.0',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

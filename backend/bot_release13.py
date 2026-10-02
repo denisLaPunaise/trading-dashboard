@@ -158,7 +158,7 @@ SECURITY_PIN = str(secrets.randbelow(900000) + 100000)
 # ==========================================
 # 🔐 CONFIGURATION DISTRIBUTION (LICENCE)
 # ==========================================
-VERSION_BOT = "15.14.0"
+VERSION_BOT = "15.15.0"
 # (URL_LICENCE retire — licence verifiee via Firestore, Phase 4)
 
 # ==========================================

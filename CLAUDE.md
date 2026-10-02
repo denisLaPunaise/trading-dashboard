@@ -387,3 +387,38 @@ et on ne réutilise jamais.
   - Contrôle statique conservé en tête : **toute fonction affectant un drapeau d'état global
     doit le déclarer `global`**. C'est ce qui avait attrapé le bug du verrou drawdown en
     V15.10.0, et c'est ce qui a validé `DD_PANIC_NOTIFIED` ici.
+- **V15.15.0** — lot `#106`, quatre suites de la V15.14.0.
+  - **La référence du drawdown suit le compte MT5.** `ftmo_state.txt` ne gardait que
+    `jour|balance` — ni le compte, ni le mois — et le compte n'était lu qu'une fois, au
+    démarrage, pour l'afficher. Changer de compte dans la journée faussait donc tout le calcul :
+    vers un compte plus **gros**, un gain fictif **neutralisait le drawdown** jusqu'à minuit sans
+    aucun symptôme ; vers un compte plus **petit**, verrou — et comme `check_daily_max_loss()`
+    tourne chaque seconde alors que `update_daily_stats()` ne tourne que chaque minute, la
+    fermeture d'urgence pouvait fermer les positions du bot **sur le nouveau compte** avant
+    toute détection. Pire, un aller-retour prop → démo → prop effaçait la perte du matin et
+    autorisait à reperdre tout le seuil une seconde fois. Référence et verrou sont désormais
+    gardés **par compte** pour la journée (`daily_refs.json`, date complète), détectés en tête
+    de `check_daily_max_loss()` avant tout calcul, avec une alerte Telegram à la bascule.
+    `ftmo_state.txt` reste écrit à l'ancien format (un exe plus ancien relancé par-dessus
+    fonctionne) et relu le jour de la mise à jour (la journée de personne n'est faussée).
+    Vérifié en exécutant les vraies fonctions extraites du fichier contre un faux MetaTrader,
+    sur 8 scénarios.
+  - **Relances MT5 sans redémarrage.** La V15.14.0 abandonnait après 10 essais et laissait le
+    watchdog relancer tout le worker : ~80 redémarrages complets sur une nuit MT5 fermé. Le bot
+    ne rend plus la main (30 s, 1, 2 puis 5 min), et **prévient le client sur Telegram** après
+    10 à 15 min, puis au retour — sur un VPS personne ne regarde la console. L'alerte passe par
+    l'API HTTP du bot : à ce stade `bot_user` n'est pas démarré et `ADMIN_ID` pas chargé, et
+    avancer ces étapes aurait laissé arriver des commandes avant le chargement des réglages.
+    Piège fermé au passage : `mt5.initialize()` peut bloquer 60 s et un essai en fait jusqu'à
+    deux, sans pouls pendant ce temps — le watchdog (seuil 60 s) pouvait tuer un worker qui
+    attendait simplement le terminal. `_avec_pouls()` entretient le pouls pendant l'essai.
+  - **Bot de licence : `requirements.txt` et mode dégradé visible.** Sans `firebase-admin`, le
+    bot démarrait quand même, une ligne « mode dégradé » perdue avant « Prêt à gérer les
+    licences » — alors qu'aucune commande n'atteint plus Firestore (un `/gen` ne permet pas au
+    client de se connecter, un ban ne l'empêche pas de trader). Bandeau en console et message
+    dans le canal sécurité. Section d'installation ajoutée à `GUIDE_ADMIN.md` : lancer avec
+    **`py`**, pas `python`, que l'installeur de python.org n'ajoute pas au PATH par défaut.
+  - **Linter à zéro** (dashboard, bot, bot de licence). Deux alertes cachaient un vrai défaut :
+    l'historique des trades et les stats marquaient une période « déjà demandée » **avant**
+    l'envoi, si bien qu'un échec réseau la bloquait jusqu'au rechargement complet de la page ;
+    et l'écriture de la version minimale dans Google Sheets échouait en silence.
