@@ -55,3 +55,22 @@ trades_detailed.csv
 
 # Rapport de crash genere par Nuitka lors d une compilation echouee
 nuitka-crash-report.xml
+
+# État d'exécution du bot : réécrit à chaque lancement, propre à chaque machine.
+# (stats_seed.json, lui, est suivi volontairement : c'est l'historique livré avec le bot.)
+ftmo_state.txt
+daily_refs.json
+daily_stats.json
+history.csv
+trades_memory.json
+manual_trades.json
+active_sources.json
+active_signals.json
+indodog_tp.json
+indodog_stats.json
+fts_stats.json
+stats_manuel.json
+stats_reset.json
+alive.txt
+alive.txt.tmp
+STOP_ME
