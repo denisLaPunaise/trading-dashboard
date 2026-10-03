@@ -80,6 +80,26 @@ ont toutes deux choisi `#103` en septembre 2026 : le marqueur désignait alors d
 rapport, ce qui lui retirait exactement l'utilité qu'il est censé avoir. Un lot = un numéro,
 et on ne réutilise jamais.
 
+**Numéros d'issue GitHub ≠ marqueurs.** Les issues GitHub ont repris leur propre séquence à
+**#70** le 2026-10-03 : l'issue #74 n'a **aucun rapport** avec le marqueur `(#74)` du code
+(historique des trades). Chaque issue ouverte depuis indique en tête son **marqueur réservé** :
+
+| Issue GitHub | Sujet | Marqueur réservé |
+| --- | --- | --- |
+| #70 | Plage de dates personnalisée dans les stats | `(#107)` |
+| #71 | Harmonisation des périodes | `(#108)` |
+| #72 | Filtre par canal dans l'historique | `(#109)` |
+| #73 | % de TP INDODOG / FTS réglables | `(#110)` |
+| #74 | Journal de tous les canaux | `(#111)` |
+| #75 | Bouton d'ajout manuel sous la liste des canaux | `(#112)` |
+
+Le prochain marqueur libre est donc **`(#113)`**, et non le plus grand trouvé dans le code :
+une réservation n'apparaît dans le code qu'une fois le sujet traité. Toute nouvelle issue
+réserve le sien et met ce tableau à jour.
+
+Dans une issue, une PR ou un message de commit, écrire un marqueur **entre backticks** :
+GitHub transforme `#74` nu en lien vers l'issue #74, donc vers un sujet sans rapport.
+
 ### Historique
 
 - **V15.0.0** — audit sécurité v2 (issues #46-#62). Deux builds portent ce nom : le
