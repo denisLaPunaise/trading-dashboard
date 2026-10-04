@@ -167,6 +167,7 @@ VERSION_BOT = "15.15.0"
 # celle de la V15.13.0 et de la V15.14.0. Un nom publie ne se retire ni ne change de sens.
 FONCTIONS_BOT = [
     "periodes_v2",   # (#108) periodes au minuit du client ; "week" accepte par l'historique
+    "plage_perso",   # (#107) request_stats days="custom" + debut/fin -> cle stats_plage
 ]
 # (URL_LICENCE retire — licence verifiee via Firestore, Phase 4)
 
@@ -2268,6 +2269,35 @@ def bornes_periode(periode, tz_min=None, maintenant=None):
             "jour_debut": debut.strftime("%Y-%m-%d"), "jour_fin": None}
 
 
+def bornes_plage(payload, tz_min=None):
+    """(#107) Bornes d'une plage choisie au dashboard : du `debut` 00:00 au `fin` 23:59:59 inclus.
+
+    Les dates sont celles du telephone (AAAA-MM-JJ). Le dashboard joint aussi les instants
+    exacts qu'il a calcules (debut_ts, fin_ts) : eux tiennent compte d'un passage a l'heure
+    d'ete ou d'hiver DANS la plage, ce que l'avance unique tz_min ne sait pas faire. Ils ne sont
+    retenus que s'ils collent aux dates a trois heures pres ; un payload incoherent retombe sur
+    le calcul par tz_min. Retourne None pour une plage invalide.
+    """
+    try:
+        d1 = datetime.strptime(str(payload.get("debut", "")).strip(), "%Y-%m-%d")
+        d2 = datetime.strptime(str(payload.get("fin", "")).strip(), "%Y-%m-%d")
+    except Exception:
+        return None
+    if d2 < d1 or (d2 - d1).days > 3700:
+        return None
+    tz = tz_client_min() if tz_min is None else int(tz_min)
+    debut = (d1 - timedelta(minutes=tz)).replace(tzinfo=timezone.utc).timestamp()
+    fin = (d2 + timedelta(days=1) - timedelta(minutes=tz)).replace(tzinfo=timezone.utc).timestamp()
+    try:
+        dts, fts = float(payload.get("debut_ts")), float(payload.get("fin_ts"))
+        if abs(dts - debut) <= 3 * 3600 and abs(fts - fin) <= 3 * 3600 and dts < fts:
+            debut, fin = dts, fts
+    except (TypeError, ValueError):
+        pass
+    return {"debut": debut, "fin": fin,
+            "jour_debut": d1.strftime("%Y-%m-%d"), "jour_fin": d2.strftime("%Y-%m-%d")}
+
+
 def dans_bornes(epoch, bornes):
     """(#108) Vrai si l'instant tombe dans la periode : debut inclus, fin exclue."""
     if epoch is None:
@@ -2293,7 +2323,9 @@ def bornes_serveur(bornes):
     # Plancher en 2000 plutot qu'en 1970 : un 0 n'a jamais ete teste face au terminal.
     debut_srv = int(debut + dec) if debut is not None else 946684800
     # Sans borne de fin : un peu au-dela de maintenant, rien ne peut exister dans le futur.
-    fin_srv = int(fin + dec) if fin is not None else int(time.time() + dec + 3600)
+    # (#107) Avec une borne : MT5 inclut ses deux bornes, la notre est exclue -- d'ou le -1, sans
+    # lequel un deal tombe pile a minuit compterait dans deux plages consecutives.
+    fin_srv = int(fin + dec) - 1 if fin is not None else int(time.time() + dec + 3600)
     return debut_srv, fin_srv
 
 
@@ -2491,7 +2523,7 @@ def _merge_stats_manuel(out, bornes):
         sous["pips"] += pips
 
 
-def _merge_stats_seed(out, bornes):
+def _merge_stats_seed(out, bornes, fin_seed=None, exclus=None):
     """(#stats) Injecte un historique REPRIS d'avant la refonte des stats (stats_seed.json).
 
     Le CSV détaillé contient une ligne par trade ; un total agrégé ne peut donc pas y être
@@ -2502,6 +2534,12 @@ def _merge_stats_seed(out, bornes):
     période <= 'from'). Un chevauchement partiel est ignoré : on ne sait pas découper un
     agrégat, et l'inclure quand même gonflerait par exemple un "14 jours" avec des mois de
     résultats.
+
+    (#107) Une plage personnalisée a aussi une FIN, qui doit dépasser celle du seed. Le seed ne
+    note que son début ; sa fin est le champ 'to' s'il existe, sinon `fin_seed` -- le premier
+    jour du CSV, puisque le seed a été créé quand le CSV repartait de zéro. Un seed écarté
+    alors que la plage le chevauche est noté dans `exclus`, pour que le dashboard explique un
+    total plus bas qu'attendu.
     """
     if not os.path.exists(STATS_SEED_FILE):
         return
@@ -2521,8 +2559,15 @@ def _merge_stats_seed(out, bornes):
             logger.warning(f"⚠️ stats_seed.json : champ 'from' manquant/invalide pour {chan}")
             continue
         # Comparaison au JOUR près, en jours du client (#108).
-        if bornes.get("jour_debut") and bornes["jour_debut"] > date_from.strftime("%Y-%m-%d"):
-            continue  # la période demandée ne remonte pas assez loin
+        jd, jf = bornes.get("jour_debut"), bornes.get("jour_fin")
+        de = date_from.strftime("%Y-%m-%d")
+        a = str(data.get("to") or fin_seed or "") or None
+        couvre = (not jd or jd <= de) and (not jf or (a is not None and jf >= a))
+        if not couvre:
+            # (#107) Chevauchement partiel : écarté, mais signalé.
+            if exclus is not None and (not jf or jf >= de) and (not jd or a is None or jd <= a):
+                exclus.append({"canal": normalize_channel_source(chan), "debut": de, "fin": a})
+            continue  # la période demandée ne couvre pas toute la plage du seed
         # (#91) Un seed est un AGREGAT : impossible d'en retirer la partie anterieure à une
         # remise à zéro. Si le canal a été remis à zéro après le début du seed, on le laisse
         # donc entièrement de côté -- c'est bien ce que veut dire "repartir de zéro".
@@ -2547,7 +2592,7 @@ def _merge_stats_seed(out, bornes):
         seed_ligne["pips"] += float(data.get("pips", 0.0))
 
 
-def get_channel_stats_period(bornes):
+def get_channel_stats_period(bornes, info=None):
     """Stats par canal SUR UNE PÉRIODE, reconstruites depuis trades_detailed.csv.
 
     SOURCE UNIQUE des stats par canal, tous comptes MT5 confondus. Il existait avant un
@@ -2560,20 +2605,19 @@ def get_channel_stats_period(bornes):
     (#stats) `count` compte les SIGNAUX (une zone SABR = 1 signal / 3 positions), et `avg_pips`
     est la moyenne simple pips/trade -- cf. _finalize_channel_stats() pour ses limites.
 
-    (#108) `bornes` vient de bornes_periode() : memes journees, et meme minuit, que
-    l'historique des trades."""
+    (#108) `bornes` vient de bornes_periode() (ou de bornes_plage(), #107) : memes journees, et
+    meme minuit, que l'historique des trades. `info`, s'il est fourni, recoit "seed_exclu"."""
     out = {}
     seen_signals = {}
     reset_ts = {}  # canal -> instant de la remise a zero, calcule une fois par canal
-    _merge_stats_seed(out, bornes)
-    _merge_stats_manuel(out, bornes)   # (#98)
-    if not os.path.exists(DETAILED_HISTORY_FILE):
-        return _finalize_channel_stats(out)
+    premier_ts = None  # (#107) plus ancienne cloture du CSV, toutes periodes confondues
     try:
         with open(DETAILED_HISTORY_FILE, "r", encoding="utf-8") as f:
             for row in csv.DictReader(f):
                 # Ligne corrompue / en-tête d'un ancien format -> epoch None -> ignorée.
                 closed_ts = epoch_csv(row.get("Close Time", ""))
+                if closed_ts is not None and (premier_ts is None or closed_ts < premier_ts):
+                    premier_ts = closed_ts
                 if not dans_bornes(closed_ts, bornes):
                     continue
                 src = normalize_channel_source(row.get("Source"))
@@ -2620,9 +2664,19 @@ def get_channel_stats_period(bornes):
                     entry["pips"] += _pi
                     sous["pips"] += _pi
                 except Exception: pass
+    except FileNotFoundError:
+        pass  # aucun trade enregistre : seuls l'historique repris et les ajouts manuels comptent
     except Exception as e:
         logger.warning(f"⚠️ get_channel_stats_period : {e}")
 
+    # (#107) Fusions APRES la lecture du CSV : la fin de l'historique repris s'en deduit.
+    fin_seed = (datetime.fromtimestamp(premier_ts + tz_client_min() * 60, timezone.utc)
+                .strftime("%Y-%m-%d") if premier_ts is not None else None)
+    exclus = []
+    _merge_stats_seed(out, bornes, fin_seed, exclus)
+    _merge_stats_manuel(out, bornes)   # (#98)
+    if info is not None:
+        info["seed_exclu"] = exclus
     return _finalize_channel_stats(out)
 
 
@@ -4883,12 +4937,22 @@ async def get_equity_curve(bornes, max_points=180):
 
     (#108) `bornes` vient de bornes_periode(). Les deals sont rangés par JOUR DU CLIENT : avant,
     un trade fermé le soir pouvait marquer la courbe du lendemain.
+
+    (#107) Pour une plage passée (bornes_plage), la courbe s'arrête au dernier jour de la plage,
+    à la balance de CE jour-là : la balance actuelle moins tout ce qui a été réalisé depuis.
     """
     tz_s = tz_client_min() * 60
     dec = decalage_serveur_s()
 
     def _jour(epoch):
         return datetime.fromtimestamp(epoch + tz_s, timezone.utc).strftime("%Y-%m-%d")
+
+    def _montant(deal):
+        # Dotation, dépôts, retraits, crédits, corrections : ce sont des mouvements de compte,
+        # pas des résultats de trading. Ils ne doivent pas dessiner de marche dans la courbe.
+        if deal.type not in (mt5.DEAL_TYPE_BUY, mt5.DEAL_TYPE_SELL):
+            return 0.0
+        return deal.profit + deal.swap + deal.commission
 
     acc = await run_mt5(mt5.account_info)
     if acc is None:
@@ -4901,18 +4965,22 @@ async def get_equity_curve(bornes, max_points=180):
     per_day = {}
     total = 0.0
     for deal in (history or []):
-        # Dotation, dépôts, retraits, crédits, corrections : ce sont des mouvements de compte,
-        # pas des résultats de trading. Ils ne doivent pas dessiner de marche dans la courbe.
-        if deal.type not in (mt5.DEAL_TYPE_BUY, mt5.DEAL_TYPE_SELL):
-            continue
-        amount = deal.profit + deal.swap + deal.commission
+        amount = _montant(deal)
         if amount == 0:
             continue
         day = _jour(deal.time - dec)
         per_day[day] = per_day.get(day, 0.0) + amount
         total += amount
 
-    balance_start = balance_now - total
+    # (#107) Balance a la FIN de la periode : celle d'aujourd'hui, sauf pour une plage passee.
+    balance_fin = balance_now
+    jour_final = _jour(time.time())
+    if bornes.get("fin") is not None:
+        depuis = await run_mt5(mt5.history_deals_get, fin_srv + 1, int(time.time() + dec + 3600))
+        balance_fin -= sum(_montant(d) for d in (depuis or []))
+        jour_final = bornes.get("jour_fin") or jour_final
+
+    balance_start = balance_fin - total
     # Premier point : le premier jour de la période. Pour "Max", qui n'a pas de début, le jour
     # du premier trade -- et non une date arbitraire vingt ans en arrière.
     jour_debut = bornes.get("jour_debut") or (min(per_day) if per_day else _jour(time.time()))
@@ -4924,9 +4992,9 @@ async def get_equity_curve(bornes, max_points=180):
 
     # Point final à aujourd'hui : sans lui, une courbe dont le dernier trade date d'une semaine
     # s'arrêterait au milieu du graphique, ce qui se lit comme un arrêt d'activité.
-    today = _jour(time.time())
-    if points[-1]["d"] != today:
-        points.append({"d": today, "v": round(balance_now, 2)})
+    # (#107) Ou au dernier jour d'une plage passée.
+    if points[-1]["d"] != jour_final:
+        points.append({"d": jour_final, "v": round(balance_fin, 2)})
 
     # Sous-échantillonnage pour "Max" (des années de trading = des milliers de points, illisible
     # et lourd à pousser). Les extrémités sont toujours conservées : ce sont elles qui portent la
@@ -8321,6 +8389,29 @@ async def handle_firebase_command(cmd_id: str, cmd_data: dict) -> None:
             # (#108) Le dashboard joint le fuseau du telephone : les periodes partent du minuit
             # du CLIENT, et non de celui de la machine du bot (un VPS en UTC, par exemple).
             tz = noter_fuseau_client(payload)
+            if days == "custom":
+                # (#107) Plage choisie au dashboard. Une seule cle pour toutes les plages, qui
+                # recopie debut/fin : le dashboard verifie qu'il affiche bien la plage demandee,
+                # et le document Firestore (limite a 1 Mo) ne grossit pas a chaque essai.
+                bornes = bornes_plage(payload, tz)
+                if bornes is None:
+                    set_status("error", {"success": False, "message":
+                                         "Plage invalide : la date de début doit précéder celle de fin."})
+                    return
+                info = {}
+                stats = await get_historical_stats(bornes)
+                chan_stats = await run_bg(get_channel_stats_period, bornes, info)
+                curve = await get_equity_curve(bornes)
+                if firebase_sync._firebase_initialized:
+                    await firebase_sync.push_state(user_id, {"stats_plage": firebase_sync._safe({
+                        "debut": bornes["jour_debut"], "fin": bornes["jour_fin"],
+                        "global": stats or {}, "courbe": curve,
+                        "canaux": {ch: v for ch, v in chan_stats.items() if channel_allowed(ch)},
+                        "seed_exclu": [x for x in info.get("seed_exclu", [])
+                                       if channel_allowed(x["canal"])],
+                    })})
+                set_status("done", {"success": True})
+                return
             # (#95/#108) Une seule regle, celle de l'historique des trades (cf. bornes_periode) :
             #   "today" = aujourd'hui depuis 00h00, "week" = depuis lundi 00h00 ;
             #   "14", "30"... = N journees entieres, aujourd'hui compris. Avant, ces dernieres

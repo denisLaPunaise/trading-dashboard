@@ -258,6 +258,7 @@ function App() {
   // booléens : un tableau neuf à chaque push relancerait les effets qui en dépendent.
   const fonctionsBot = Array.isArray(dashboardData?.fonctions) ? dashboardData.fonctions : []
   const periodesV2 = fonctionsBot.includes('periodes_v2')
+  const plagePerso = fonctionsBot.includes('plage_perso')   // (#107)
   const [error, setError] = useState(null)
   const settingDebounce = useRef({}) // (#11) timers de debounce par clé de réglage
 
@@ -482,6 +483,17 @@ function App() {
   // stats_seed.json), donc celle qui a du sens à l'ouverture. Un 1M par défaut affichait
   // "Aucun trade sur cette période" tant qu'aucun trade récent n'était clôturé.
   const [channelPeriod, setChannelPeriod] = useState('all');
+  // (#107) Plage personnalisée, COMMUNE à Par Canal et Global : une seule demande au bot calcule
+  // les deux. Mémorisée sur ce téléphone pour être proposée à la prochaine ouverture.
+  const [plage, setPlage] = useState(() => {
+    try {
+      const p = JSON.parse(localStorage.getItem('kairos_plage') || 'null');
+      const ok = (t) => /^\d{4}-\d{2}-\d{2}$/.test(String(t));
+      return p && ok(p.debut) && ok(p.fin) ? { debut: p.debut, fin: p.fin } : null;
+    } catch { return null; }
+  });
+  const [plageOuverte, setPlageOuverte] = useState(false);
+  const [brouillonPlage, setBrouillonPlage] = useState({ debut: '', fin: '' });
   // (#96) Carte de détail d'un canal, par classe d'actifs. null = fermée.
   const [detailCanal, setDetailCanal] = useState(null);
   // (#98) Formulaire d'ajout manuel aux stats. Profil dev uniquement.
@@ -510,9 +522,14 @@ function App() {
   // Stats dérivées du state Firestore — chaque période dans sa propre clé
   useEffect(() => {
     if (!dashboardData) return;
+    // (#107) Une plage personnalisée arrive sous UNE seule clé, qui recopie ses dates : on ne
+    // l'affiche que si ce sont bien celles demandées -- jamais les chiffres d'une plage précédente.
+    const recue = dashboardData.stats_plage || null;
+    const plageOk = !!(plage && recue && recue.debut === plage.debut && recue.fin === plage.fin);
     const periodKey = `global_period_${globalPeriod}`;
     // Fallback sur global_period (poussé par l'exe) si la clé spécifique n'existe pas encore
-    const period = dashboardData[periodKey] || (globalPeriod === '30' ? dashboardData.global_period : null);
+    const period = globalPeriod === 'custom' ? (plageOk ? recue.global : null)
+      : (dashboardData[periodKey] || (globalPeriod === '30' ? dashboardData.global_period : null));
     // (#60) "Cette Semaine" (onglet Jour & Semaine) a besoin de son propre agrégat,
     // INDÉPENDANT de la période choisie dans l'onglet Global -- avant, les deux partageaient
     // le même champ (global_period), donc "Cette Semaine" affichait en fait la période
@@ -522,13 +539,16 @@ function App() {
     const weekPeriod = dashboardData.global_period_week || null;
     // (#stats) Source unique des stats par canal : le CSV détaillé du bot, réagrégé sur la
     // période choisie. Il n'y a plus de cumul "lifetime" séparé -- "Max" joue ce rôle.
-    const channelsPeriod = dashboardData[`channels_period_${channelPeriod}`] || null;
+    const channelsPeriod = channelPeriod === 'custom' ? (plageOk ? recue.canaux : null)
+      : (dashboardData[`channels_period_${channelPeriod}`] || null);
     // (#65) Courbe de balance, poussée par le bot avec les stats de la même période.
-    const equityCurve = dashboardData[`equity_curve_${globalPeriod}`] || null;
+    const equityCurve = globalPeriod === 'custom' ? (plageOk ? recue.courbe : null)
+      : (dashboardData[`equity_curve_${globalPeriod}`] || null);
     setHistoricalStats({ global_period: period || null, week_period: weekPeriod,
-                         channels_period: channelsPeriod, equity_curve: equityCurve });
+                         channels_period: channelsPeriod, equity_curve: equityCurve,
+                         seed_exclu: plageOk ? (recue.seed_exclu || []) : [] });
     if (period) setIsLoadingStats(false);
-  }, [dashboardData, globalPeriod, channelPeriod]);
+  }, [dashboardData, globalPeriod, channelPeriod, plage]);
 
   // (#96/#98) Échap ferme la carte ouverte, comme le clic sur le fond.
   useEffect(() => {
@@ -555,6 +575,9 @@ function App() {
     const wantChannel = statsTab === 'canal';
     if (!wantWeek && !wantGlobal && !wantChannel) return;
     const period = wantWeek ? 'week' : (wantChannel ? channelPeriod : globalPeriod);
+    // (#107) Une plage personnalisée est demandée à la validation (demanderPlage), pas ici :
+    // sa clé unique est réécrite à chaque plage, la dédoublonner par période n'aurait pas de sens.
+    if (period === 'custom') return;
     // (#stats) On ne se fie PAS à la présence de la clé dans Firestore pour éviter la requête :
     // ces champs sont persistants et peuvent dater d'une version antérieure du bot. C'était la
     // cause d'un affichage figé où "14j" montrait plus de trades que "1M", et où 3M et 6M
@@ -747,6 +770,44 @@ function App() {
       setLoadingAction(null);
     }
   }, [userId]);
+
+  // (#107) Envoi d'une plage personnalisée. Les instants sont calculés ICI, au minuit du
+  // téléphone : ils tiennent compte d'un changement d'heure à l'intérieur de la plage, ce que
+  // l'avance unique (tz_min) ne sait pas faire. Le bot ne les retient que s'ils collent aux dates.
+  const demanderPlage = async (p) => {
+    const minuit = (txt, plusJours = 0) => {
+      const [a, m, j] = txt.split('-').map(Number);
+      return Math.round(new Date(a, m - 1, j + plusJours).getTime() / 1000);
+    };
+    setIsLoadingStats(true);
+    await sendCommand('request_stats', {
+      days: 'custom', debut: p.debut, fin: p.fin,
+      debut_ts: minuit(p.debut), fin_ts: minuit(p.fin, 1), ...fuseauTelephone(),
+    }, 'plage');
+    setIsLoadingStats(false);
+  };
+
+  const validerPlage = () => {
+    const { debut, fin } = brouillonPlage;
+    if (!debut || !fin) return;
+    // Dates saisies à l'envers : on les remet dans l'ordre plutôt que de refuser.
+    const p = debut <= fin ? { debut, fin } : { debut: fin, fin: debut };
+    setPlage(p);
+    try { localStorage.setItem('kairos_plage', JSON.stringify(p)); } catch { /* stockage indisponible */ }
+    setPlageOuverte(false);
+    if (statsTab === 'global') setGlobalPeriod('custom'); else setChannelPeriod('custom');
+    demanderPlage(p);
+  };
+
+  // (#107) « Ce mois » = depuis le 1er (le mois calendaire en cours), « Mois dernier » = le mois
+  // précédent en entier : les deux lectures de « 1 mois » que « 1M » (30 jours) ne donne pas.
+  const raccourciPlage = (quoi) => {
+    const n = new Date();
+    const fmt = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+    if (quoi === 'mois') setBrouillonPlage({ debut: fmt(new Date(n.getFullYear(), n.getMonth(), 1)), fin: fmt(n) });
+    else setBrouillonPlage({ debut: fmt(new Date(n.getFullYear(), n.getMonth() - 1, 1)),
+                             fin: fmt(new Date(n.getFullYear(), n.getMonth(), 0)) });
+  };
 
   // --- ACTIONS ---
   const handleCloseTrade = (ticketId) => {
@@ -969,6 +1030,61 @@ const { account, daily_stats, settings: settingsFromBot, active_trades } = dashb
   // (#74) Historique des trades sur la période choisie, poussé par le bot en réponse à
   // request_history. Remplace l'ancien `closed_trades`, qui ne couvrait que la journée en cours.
   const tradesHistory = dashboardData[`trades_history_${idHistorique}`] || []
+
+  // (#107) Bouton « 📅 Personnalisé » et son panneau, sous les périodes de Par Canal et de
+  // Global. Masqué tant que l'exe n'annonce pas la fonction : un exe antérieur répondait à une
+  // période inconnue par les 30 derniers jours, en silence, sous la clé demandée.
+  const dateCourte = (t) => { const [a, m, j] = String(t).split('-'); return `${j}/${m}/${String(a).slice(2)}`; };
+  const blocPlage = (actif) => !plagePerso ? null : (
+    <div>
+      <button
+        onClick={() => {
+          triggerHaptic('light');
+          if (!plageOuverte) setBrouillonPlage(plage || { debut: dateDuJour().slice(0, 8) + '01', fin: dateDuJour() });
+          setPlageOuverte(!plageOuverte);
+        }}
+        style={{ width: '100%', padding: '8px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.78rem',
+                 fontWeight: 'bold', transition: '0.2s',
+                 border: `1px solid ${actif ? '#00e676' : '#333'}`,
+                 background: actif ? 'rgba(0,230,118,0.08)' : '#1e1e1e', color: actif ? '#00e676' : '#888' }}>
+        📅 {actif && plage ? `${dateCourte(plage.debut)} → ${dateCourte(plage.fin)}` : 'Personnalisé'}
+      </button>
+      {plageOuverte && (
+        <div style={{ marginTop: '8px', background: '#1e1e1e', border: '1px solid #333', borderRadius: '10px',
+                      padding: '12px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            {[['mois', 'Ce mois'], ['mois_dernier', 'Mois dernier']].map(([id, label]) => (
+              <button key={id} onClick={() => raccourciPlage(id)}
+                style={{ flex: 1, padding: '7px', borderRadius: '6px', border: '1px solid #333', background: '#121212',
+                         color: '#aaa', fontSize: '0.75rem', fontWeight: 'bold', cursor: 'pointer' }}>
+                {label}
+              </button>
+            ))}
+          </div>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            {[['debut', 'Du'], ['fin', 'Au']].map(([champ, label]) => (
+              <label key={champ} style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '4px',
+                                          fontSize: '0.7rem', color: '#888' }}>
+                {label}
+                <input type="date" value={brouillonPlage[champ]} max={dateDuJour()}
+                  onChange={(e) => setBrouillonPlage({ ...brouillonPlage, [champ]: e.target.value })}
+                  style={{ width: '100%', boxSizing: 'border-box', background: '#121212', color: '#fff',
+                           border: '1px solid #333', borderRadius: '6px', padding: '8px 6px', fontSize: '0.85rem',
+                           colorScheme: 'dark' }} />
+              </label>
+            ))}
+          </div>
+          <button onClick={validerPlage}
+            disabled={!brouillonPlage.debut || !brouillonPlage.fin || loadingAction === 'plage'}
+            style={{ padding: '9px', borderRadius: '8px', border: 'none', fontWeight: 'bold', fontSize: '0.8rem',
+                     cursor: 'pointer', background: '#00e676', color: '#000',
+                     opacity: (!brouillonPlage.debut || !brouillonPlage.fin || loadingAction === 'plage') ? 0.5 : 1 }}>
+            Valider
+          </button>
+        </div>
+      )}
+    </div>
+  );
 
   // (#7) Pack du client : on n'affiche que les canaux de son pack (réglages, mute, stats).
   // Liste vide/absente = tout afficher (rétro-compatible). Filtre purement cosmétique.
@@ -2157,11 +2273,23 @@ const { account, daily_stats, settings: settingsFromBot, active_trades } = dashb
                 ))}
               </div>
 
+              {blocPlage(channelPeriod === 'custom')}
+
               {isLoadingStats && (
                 <div style={{ textAlign: 'center', padding: '12px', color: '#00e676', fontSize: '0.82rem', background: 'rgba(0,230,118,0.05)', borderRadius: '8px', border: '1px solid rgba(0,230,118,0.2)' }}>
                   ⏳ Calcul en cours...
                 </div>
               )}
+
+              {/* (#107) Un historique repris est un TOTAL sans dates : la plage n'en couvre
+                  qu'une partie, il est donc écarté en entier. Dit à l'écran, sinon le total du
+                  canal paraît simplement faux. */}
+              {!isLoadingStats && channelPeriod === 'custom' && (historicalStats?.seed_exclu || []).map((x) => (
+                <div key={x.canal} style={{ fontSize: '0.72rem', color: '#888', background: '#1a1a1a', textAlign: 'left',
+                                            border: '1px dashed #333', borderRadius: '8px', padding: '8px 10px' }}>
+                  📜 {x.canal.replace('CANAL ', '').replace('_', ' ')} : l'historique repris ({x.fin ? `du ${dateCourte(x.debut)} au ${dateCourte(x.fin)}` : `depuis le ${dateCourte(x.debut)}`}) n'est pas compté, la plage n'en couvre qu'une partie.
+                </div>
+              ))}
 
               {/* (#stats) Pendant un recalcul on n'affiche AUCUNE carte : la valeur encore
                   presente dans Firestore peut dater d'une version anterieure du bot, et la
@@ -2273,6 +2401,8 @@ const { account, daily_stats, settings: settingsFromBot, active_trades } = dashb
                   </button>
                 ))}
               </div>
+
+              {blocPlage(globalPeriod === 'custom')}
 
               {/* SPINNER CHARGEMENT */}
               {isLoadingStats && (
