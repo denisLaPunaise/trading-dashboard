@@ -3515,17 +3515,16 @@ async def close_partial(pos, pct, tp_label, pips_gained, fixed_lot=None, etape=N
     # --- UTILISATION DU WRAPPER BLOQUANT ---
     res = await run_mt5(_send_order_blocking, req)
 
-    # Journal MDT : on trace le RÉSULTAT de chaque partiel (succès comme échec) -- un partiel
+    # Journal : on trace le RÉSULTAT de chaque partiel (succès comme échec) -- un partiel
     # raté silencieusement est exactement le genre de chose qu'on cherche à repérer en relisant.
-    _src_dbg = ACTIVE_TRADE_SOURCES.get(pos.ticket, "")
-    if "MDT" in _src_dbg:
-        _tag_dbg = "MDT_VIP" if "VIP" in _src_dbg else "MDT_FREE"
-        if res is None:
-            await run_bg(debug_mdt, _tag_dbg, f"❌ PARTIEL ÉCHOUÉ (timeout MT5) — {tp_label} | ticket {pos.ticket} | {lot:.2f} lots")
-        elif res.retcode == mt5.TRADE_RETCODE_DONE:
-            await run_bg(debug_mdt, _tag_dbg, f"✅ PARTIEL OK — {tp_label} | ticket {pos.ticket} | {lot:.2f} lots fermés | {pips_gained:.0f} pips")
-        else:
-            await run_bg(debug_mdt, _tag_dbg, f"❌ PARTIEL REFUSÉ (retcode {res.retcode}) — {tp_label} | ticket {pos.ticket} | {lot:.2f} lots")
+    # (#111) Tous les canaux : les paliers INDODOG / FTS passent aussi par ici.
+    _tag_dbg = tag_canal(ACTIVE_TRADE_SOURCES.get(pos.ticket, ""))
+    if res is None:
+        await noter(_tag_dbg, f"❌ PARTIEL ÉCHOUÉ (timeout MT5) — {tp_label} | ticket {pos.ticket} | {lot:.2f} lots")
+    elif res.retcode == mt5.TRADE_RETCODE_DONE:
+        await noter(_tag_dbg, f"✅ PARTIEL OK — {tp_label} | ticket {pos.ticket} | {lot:.2f} lots fermés | {pips_gained:.0f} pips")
+    else:
+        await noter(_tag_dbg, f"❌ PARTIEL REFUSÉ (retcode {res.retcode}) — {tp_label} | ticket {pos.ticket} | {lot:.2f} lots")
 
     if res is None:
         logger.warning(f"⚠️ Timeout MT5 sur Close Partial {tp_label} (Ticket {pos.ticket})")
@@ -3559,34 +3558,97 @@ async def close_partial(pos, pct, tp_label, pips_gained, fixed_lot=None, etape=N
 
     return False
 
-MDT_DEBUG_FILE = "debug_mdt.log"
+# (#111) Journal « message reçu -> action du bot » de TOUS les canaux. Successeur de
+# debug_mdt.log, qui ne couvrait que MDT : SABR, INDODOG et FTS n'avaient aucune trace dédiée,
+# alors que leurs pannes récentes étaient justement de cette nature (annulation SABR jugée sur
+# le signal d'un autre, édition MDT qui réécrivait des SL SABR, TP INDODOG non lus).
+JOURNAL_CANAUX_FILE = "journal_canaux.log"
+JOURNAL_MAX_OCTETS = 5 * 1024 * 1024
+JOURNAL_COPIES = 5
+NON_COMPRIS_FILE = "signaux_non_compris.log"
+# Les écritures viennent de threads (run_bg) : la rotation ne doit jamais se croiser avec une
+# écriture, sinon une ligne part dans le fichier qu'on est en train de renommer.
+_JOURNAL_VERROU = threading.Lock()
 
 
-def debug_mdt(tag, msg):
-    """Journal chronologique dédié aux canaux MDT (VIP + FREE) : messages reçus ET actions
-    du bot, dans UN SEUL fichier pour pouvoir relire la séquence complète et vérifier que
-    chaque instruction du canal (partiel, BE, clôture) a bien été suivie d'effet.
+def _ecrire_avec_rotation(chemin, texte, max_octets, copies):
+    """(#111) Ajoute `texte` au fichier ; au-delà de max_octets, chemin -> chemin.1 -> ... ->
+    chemin.<copies>, le plus ancien étant supprimé. debug_mdt.log et signaux_non_compris.log
+    n'avaient aucune limite : sur un VPS qui tourne des mois, ils grossissaient sans fin."""
+    with _JOURNAL_VERROU:
+        try:
+            if os.path.exists(chemin) and os.path.getsize(chemin) + len(texte.encode("utf-8")) > max_octets:
+                for i in range(copies - 1, 0, -1):
+                    if os.path.exists(f"{chemin}.{i}"):
+                        os.replace(f"{chemin}.{i}", f"{chemin}.{i + 1}")
+                os.replace(chemin, f"{chemin}.1")
+        except Exception as e:
+            # Une rotation ratée (fichier ouvert ailleurs sous Windows) ne doit pas faire
+            # perdre la ligne : on écrit quand même, le fichier dépassera un peu.
+            logger.error(f"⚠️ Rotation {chemin} : {e}")
+        try:
+            with open(chemin, "a", encoding="utf-8") as f:
+                f.write(texte)
+        except Exception as e:
+            logger.error(f"⚠️ Journal {chemin} : {e}")
 
-    Les deux canaux partagent le fichier volontairement : ils sont tagués [MDT_VIP] /
-    [MDT_FREE], et les avoir dans le même ordre chronologique est justement ce qui permet
-    de corréler un message avec l'action qu'il a déclenchée."""
-    try:
-        with open(MDT_DEBUG_FILE, "a", encoding="utf-8") as f:
-            f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [{tag}] {msg}\n")
-    except Exception as e:
-        logger.error(f"⚠️ debug_mdt : {e}")
+
+# (#111) Canaux suivis, identifiés par leur groupe Telegram. Les deux sans constante nommée
+# suivent l'ordre documenté de CHANNEL_LIST (SPACE puis LIGUE).
+_TAG_PAR_CHAT = {
+    ID_MDT_VIP: "MDT_VIP", ID_MDT_FREE: "MDT_FREE",
+    ID_SABR_VIP: "SABR_VIP", ID_SABR_FREE: "SABR_FREE", ID_CANAL_SABR_COPIE: "SABR_COPIE",
+    ID_INDODOG: "INDODOG", ID_FTS: "FTS", ID_CANAL_PERSO: "PERSO",
+    -1002684710444: "SPACE", -1001753570693: "LIGUE",
+}
+
+
+def tag_canal(source=None, chat_id=None):
+    """(#111) Étiquette courte d'un canal pour le journal : MDT_VIP, SABR_VIP, INDODOG...
+
+    Depuis le groupe Telegram quand on l'a (message reçu, édité, supprimé), sinon depuis la
+    source du trade ("CANAL SABR_VIP_BLIND" -> SABR_VIP). Les sous-types SABR sont regroupés,
+    comme dans les stats : on cherche un canal dans le journal, pas un type de signal.
+    """
+    if chat_id in _TAG_PAR_CHAT:
+        return _TAG_PAR_CHAT[chat_id]
+    s = str(source or "").upper().replace("CANAL ", "").strip()
+    if "SABR" in s:
+        return "SABR_COPIE" if "COPIE" in s else ("SABR_VIP" if "VIP" in s else "SABR_FREE")
+    for nom in ("MDT_VIP", "MDT_FREE", "INDODOG", "FTS", "SPACE", "LIGUE", "PERSO"):
+        if nom in s:
+            return nom
+    return s.replace(" ", "_") or (f"CHAT_{chat_id}" if chat_id else "?")
+
+
+def journal_canal(tag, msg):
+    """Journal chronologique des canaux : messages reçus ET actions du bot, dans UN SEUL
+    fichier pour pouvoir relire la séquence complète et vérifier que chaque message a bien
+    été suivi de l'effet attendu (ou de la raison de son absence).
+
+    Tous les canaux partagent le fichier volontairement : chaque ligne porte son étiquette
+    ([MDT_VIP], [SABR_VIP], [INDODOG]...), et les avoir dans le même ordre chronologique est
+    justement ce qui permet de corréler un message avec l'action qu'il a déclenchée -- y
+    compris d'un canal à l'autre. (#111) Format des lignes MDT inchangé."""
+    _ecrire_avec_rotation(JOURNAL_CANAUX_FILE,
+                          f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [{tag}] {msg}\n",
+                          JOURNAL_MAX_OCTETS, JOURNAL_COPIES)
+
+
+async def noter(tag, msg):
+    """(#111) journal_canal() depuis du code asynchrone (écriture disque hors boucle)."""
+    await run_bg(journal_canal, tag, msg)
 
 
 def log_unclear_signal(raw_text, tickets):
     """(#20) Trace les messages de suivi (reply à un signal) qu'on n'a pas su interpréter,
     pour revue manuelle -- ex: 'JE GARDE QUE CELLE DE X', messages purement informatifs/
-    optionnels ('les traders satisfaits peuvent fermer'), nouveaux tours de phrase du canal."""
-    try:
-        with open("signaux_non_compris.log", "a", encoding="utf-8") as f:
-            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            f.write(f"[{ts}] Ticket(s) {tickets} -- aucune action prise :\n{raw_text}\n{'-'*60}\n")
-    except Exception as e:
-        logger.error(f"⚠️ Erreur log signaux non compris : {e}")
+    optionnels ('les traders satisfaits peuvent fermer'), nouveaux tours de phrase du canal.
+    (#111) Avec rotation, comme le journal des canaux."""
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    _ecrire_avec_rotation(NON_COMPRIS_FILE,
+                          f"[{ts}] Ticket(s) {tickets} -- aucune action prise :\n{raw_text}\n{'-'*60}\n",
+                          2 * 1024 * 1024, 2)
 
 def _send_order_blocking(request):
     """Fonction synchrone exécutée dans un thread séparé"""
@@ -3946,8 +4008,10 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
     # Avant, ce check n'existait que dans main_handler -- edit_handler (signal "blind" complété
     # par une édition de message) et /reactivate (rejoue un signal déjà en mémoire) pouvaient
     # donc faire exécuter un trade hors pack payé ou sur un canal mute en contournant main_handler.
+    _tag_x = tag_canal(channel_source)   # (#111) chaque refus ci-dessous est noté au journal
     if any(m in channel_source for m in MUTED_CHANNELS) or any(m in channel_source for m in PACK_LOCKED_CHANNELS):
         logger.warning(f"🚫 TRADE BLOQUÉ (execute_trade) : canal {channel_source} mute ou hors pack.")
+        await noter(_tag_x, f"🔇 AUCUN ORDRE ({symbol}) : canal coupé (mute) ou hors du pack")
         return None
 
     # (#stats) Un appel = un signal, même s'il débouche sur plusieurs ordres (zone SABR en
@@ -3986,6 +4050,8 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
                         await run_mt5(_send_order_blocking, req)
 
             if count > 0: await send_alert(f"🔄 **SL SABR MIS À JOUR**\nNouveau SL: {new_sl}\nTrades modifiés: {count}")
+            await noter(_tag_x, f"🔄 SL SABR MIS À JOUR ({symbol}) — nouveau SL {new_sl} | "
+                                f"{count} position(s) modifiée(s)")
             return None
         except Exception as e:
             logger.error(f"⚠️ Erreur UPDATE_SL SABR : {e}")
@@ -3999,6 +4065,7 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
     check_daily_max_loss()
     if security_triggered:
         await send_alert("⛔ STOP: Sécurité Drawdown active -- augmente le Max DD puis déverrouille manuellement pour reprendre.")
+        await noter(_tag_x, f"⛔ AUCUN ORDRE ({symbol}) : sécurité drawdown active")
         return None
 
     # --- 🕒 NOUVEAU : CALCUL DU RISQUE DYNAMIQUE (DÉBUT) ---
@@ -4021,6 +4088,7 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
     s_info = mt5.symbol_info(symbol)
     if not s_info:
         logger.error(f"❌ Erreur Symbole: {symbol}")
+        await noter(_tag_x, f"❌ AUCUN ORDRE : symbole {symbol} inconnu de MT5")
         return None
         
     pt = s_info.point
@@ -4031,10 +4099,14 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
     current_spread_pips = s_info.spread / div
     if current_spread_pips > MAX_SPREAD_PIPS:
         logger.warning(f"⏸️ Signal ignoré ({symbol}) : spread trop large ({current_spread_pips:.1f} > {MAX_SPREAD_PIPS} pips)")
+        await noter(_tag_x, f"⏸️ AUCUN ORDRE ({symbol}) : spread trop large "
+                            f"({current_spread_pips:.1f} > {MAX_SPREAD_PIPS} pips)")
         return None
 
     tick = mt5.symbol_info_tick(symbol)
-    if not tick: return None
+    if not tick:
+        await noter(_tag_x, f"❌ AUCUN ORDRE ({symbol}) : aucune cotation (marché fermé ?)")
+        return None
     
     curr_price = tick.ask if action == "ACHAT" else tick.bid
 
@@ -4089,6 +4161,8 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
 
         if is_duplicate:
             log(f"🛡️ Doublon SABR ignoré : {symbol} {action} (Écart < 100 pips)", important=True)
+            await noter(_tag_x, f"🛡️ AUCUN ORDRE ({symbol} {action}) : doublon SABR "
+                                f"(trade déjà ouvert à moins de 100 pips)")
             return SABR_DUPLICATE  # (#4) signale au handler : pas de numéro, pas de spam
 
     try: sl_val = float(sl)
@@ -4146,6 +4220,7 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
                         
         if is_mdt_duplicate:
             log(f"🛡️ Doublon croisé MDT ignoré : {symbol} {action} a déjà été pris via l'autre canal MDT !", important=True)
+            await noter(_tag_x, f"🛡️ AUCUN ORDRE ({symbol} {action}) : déjà pris via l'autre canal MDT")
             return None
 
     # 3. Préparation des Lots et Prix (SABR vs CLASSIC)
@@ -4272,6 +4347,8 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
             await send_channel_alert(f"⏳ **SIGNAL SABR EN APPROCHE**\n\n"
                              f"Action : {action} {symbol} (À l'aveugle)\n\n"
                              f"Le bot est prêt et attend le prix exact.\n(Délai de veille: 3 minutes max...)", channel_source)
+            await noter(_tag_x, f"⏳ SIGNAL AVEUGLE ({action} {symbol}) : aucun ordre tant que le "
+                                f"canal n'a pas donné son prix (édition du message attendue)")
             return None # On s'arrête ici, pas d'exécution.
 
         # --- C. Logique SNIPER (Hybride) ---
@@ -4512,6 +4589,7 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
 
         if res is None:
             logger.error("⚠️ Erreur Critique: MT5 ne répond pas.")
+            await noter(_tag_x, f"❌ ORDRE NON ENVOYÉ ({symbol}) : MetaTrader ne répond pas")
             continue
 
         if res.retcode == mt5.TRADE_RETCODE_DONE:
@@ -4523,10 +4601,10 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
             t_str = "MARKET" if tact == mt5.TRADE_ACTION_DEAL else "PENDING"
             log(f"🔥 ORDRE {t_str} ENVOYÉ: {symbol} (Source: {channel_source})", important=True)
 
-            if channel_source and "MDT" in channel_source:
-                await run_bg(debug_mdt, "MDT_VIP" if "VIP" in channel_source else "MDT_FREE",
-                             f"🔥 TRADE OUVERT — ticket {res.order} | {symbol} {action} {t_str} | "
-                             f"{lot:.2f} lots @ {final_px} | SL {final_sl} | TP {final_tp}")
+            # (#111) Tous les canaux.
+            await noter(tag_canal(channel_source),
+                        f"🔥 TRADE OUVERT — ticket {res.order} | {symbol} {action} {t_str} | "
+                        f"{lot:.2f} lots @ {final_px} | SL {final_sl} | TP {final_tp}")
                 
             sig_time = get_broker_time(message_date)
             safe_source = channel_source.replace("_", " ") 
@@ -4571,8 +4649,16 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
                 # --- MODIFICATION TELEGRAM SECOURS ICI ---
                 await send_channel_alert(f"🔥 **ORDRE MARKET (RESCUE)**\n{symbol} {action}\nLot: **{lot:.2f}** (Risque: {risk_str})\n\n🛑 SL: {final_sl} & 🎯 TP: {final_tp}", channel_source)
                 tickets_opened.append(res2.order)
+                await noter(_tag_x, f"🔥 TRADE OUVERT au marché (secours, prix refusé) — ticket "
+                                    f"{res2.order} | {symbol} {action} | {lot:.2f} lots | "
+                                    f"SL {final_sl} | TP {final_tp}")
+            else:
+                await noter(_tag_x, f"❌ ORDRE REJETÉ par MT5 ({symbol} {action}) — prix refusé "
+                                    f"(code {res.retcode}), puis secours au marché refusé aussi"
+                                    + (f" (code {res2.retcode} : {res2.comment})" if res2 else ""))
         else:
             logger.error(f"❌ REJET MT5 ({res.retcode}) sur {symbol} : {res.comment}")
+            await noter(_tag_x, f"❌ ORDRE REJETÉ par MT5 ({symbol} {action}) — code {res.retcode} : {res.comment}")
             await send_alert(f"❌ **ERREUR D'EXÉCUTION MT5**\nImpossible d'ouvrir {action} {symbol}\nRaison : {res.comment}\n*(Code {res.retcode} : Ton MT5 est allumé ? Algo Trading activé ?)*")
 
     if tp1_price:
@@ -4963,10 +5049,10 @@ async def check_closed_positions():
             
             log(f"🏁 CLÔTURE: {sym} | Profit: {prof:+.2f}€ | {reason}", important=True)
 
-            if "MDT" in source:
-                await run_bg(debug_mdt, "MDT_VIP" if "VIP" in source else "MDT_FREE",
-                             f"🏁 TRADE CLÔTURÉ — ticket {t} | {sym} | {prof:+.2f}€ | "
-                             f"{pips:+.1f} pips | max {mfe:+.1f}p / min {mae:+.1f}p | {reason}")
+            # (#111) Tous les canaux.
+            await noter(tag_canal(source),
+                        f"🏁 TRADE CLÔTURÉ — ticket {t} | {sym} | {prof:+.2f}€ | "
+                        f"{pips:+.1f} pips | max {mfe:+.1f}p / min {mae:+.1f}p | {reason}")
 
             await send_channel_alert(msg, source)
 
@@ -5513,6 +5599,8 @@ async def cancel_pending_of_signal(sig_key):
                 ACTIVE_TRADE_SIGNALS.pop(o.ticket, None)
                 ACTIVE_TRADE_SOURCES.pop(o.ticket, None)
                 logger.warning("🗑 Ordre %s annule (zone INDODOG terminee)" % o.ticket)
+                await noter(tag_canal(_src_o), f"🗑 ORDRE ANNULÉ — ticket {o.ticket} : TP1 atteint, "
+                                               f"le reste de la zone ne sert plus")   # (#111)
                 # (#104) Filet : si TOUS les ordres du signal finissent annules sans qu'aucune
                 # position ne s'ouvre, plus rien ne passera par check_closed_positions() et le
                 # signal resterait "en cours" a vie. ladder_stats_close() ne fait rien si une
@@ -5610,6 +5698,8 @@ async def cancel_indo_stale_orders():
             INDO_APPROACHED.discard(o.ticket)
             touche_memoire = True
             logger.warning("🗑 %s : ordre %s annule -- %s" % (_c, o.ticket, motif))
+            await noter(tag_canal(src_o), f"🗑 ORDRE ANNULÉ — ticket {o.ticket} | "
+                                          f"{o.symbol} @ {o.price_open} : {motif}")   # (#111)
             await send_channel_alert(
                 ("🗑 **%s : ORDRE ANNULE**" % _c) + chr(10) + chr(10) +
                 ("%s @ %s" % (o.symbol, o.price_open)) + chr(10) +
@@ -5698,6 +5788,8 @@ async def monitor_positions():
                                          f"Symbole: {pos.symbol} ({act_time})\n"
                                          f"Source: {src_clean}\n"
                                          f"Ticket: {ticket}", src_raw)
+                        await noter(tag_canal(src_raw), f"⚡ ORDRE DÉCLENCHÉ — ticket {ticket} | "
+                                                        f"{pos.symbol} @ {pos.price_open}")   # (#111)
                         
                         tickets_to_remove.add(ticket)
                     else:
@@ -5726,7 +5818,11 @@ async def monitor_positions():
                             for ord_to_del in all_o:
                                 if ord_to_del.magic == MAGIC_NUMBER:
                                     res = await run_mt5(_send_order_blocking, {"action": mt5.TRADE_ACTION_REMOVE, "order": ord_to_del.ticket})
-                                    if res and res.retcode == mt5.TRADE_RETCODE_DONE: c_del += 1
+                                    if res and res.retcode == mt5.TRADE_RETCODE_DONE:
+                                        c_del += 1
+                                        await noter(tag_canal(ACTIVE_TRADE_SOURCES.get(ord_to_del.ticket, "")),
+                                                    f"🧹 ORDRE PURGÉ — ticket {ord_to_del.ticket} : fermeture "
+                                                    f"du marché pour le week-end")   # (#111)
                             if c_del > 0: await send_alert(f"🧹 **CLÔTURE MARCHÉ** : {c_del} ordres en attente purgés pour le week-end.")
                         TRADES_PROCESSED_LEVELS["SYS"].add(tag_we)
                         await run_bg(save_memory)
@@ -5844,6 +5940,8 @@ async def monitor_positions():
                                 count_cancelled += 1
                                 logger.warning("🗑 SABR : ordre %s annule (%s) -- signal %s, %s"
                                                % (o.ticket, src_clean, sig, motif))
+                                await noter(tag_canal(src), f"🗑 ORDRE ANNULÉ — ticket {o.ticket} | "
+                                                            f"{sym} : {motif}")   # (#111)
 
                         if count_cancelled > 0:
                             await send_channel_alert(f"🗑️ **ORDRE SABR ANNULÉ**\n\n"
@@ -6296,6 +6394,9 @@ async def monitor_positions():
                                                              f"Symbole: {sym} ({p_open_time})\n"
                                                              f"Source: {p_src_clean}\n"
                                                              f"Ticket: {p.ticket}", ACTIVE_TRADE_SOURCES.get(p.ticket, ""))
+                                            await noter(tag_canal(ACTIVE_TRADE_SOURCES.get(p.ticket, "")),
+                                                        f"☄️ SL AU BE (+100 pips) — ticket {p.ticket} | "
+                                                        f"SL -> {new_sl}")   # (#111)
                                             # Le SL suiveur ci-dessous compare a current_sl :
                                             # sans cette mise a jour il repartirait de la
                                             # valeur d'avant le BE et renverrait un ordre
@@ -6469,6 +6570,8 @@ async def monitor_positions():
                                                    "sl": round(be_d / pt_i) * pt_i, "tp": p.tp})
                             done.add("INDO_BE")
                             await run_bg(save_memory)
+                            await noter(tag_canal(src_ladder), f"🛡 SL AU BE (+{INDO_BE_DEFAUT_PIPS} pips, "
+                                                               f"signal sans TP lisible) — signal {sig_key}")   # (#111)
                             await send_channel_alert(
                                 ("🛡 **%s : SL AU BE** (+%d pips)" % (nom_ladder, INDO_BE_DEFAUT_PIPS))
                                 + chr(10) + chr(10) +
@@ -6526,6 +6629,7 @@ async def monitor_positions():
                                                  "sl": round(be_i / pt_i) * pt_i, "tp": p.tp}
                                         await run_mt5(_send_order_blocking, req_i)
                                 done.add("INDO_BE")
+                                await noter(tag_canal(src_ladder), f"🛡 SL AU BE (TP1 atteint) — signal {sig_key}")   # (#111)
                                 await send_channel_alert(
                                     ("🛡 **%s : SL AU BE** (TP1 atteint)" % nom_ladder) + chr(10) + chr(10) +
                                     ("Symbole: %s" % sym_i), src_ladder)
@@ -7298,6 +7402,27 @@ async def admin_commands(event):
         except: await event.reply("❌ Usage: /risk_day vendredi 0.33")
 
 # --- 15. RAPPORTS ---
+    # (#111) Récupérer les journaux sans aller fouiller le dossier du bot : envoyés dans cette
+    # conversation, pour être transférés tels quels au support. Ils contiennent le texte des
+    # canaux suivis et des numéros de tickets -- aucun secret (ni jeton, ni mot de passe, ni
+    # clé de licence : rien de settings.json n'y est écrit).
+    elif text == "/journaux":
+        candidats = [JOURNAL_CANAUX_FILE, JOURNAL_CANAUX_FILE + ".1", NON_COMPRIS_FILE,
+                     "debug_mdt.log"]   # l'ancien journal MDT, s'il existe encore
+        fichiers = [f for f in candidats if os.path.exists(f) and os.path.getsize(f) > 0]
+        if not fichiers:
+            await event.reply("📭 Aucun journal pour l'instant : il se remplit au premier "
+                              "message reçu des canaux.")
+            return
+        await event.reply(f"📤 Envoi de {len(fichiers)} fichier(s)… À transférer tels quels "
+                          f"au support.")
+        for f in fichiers:
+            try:
+                await client.send_file(event.chat_id, f, force_document=True,
+                                       caption=f"🗂 {f} ({os.path.getsize(f) / 1024:.0f} Ko)")
+            except Exception as e:
+                await event.reply(f"❌ Envoi de {f} impossible : {e}")
+
     elif text == "/stats":
         if not await run_mt5(mt5.initialize): await event.reply("❌ MT5 Off"); return
         acc = await run_mt5(mt5.account_info)
@@ -7435,6 +7560,7 @@ async def admin_commands(event):
                "**📌 GÉNÉRALES :**\n\n"
                "`/info` : Bilan compte\n"
                "`/stats` | `/canal_stats` : Rapports\n"
+               "`/journaux` : Recevoir les journaux des canaux (pour le support)\n"
                "`/display_mode dev|client` : Console détaillée ou épurée, à chaud\n"
                "`/suivi 12345` : Activer suivi manuel\n"
                "`/unlock` : Débloquer après DD\n"
@@ -7450,6 +7576,21 @@ async def admin_commands(event):
 # 👂 LISTENER PRINCIPAL (MULTI-CANAUX)
 # ==========================================
 
+def _hors_sujet_indodog(event):
+    """(#84) INDODOG est un groupe a SUJETS : seul le salon des signaux nous interesse. Dans
+    Telegram, un message d'un sujet porte le numero de celui-ci dans reply_to_top_id ; quand il
+    repond directement au message racine du sujet, c'est reply_to_msg_id qui le porte. On teste
+    donc les deux. Un message sans reply_to vient de la discussion generale.
+    Retourne le numero du sujet si le message est HORS du salon suivi, sinon None.
+    (#111) Partage avec edit_handler, qui n'avait pas ce filtre."""
+    if event.chat_id != ID_INDODOG:
+        return None
+    _r = getattr(event, "reply_to", None)
+    _topic = (getattr(_r, "reply_to_top_id", None) or
+              getattr(_r, "reply_to_msg_id", None)) if _r else None
+    return None if _topic == INDODOG_TOPIC_ID else (_topic or "general")
+
+
 @client.on(events.NewMessage(chats=CHANNEL_LIST))
 async def main_handler(event):
     # (#52) Garde de ré-entrance posée EN PREMIER, avant tout traitement (y compris le
@@ -7462,33 +7603,28 @@ async def main_handler(event):
         return
     PROCESSED_MSG_IDS.add(event.id)
 
-    # (#84) INDODOG est un groupe a SUJETS : seul le salon des signaux nous interesse. Dans
-    # Telegram, un message d'un sujet porte le numero de celui-ci dans reply_to_top_id ; quand
-    # il repond directement au message racine du sujet, c'est reply_to_msg_id qui le porte.
-    # On teste donc les deux. Un message sans reply_to vient de la discussion generale.
-    if event.chat_id == ID_INDODOG:
-        _r = getattr(event, "reply_to", None)
-        _topic = (getattr(_r, "reply_to_top_id", None) or
-                  getattr(_r, "reply_to_msg_id", None)) if _r else None
-        if _topic != INDODOG_TOPIC_ID:
-            logger.info(f"↩️ INDODOG : message du salon {_topic} ignoré "
-                        f"(seul le sujet {INDODOG_TOPIC_ID} est suivi).")
-            return
+    # (#84) INDODOG : seul le salon des signaux est suivi (cf. _hors_sujet_indodog). Pas de
+    # ligne au journal pour les autres salons : c'est de la discussion, et elle le noierait.
+    _salon = _hors_sujet_indodog(event)
+    if _salon is not None:
+        logger.info(f"↩️ INDODOG : message du salon {_salon} ignoré "
+                    f"(seul le sujet {INDODOG_TOPIC_ID} est suivi).")
+        return
 
     # --- AJOUT DEBUG ---
     log(f"👀 J'ai vu un message ! ID: {event.id}")
     log(f"Texte brut: {event.raw_text}")
 
-    # Journal MDT : on capture le message BRUT dès l'entrée, avant toute interprétation --
+    # Journal : on capture le message BRUT dès l'entrée, avant toute interprétation --
     # c'est ce qui permet ensuite de distinguer "message jamais reçu" de "reçu mais mal
     # interprété". reply_to_msg_id est essentiel : les instructions du canal (BE, partiel,
     # clôture) sont des réponses au message du signal d'origine.
-    if event.chat_id in (ID_MDT_VIP, ID_MDT_FREE):
-        _mdt_tag = "MDT_VIP" if event.chat_id == ID_MDT_VIP else "MDT_FREE"
-        _reply_to = getattr(event, "reply_to_msg_id", None)
-        _reply_txt = f" (réponse au msg {_reply_to})" if _reply_to else ""
-        await run_bg(debug_mdt, _mdt_tag,
-                     f"📩 MESSAGE REÇU (id={event.id}){_reply_txt} :\n{event.raw_text}")
+    # (#111) Tous les canaux, et chaque sortie de ce handler note ensuite ce qui a été fait du
+    # message -- ou pourquoi rien ne l'a été.
+    _tag = tag_canal(chat_id=event.chat_id)
+    _reply_to = getattr(event, "reply_to_msg_id", None)
+    _reply_txt = f" (réponse au msg {_reply_to})" if _reply_to else ""
+    await noter(_tag, f"📩 MESSAGE REÇU (id={event.id}){_reply_txt} :\n{event.raw_text}")
 
     # === 📤 TRANSFERT DES MESSAGES SABR (FORWARDER) ===
     # (#5) Si le canal copie est mute, on coupe aussi la recopie des messages.
@@ -7551,6 +7687,11 @@ async def main_handler(event):
 
                 if round(pos.volume - vol_to_close, 2) >= 0.01:
                     await close_partial(pos, 0.0, "SABR PARTIEL (+10%)", pips_now, fixed_lot=vol_to_close, etape="TP2")
+                else:
+                    await noter(_tag, f"ℹ️ PARTIEL SABR sans effet — ticket {tk} : il ne resterait rien "
+                                      f"après {vol_to_close:.2f} lot(s)")
+        else:
+            await noter(_tag, "ℹ️ PARTIEL SABR sans effet : aucun signal ouvert auquel le rattacher")
         return
 
     # ==================================================================
@@ -7625,8 +7766,10 @@ async def main_handler(event):
                             await send_alert(f"🗑️ **ORDRE SUPPRIMÉ**\n\nTicket #{tk} annulé.")
                             if tk in PENDING_ORDER_TICKETS: PENDING_ORDER_TICKETS.remove(tk)
                             closed_count += 1
+                            await noter(_tag, f"🗑 ORDRE ANNULÉ (instruction du canal) — ticket {tk}")
                         else:
                             await send_alert(f"⚠️ Échec suppression ordre #{tk}: {res.comment}")
+                            await noter(_tag, f"❌ ANNULATION REFUSÉE — ticket {tk} : {res.comment}")
                         continue # On passe au ticket suivant
 
                     # --- CAS B : C'EST UNE POSITION ACTIVE ? ---
@@ -7652,8 +7795,10 @@ async def main_handler(event):
                             await send_alert(f"✅ **POSITION FERMÉE**\n\nTicket #{tk} clôturé.")
                             if tk in MANAGED_MANUAL_TICKETS: MANAGED_MANUAL_TICKETS.remove(tk)
                             closed_count += 1
+                            await noter(_tag, f"✂️ CLÔTURE DEMANDÉE PAR LE CANAL — ticket {tk} fermé")
                         else:
                             await send_alert(f"⚠️ Échec fermeture position #{tk}: {res.comment}")
+                            await noter(_tag, f"❌ CLÔTURE REFUSÉE — ticket {tk} : {res.comment}")
 
                 if closed_count > 0:
                     del TELEGRAM_TO_TICKET[original_msg_id]
@@ -7663,10 +7808,8 @@ async def main_handler(event):
                     # (#68) L'instruction A été comprise, il n'y avait simplement plus rien à
                     # fermer. Sans cette trace, le journal affichait "INSTRUCTION NON COMPRISE",
                     # ce qui laissait croire à un défaut de parsing lors de la relecture.
-                    if event.chat_id in (ID_MDT_VIP, ID_MDT_FREE):
-                        await run_bg(debug_mdt, "MDT_VIP" if event.chat_id == ID_MDT_VIP else "MDT_FREE",
-                                     f"ℹ️ ORDRE DE CLÔTURE COMPRIS mais plus aucun ticket ouvert "
-                                     f"parmi {tickets_to_manage} :\n{event.raw_text}")
+                    await noter(_tag, f"ℹ️ ORDRE DE CLÔTURE COMPRIS mais plus aucun ticket ouvert "
+                                      f"parmi {tickets_to_manage} :\n{event.raw_text}")
                     action_taken = True
 
             else:
@@ -7703,9 +7846,16 @@ async def main_handler(event):
                             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                                 await send_alert(f"🛡️ **SL SÉCURISÉ AU BE** (signal canal)\n\nTicket #{tk}")
                                 action_taken = True
-                                if "MDT" in ACTIVE_TRADE_SOURCES.get(tk, ""):
-                                    await run_bg(debug_mdt, "MDT_VIP" if "VIP" in ACTIVE_TRADE_SOURCES.get(tk, "") else "MDT_FREE",
-                                                 f"🛡️ BE APPLIQUÉ (instruction du canal) — ticket {tk} | SL -> {new_sl_price}")
+                                await noter(tag_canal(ACTIVE_TRADE_SOURCES.get(tk, "")),
+                                            f"🛡️ BE APPLIQUÉ (instruction du canal) — ticket {tk} | SL -> {new_sl_price}")
+                            else:
+                                await noter(_tag, f"❌ BE REFUSÉ — ticket {tk}"
+                                                  + (f" : {res.comment}" if res else " : MT5 ne répond pas"))
+                        else:
+                            # (#111) Sans cette ligne, une consigne de BE déjà satisfaite ne
+                            # laissait aucune trace : on la croyait ignorée à la relecture.
+                            await noter(_tag, f"ℹ️ BE déjà en place — ticket {tk} : le SL protège "
+                                              f"déjà au moins l'entrée")
                         # On marque BE comme géré même si le SL n'a pas dû bouger (déjà mieux
                         # que le BE) -- évite que le filet de sécurité 60 pips (#20) ne repasse dessus.
                         TRADES_PROCESSED_LEVELS.setdefault(tk, set()).add("VIP_BE_DONE")
@@ -7719,17 +7869,13 @@ async def main_handler(event):
                 # "INSTRUCTION NON COMPRISE" et faisaient soupçonner un bug inexistant.
                 comprise = is_half or is_generic_partial or is_be
                 if comprise:
-                    if event.chat_id in (ID_MDT_VIP, ID_MDT_FREE):
-                        await run_bg(debug_mdt, "MDT_VIP" if event.chat_id == ID_MDT_VIP else "MDT_FREE",
-                                     f"ℹ️ INSTRUCTION COMPRISE mais sans effet (plus aucune "
-                                     f"position ouverte parmi {tickets_to_manage}) :\n{event.raw_text}")
+                    await noter(_tag, f"ℹ️ INSTRUCTION COMPRISE mais sans effet (plus aucune "
+                                      f"position ouverte parmi {tickets_to_manage}) :\n{event.raw_text}")
                 else:
-                    log_unclear_signal(event.raw_text, tickets_to_manage)
+                    await run_bg(log_unclear_signal, event.raw_text, tickets_to_manage)
                     # Le cas le plus important à repérer en relecture : une instruction du canal
                     # reçue mais qu'aucune règle n'a su interpréter -> aucune action sur le trade.
-                    if event.chat_id in (ID_MDT_VIP, ID_MDT_FREE):
-                        await run_bg(debug_mdt, "MDT_VIP" if event.chat_id == ID_MDT_VIP else "MDT_FREE",
-                                     f"⚠️ INSTRUCTION NON COMPRISE — aucune action sur {tickets_to_manage} :\n{event.raw_text}")
+                    await noter(_tag, f"⚠️ INSTRUCTION NON COMPRISE — aucune action sur {tickets_to_manage} :\n{event.raw_text}")
 
             return # Fin de la gestion commande
     # ==================================================================
@@ -7740,10 +7886,16 @@ async def main_handler(event):
     # n'est pas un signal généré par ce canal -- on l'ignore pour ne pas trader une vitrine/repost.
     if event.fwd_from:
         logger.info(f"↪️ Message transféré ignoré (id={event.id}) -- pas traité comme signal.")
+        await noter(_tag, f"↪️ IGNORÉ (id={event.id}) : message transféré d'un autre canal")
         return
 
     raw_text = event.raw_text
-    if any(w in raw_text.upper() for w in BLACKLIST_WORDS): return
+    _exclu = next((w for w in BLACKLIST_WORDS if w in raw_text.upper()), None)
+    if _exclu:
+        # (#111) Sans cette ligne, le cas le plus déroutant en relecture : un message reçu,
+        # puis rien. « LES », « DES » font partie des mots exclus.
+        await noter(_tag, f"🚫 IGNORÉ (id={event.id}) : contient le mot exclu « {_exclu} »")
+        return
     
     # DEBUG : On affiche ce qu'on reçoit
     logger.info(f"\n📩 MESSAGE REÇU: {raw_text[:50]}...") 
@@ -7759,6 +7911,7 @@ async def main_handler(event):
         # Si le message n'est plus dans la liste, c'est qu'il a été supprimé pendant la sieste !
         if event.id not in PENDING_MESSAGES:
             logger.warning(f"🛑 Stop: Le message {event.id} a été supprimé pendant l'attente.")
+            await noter(_tag, f"🗑 IGNORÉ (id={event.id}) : supprimé par le canal avant d'être traité")
             return # On arrête tout, pas de trade.
             
         final_text = PENDING_MESSAGES[event.id]
@@ -7833,6 +7986,9 @@ async def main_handler(event):
                         + ("**%s** et **%s**." % (_a.group(0).upper(), _v.group(0).upper()))
                         + chr(10) + chr(10) + "Aucun ordre passé. Message :" + chr(10)
                         + ("`%s`" % final_text[:250].replace("`", "'")))
+                    await noter(_tag, f"🛑 IGNORÉ (id={event.id}) : signal ambigu — symbole deviné "
+                                      f"(l'or) et les deux sens dans le texte "
+                                      f"({_a.group(0)} / {_v.group(0)})")
                     return
                 sym = find_tradable_symbol("XAUUSD")
                 if sym:
@@ -7843,6 +7999,7 @@ async def main_handler(event):
                 # L'alerte Telegram a été retirée, on garde uniquement le log local
                 logger.error(f"❌ Signal ignoré — symbole '{rsym}' introuvable dans MT5. "
                              f"Message : {final_text[:120].replace(chr(10), ' | ')}")
+                await noter(_tag, f"❌ IGNORÉ (id={event.id}) : {act} {rsym} — symbole introuvable dans MT5")
                 return
 
             log(f"✅ SIGNAL VALIDE: {act} {sym}", important=True) # Confirmation visuelle
@@ -7885,9 +8042,15 @@ async def main_handler(event):
             # --- NOUVELLE LOGIQUE (MUTE TOTAL INTELLIGENT) ---
             # (#25) PACK_LOCKED_CHANNELS bloque réellement le trading sur un canal absent
             # du pack du client (avant, ALLOWED_CHANNELS ne faisait que filtrer l'affichage).
+            # (#111) Ce qui a été compris, avant toute décision : si l'ordre ne part pas, la ligne
+            # suivante dira pourquoi (execute_trade note chacun de ses refus).
+            await noter(_tag, f"✅ SIGNAL COMPRIS (id={event.id}) — {act} {sym} | entrée {log_p} | "
+                              f"SL {sl} | TP {tp} | type {final_source.replace('CANAL ', '')}")
+
             is_muted = any(m in final_source for m in MUTED_CHANNELS) or any(m in final_source for m in PACK_LOCKED_CHANNELS)
             if is_muted:
                 logger.warning(f"🚫 SIGNAL IGNORÉ : Le canal {final_source} est bloqué par le mode MUTE ou hors pack.")
+                await noter(_tag, "🔇 AUCUN ORDRE : canal coupé (mute) ou hors du pack")
                 return # On arrête tout ici : pas d'alerte, PAS DE TRADE.
 
             if is_sabr_signal:
@@ -7897,6 +8060,7 @@ async def main_handler(event):
 
                 if opened_tickets == SABR_DUPLICATE:
                     await send_channel_alert(f"🛡️ Signal SABR bloqué (anti-doublon) : {act} {sym}", final_source)
+                    # (la ligne « doublon » est écrite par execute_trade)
                 else:
                     # Attribution du numéro du jour UNIQUEMENT si non bloqué
                     global SABR_SIGNAL_DAY
@@ -7945,6 +8109,8 @@ async def main_handler(event):
                     logger.error("⚠️ %s : AUCUN TP lu dans le signal -- format du canal modifie ?"
                                  % final_source)
                     logger.error("Message brut :\n%s" % final_text)
+                    await noter(_tag, "⚠️ AUCUN TP LU dans le signal : trade pris avec son SL, mais "
+                                      "aucun palier ne sera géré (format du canal changé ?)")
                     await send_channel_alert(
                         "⚠️ **AUCUN TP LU DANS LE SIGNAL**" + chr(10) + chr(10) +
                         "Le trade est pris et le SL est posé, mais **aucun palier ne sera "
@@ -7960,9 +8126,14 @@ async def main_handler(event):
                     await send_channel_alert(f"✔️ **Signal Accepté** ({display_source}){display_type_line}\n🛑 SL: {sl} | 🎯 TP: {tp}", final_source)
         else:
             logger.info(f"⚠️ Ignoré (Parsing échoué) sur : {cleaned}")
+            # (#111) Le cas le plus fréquent : discussion, publicité, résultat du jour. La ligne
+            # prouve que le message a été lu ET jugé -- un signal « manqué » qui apparaît ici
+            # est un défaut de lecture ; un signal absent du journal n'est jamais arrivé.
+            await noter(_tag, f"💬 PAS UN SIGNAL (id={event.id}) : aucun ordre reconnu")
 
     except Exception as e:
         logger.error(f"❌ ERREUR HANDLER: {e}")
+        await noter(_tag, f"💥 ERREUR en traitant le message (id={event.id}) : {e}")
         import traceback
         traceback.print_exc()
         
@@ -7972,12 +8143,23 @@ async def main_handler(event):
 # --- GESTION DES EDITS (MODIFIE TOUS LES ORDRES DE LA ZONE) ---
 @client.on(events.MessageEdited(chats=CHANNEL_LIST))
 async def edit_handler(event):
+    # (#111) Même filtre de salon que main_handler : sans lui, l'édition d'un message de la
+    # discussion INDODOG était lue comme un signal, et pouvait réécrire SL/TP des trades INDODOG.
+    if _hors_sujet_indodog(event) is not None:
+        return
+    _tag = tag_canal(chat_id=event.chat_id)
+
     if event.id in PENDING_MESSAGES:
         PENDING_MESSAGES[event.id] = event.raw_text
+        await noter(_tag, f"✏️ MESSAGE ÉDITÉ (id={event.id}) avant d'être traité : c'est cette "
+                          f"version qui sera lue :\n{event.raw_text}")
         return
 
+    await noter(_tag, f"✏️ MESSAGE ÉDITÉ (id={event.id}) :\n{event.raw_text}")
     rsym, act, p_msg, sl, tp, format_detected = parse_signal(event.raw_text, event.chat_id)
-    if not rsym: return 
+    if not rsym:
+        await noter(_tag, "💬 ÉDITION sans signal : rien à modifier")
+        return
 
     # (#81) `sl`/`tp` sortent d'une expression régulière : ils peuvent valoir une chaîne non
     # convertible ("." par exemple, vu deux fois le 2026-08-11), ce qui faisait remonter
@@ -8002,6 +8184,7 @@ async def edit_handler(event):
     if event.id not in TELEGRAM_TO_TICKET and p_msg is not None and new_sl == 0.0 and new_tp == 0.0:
         # C'est un signal "Go buy" qui vient d'être mis à jour avec un prix !
         # On tente d'ouvrir le trade proprement, sans spammer.
+        await noter(_tag, f"✏️ SIGNAL AVEUGLE COMPLÉTÉ — {act} {rsym} à {p_msg} : ouverture tentée")
         new_tix = await execute_trade(rsym, act, sl, tp, p_msg, event.date, str(format_detected))
         if new_tix and new_tix != SABR_DUPLICATE:
             TELEGRAM_TO_TICKET[event.id] = new_tix
@@ -8012,7 +8195,9 @@ async def edit_handler(event):
     # 2. MISE A JOUR SL / TP (NORMAL OU ORPHELIN)
     # ==========================================
     # Si pas de modification de SL ou TP, on ne fait rien
-    if new_sl == 0.0 and new_tp == 0.0: return
+    if new_sl == 0.0 and new_tp == 0.0:
+        await noter(_tag, "✏️ ÉDITION sans SL ni TP lisible : rien à modifier")
+        return
 
     tickets_to_update = []
 
@@ -8030,11 +8215,14 @@ async def edit_handler(event):
         # modifié une seconde fois le lendemain. On n'accepte plus que les trades issus du MÊME
         # canal que le message édité.
         sym = find_tradable_symbol(rsym)
-        if not sym: return
+        if not sym:
+            await noter(_tag, f"✏️ ÉDITION ignorée : symbole {rsym} introuvable dans MT5")
+            return
 
         base_edit = _channel_base_token(format_detected)
         if not base_edit:
             logger.warning("✏️ Édition ignorée : canal indéterminé (message %s)" % event.id)
+            await noter(_tag, "✏️ ÉDITION ignorée : canal indéterminé")
             return
 
         def _meme_canal(ticket):
@@ -8053,10 +8241,14 @@ async def edit_handler(event):
         if ignores:
             logger.info("✏️ Édition %s (%s) : %d trade(s) d'un autre canal laissé(s) intacts"
                         % (event.id, base_edit, ignores))
+            await noter(_tag, f"✏️ ÉDITION : {ignores} trade(s) d'un autre canal sur {sym} laissé(s) intact(s)")
 
-    if not tickets_to_update: return
+    if not tickets_to_update:
+        await noter(_tag, f"✏️ ÉDITION sans effet : aucun trade de ce canal sur {rsym}")
+        return
 
     success_count = 0
+    deja_fermes, inchanges, refuses = 0, 0, 0   # (#111) pour dire au journal pourquoi rien
     for ticket in tickets_to_update:
         is_pending = False
         orders = await run_mt5(mt5.orders_get, ticket=ticket)
@@ -8064,13 +8256,16 @@ async def edit_handler(event):
         if orders and len(orders) > 0: is_pending = True
         else: pos = await run_mt5(mt5.positions_get, ticket=ticket)
 
-        if not is_pending and not pos: continue
+        if not is_pending and not pos:
+            deja_fermes += 1
+            continue
 
         current_sl = orders[0].sl if is_pending else pos[0].sl
         current_tp = orders[0].tp if is_pending else pos[0].tp
         
         # Si le SL et le TP sont déjà les mêmes, on passe
         if abs(current_sl - new_sl) < 0.0001 and abs(current_tp - new_tp) < 0.0001:
+            inchanges += 1
             continue 
 
         req = {
@@ -8093,6 +8288,18 @@ async def edit_handler(event):
             logger.warning("✏️ Édition msg %s (%s) : ticket %s  SL %s -> %s  TP %s -> %s"
                            % (event.id, _channel_base_token(format_detected), ticket,
                               current_sl, new_sl, current_tp, new_tp))
+            await noter(_tag, f"✏️ SL/TP MODIFIÉS — ticket {ticket} | SL {current_sl} -> {new_sl} | "
+                              f"TP {current_tp} -> {new_tp}")
+        else:
+            refuses += 1
+            await noter(_tag, f"❌ MODIFICATION REFUSÉE — ticket {ticket}"
+                              + (f" : {res.comment}" if res else " : MT5 ne répond pas"))
+
+    if success_count == 0 and not refuses:
+        await noter(_tag, "✏️ ÉDITION sans effet : "
+                          + ", ".join(x for x in (
+                              f"{inchanges} trade(s) déjà à ces SL/TP" if inchanges else "",
+                              f"{deja_fermes} trade(s) déjà clôturé(s)" if deja_fermes else "") if x))
 
     if success_count > 0:
         await send_alert(f"✏️ **TRADES MODIFIÉS** (Édition)\n\n"
@@ -8103,6 +8310,7 @@ async def edit_handler(event):
 # --- GESTION DES SUPPRESSIONS (NOUVEAU) ---
 @client.on(events.MessageDeleted(chats=CHANNEL_LIST))
 async def deletion_handler(event):
+    _tag = tag_canal(chat_id=getattr(event, "chat_id", None))   # (#111)
     # On parcourt les IDs des messages supprimés
     for msg_id in event.deleted_ids:
         
@@ -8110,10 +8318,13 @@ async def deletion_handler(event):
         if msg_id in PENDING_MESSAGES:
             logger.info(f"🗑️ Message {msg_id} supprimé du Buffer (Ne sera pas traité).")
             del PENDING_MESSAGES[msg_id]
+            # (la ligne « supprimé avant d'être traité » est écrite par main_handler)
             
         # CAS 2 : C'est un trade déjà actif (Ticket existant)
         if msg_id in TELEGRAM_TO_TICKET:
             tickets = TELEGRAM_TO_TICKET[msg_id] # Liste de tickets !
+            await noter(_tag, f"🗑 SIGNAL SUPPRIMÉ PAR LE CANAL (id={msg_id}) — tickets {tickets} : "
+                              f"ordres en attente annulés, positions ouvertes conservées")
             
             for tk in tickets:
                 # On vérifie si c'est un ORDRE EN ATTENTE (Pending)
@@ -8132,6 +8343,7 @@ async def deletion_handler(event):
                     
                     if res.retcode == mt5.TRADE_RETCODE_DONE:
                         await send_alert(f"🗑️ **SIGNAL SUPPRIMÉ (Canal source)**\n\nOrdre #{tk} annulé.")
+                        await noter(_tag, f"🗑 ORDRE ANNULÉ (signal supprimé par le canal) — ticket {tk}")
             
             # Une fois la liste traitée, on nettoie la mémoire
             del TELEGRAM_TO_TICKET[msg_id]

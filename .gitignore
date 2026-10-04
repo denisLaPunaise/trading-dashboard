@@ -20,6 +20,8 @@ backend/settings.json
 
 # Logs
 *.log
+# (#111) Journaux en rotation : journal_canaux.log.1 ... .5
+*.log.[0-9]*
 bot_ftmo.log
 
 # Python
