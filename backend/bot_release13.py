@@ -158,7 +158,7 @@ SECURITY_PIN = str(secrets.randbelow(900000) + 100000)
 # ==========================================
 # 🔐 CONFIGURATION DISTRIBUTION (LICENCE)
 # ==========================================
-VERSION_BOT = "15.15.0"
+VERSION_BOT = "15.16.0"
 # (#113) Ce que CET exe sait faire, annonce au dashboard dans chaque push d'etat. Le dashboard
 # n'affiche une fonction que si le bot la declare : sans ca, un client sur un exe plus ancien
 # verrait un bouton que son bot ignore -- ou pire, auquel il repond autre chose sans le dire

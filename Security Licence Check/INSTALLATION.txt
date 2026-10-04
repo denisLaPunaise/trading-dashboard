@@ -3,7 +3,7 @@
 ===============================================================
 
 Ce dossier contient :
-  - Kairos_V15.15.0.exe   -> le programme
+  - Kairos_V15.16.0.exe   -> le programme
   - settings.json        -> ta configuration (déjà pré-remplie avec ta clé)
   - INSTALLATION.txt     -> ce guide
 
@@ -196,7 +196,7 @@ choix (ex: C:\Kairos). Les 3 fichiers doivent rester ENSEMBLE dans
 le même dossier — ne lance pas l'exe directement depuis le ZIP.
 
 1. Assure-toi que MetaTrader 5 est ouvert et connecté à ton compte.
-2. Double-clique sur Kairos_V15.15.0.exe.
+2. Double-clique sur Kairos_V15.16.0.exe.
 
 3. ⚠️ WINDOWS VA AFFICHER UN AVERTISSEMENT — C'EST NORMAL.
    Un écran bleu "Windows a protégé votre ordinateur" apparaît, avec
@@ -303,7 +303,23 @@ celui que tu as deja configure : tu ecraserais tes identifiants
 Telegram et le bot repartirait sur l'ecran de premiere connexion.
 
 ---------------------------------------------------------------
+BON A SAVOIR
+---------------------------------------------------------------
+- L'HEURE affichee par le bot (messages Telegram, dashboard) et le
+  debut de chaque journee dans les statistiques sont ceux de TON
+  TELEPHONE, meme si le bot tourne sur un VPS regle sur une autre
+  heure. Le bot l'apprend a la premiere ouverture des statistiques
+  ou de l'historique du dashboard.
+- Le drawdown journalier, lui, suit la journee du broker (minuit
+  du serveur MetaTrader : 23h en France l'ete, 22h l'hiver).
+
+---------------------------------------------------------------
 BESOIN D'AIDE ?
 ---------------------------------------------------------------
 Contacte l'administrateur avec ta clé de licence (visible dans
 settings.json, champ "USER_LICENSE_KEY") si tu rencontres un souci.
+
+Si un trade n'a pas ete pris ou s'est comporte bizarrement, tape
+/journaux dans ta conversation Telegram avec le bot : il t'envoie
+ses journaux. Transfere-les tels quels a l'administrateur, ils
+permettent de voir ce que le bot a recu et ce qu'il en a fait.

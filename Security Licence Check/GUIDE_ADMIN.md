@@ -69,7 +69,7 @@ illimité).
 
 Le bot répond avec un récap (clé, pack, version) **et envoie automatiquement un fichier
 ZIP** `Kairos_Prenom.zip` dans le canal, contenant :
-- `Kairos_V15.15.0.exe`
+- `Kairos_V15.16.0.exe`
 - `settings.json` **déjà pré-rempli** (clé de licence + identifiants Firebase générés)
 - `INSTALLATION.txt` (guide pas-à-pas pour le client)
 
@@ -210,6 +210,23 @@ côté client : 1 message toutes les 15 minutes.
 changer le statut, changer le statut sans répondre, ou faire les deux dans l'ordre que tu
 veux.
 
+### Enquêter sur un signal (« le bot n'a pas pris ce trade »)
+
+Demande au client de taper **`/journaux`** dans sa conversation Telegram avec son bot : il
+reçoit ses journaux en fichiers et te les transfère tels quels (depuis la V15.16.0).
+
+- `journal_canaux.log` — **tous les canaux**, dans l'ordre chronologique. Chaque message
+  reçu y est suivi de ce que le bot en a fait (ordre posé, partiel, BE, annulation et son
+  motif, clôture), ou de la raison pour laquelle il n'a rien fait (pas un signal, mot exclu,
+  doublon, spread, drawdown, symbole introuvable…). Un signal **absent** de ce fichier n'est
+  jamais arrivé au bot. Cherche l'étiquette du canal : `[MDT_VIP]`, `[SABR_VIP]`, `[INDODOG]`…
+- `signaux_non_compris.log` — les réponses du canal à un signal que le bot n'a pas su
+  interpréter.
+- `debug_mdt.log` — l'ancien journal, MDT seulement, s'il existe encore chez le client.
+
+Le journal tourne sur 5 fichiers de 5 Mo : `/journaux` envoie le courant et le précédent.
+Ils ne contiennent aucun secret (texte des canaux et numéros de tickets uniquement).
+
 ---
 
 ## Récapitulatif express (pense-bête)
@@ -223,4 +240,5 @@ Erreur de ban   →  /unban Clé
 Prolonger       →  /time Clé 30
 Nouveau pack    →  /channels Clé profil|canaux
 Ticket support  →  /message  →  /vu ou /corrige  →  /rep si besoin
+Trade manqué    →  le client tape /journaux  →  il te transfère journal_canaux.log
 ```

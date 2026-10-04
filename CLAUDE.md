@@ -443,3 +443,51 @@ GitHub transforme `#74` nu en lien vers l'issue #74, donc vers un sujet sans rap
     l'historique des trades et les stats marquaient une période « déjà demandée » **avant**
     l'envoi, si bien qu'un échec réseau la bloquait jusqu'au rechargement complet de la page ;
     et l'écriture de la version minimale dans Google Sheets échouait en silence.
+- **V15.16.0** — les six issues #70 à #75 (marqueurs `#107` à `#113`), sur un fond commun :
+  **l'heure**.
+  - **Le CSV des trades avait 2 h d'avance.** `log_trade_detail()` écrit
+    `fromtimestamp(heure serveur MT5) - 1 h`, et l'historique comme les stats comparaient ces
+    heures à des minuits de la machine. Quel que soit le fuseau de la machine, l'écart vaut
+    (décalage du serveur − 1) h, soit 2 h l'été : un trade fermé à 22h30 tombait dans la
+    journée du lendemain. Le format du CSV est gardé (il sert à Excel) et relu en **instants
+    réels** par `epoch_csv()`, qui refait le calcul à l'envers ; ne pas toucher à l'un sans
+    l'autre. Vérifié en relisant le CSV écrit par la vraie fonction sous cinq fuseaux de
+    machine (UTC, Paris, GMT+1, New York, Tokyo).
+  - **Heure du serveur mesurée**, plus supposée : `mesurer_decalage_serveur()` lit un tick qui
+    a **avancé** depuis la lecture précédente (un tick de week-end est figé) et n'accepte
+    qu'une heure ronde à 10 min près. Sinon : la mesure précédente, ou `BROKER_TIME_OFFSET`.
+    Ce dernier reste la référence de la **journée du drawdown**, volontairement inchangée.
+  - **Requêtes d'historique MT5 en entiers, en heure serveur** (`bornes_serveur()`). Un
+    datetime naïf était converti avec le fuseau de la machine : la fenêtre glissait de
+    l'écart du serveur, et les trades des 2-3 dernières heures sortaient des stats Global. MT5
+    inclut ses deux bornes, les nôtres excluent la fin : d'où le `- 1`.
+  - **Les minuits sont ceux du téléphone.** Le dashboard joint `tz_min` à chaque demande, le bot
+    le retient (`fuseau_client.json`) et s'en sert aussi pour l'heure de ses messages Telegram ;
+    tant qu'il ne l'a jamais reçu, l'ancien calcul est gardé à l'identique. Une seule règle de
+    période, `bornes_periode()`, pour les stats ET l'historique : `Jour` = depuis minuit, `1S`
+    et « Cette Semaine » = depuis lundi, un chiffre = N journées entières aujourd'hui compris.
+    Libellés : « 24h » → « Jour », « 48h » → « 2j », « 1 Sem » → « 1S », « 1 Mois » → « 1M ».
+    « Aujourd'hui » (Jour & Semaine) garde la journée du broker, comme le drawdown.
+  - **Plage personnalisée** (Par Canal et Global, `stats_plage`) : une seule clé Firestore qui
+    recopie ses dates, jamais une par plage (document limité à 1 Mo). La courbe d'une plage
+    passée s'arrête à la balance de son dernier jour. L'historique repris (seed) n'est compté
+    que si la plage couvre toute sa période ; sa fin n'étant pas notée, c'est le premier jour du
+    CSV, et un seed écarté alors qu'il est chevauché est **dit** à l'écran.
+  - **Filtre par canal de l'historique** fait par le bot, **avant** la limite de 100 lignes :
+    filtré à l'écran, un canal peu actif paraissait vide sur « Max ».
+  - **Échelle de TP INDODOG / FTS réglable**, un % par palier (le dernier se répète, le dernier
+    TP ferme le reste). Défauts identiques à l'ancien code, vérifié sur 10 800 cas. Figée à la
+    pose de chaque signal (`INDO_ECHELLE_BY_SIGNAL`). Garde-fou calé sur 5 TP : sur 8, même
+    l'échelle par défaut déclenchait l'alerte — trouvé par la simulation.
+  - **Journal de tous les canaux** (`journal_canaux.log`, ex-`debug_mdt.log`) : chaque message
+    reçu est suivi de l'action du bot ou de la raison de son absence. Rotation 5 × 5 Mo,
+    `/journaux` pour l'envoyer au support. Les éditions n'avaient pas le filtre de salon
+    INDODOG : une édition dans la discussion pouvait réécrire SL/TP (`_hors_sujet_indodog()`).
+  - **Le bot annonce sa version et ses fonctions** (`FONCTIONS_BOT`, `#113`) : le dashboard
+    masque ce qu'un exe antérieur ne sait pas faire. Une période inconnue ne retombe plus en
+    silence sur 30 jours. `/canal_stats 30` n'était jamais atteint (égalité stricte).
+  - Vérification : quatre simulations sur les vraies fonctions extraites du source, un script
+    qui compare les clés écrites par `save_settings()` et relues par `load_settings()` (39/39),
+    et le **vrai dashboard piloté dans Chromium** avec un faux Firebase (alias Vite sur
+    `./firebase`, `firebase/firestore`, `firebase/auth`, `@twa-dev/sdk`) — de quoi voir chaque
+    écran et le repli pour un exe ancien sans toucher à la production.
