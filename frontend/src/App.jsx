@@ -2083,6 +2083,11 @@ const { account, daily_stats, settings: settingsFromBot, active_trades } = dashb
             // (tous comptes MT5 confondus). "Max" tient lieu de cumul depuis toujours, donc le
             // sélecteur est toujours affiché -- il n'y a plus de mode dégradé sans période.
             const channelData = historicalStats?.channels_period || {};
+            // (#112) Filtré AVANT de choisir entre cartes et message vide : quand tous les canaux
+            // ayant tradé sont hors du pack, on affichait une zone blanche au lieu du message.
+            const canauxVisibles = Object.entries(channelData)
+              .filter(([name]) => isChannelVisible(name)) // (#7) pack du client
+              .sort((a, b) => (b[1].profit ?? 0) - (a[1].profit ?? 0)); // Tri par profit décroissant
             return (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
 
@@ -2113,20 +2118,6 @@ const { account, daily_stats, settings: settingsFromBot, active_trades } = dashb
                 ))}
               </div>
 
-              {/* (#98/#99) Ajout manuel : trades ratés pendant une coupure, résultats
-                  rattrapés à la main. Piloté par AJOUT_MANUEL_STATS dans settings.json, et non
-                  par DISPLAY_MODE -- la console épurée et cette fonction n'ont rien à voir.
-                  Masquage d'affichage seulement, le refus qui compte est côté bot. */}
-              {settings.ajout_manuel === true && (
-                <button
-                  onClick={() => { setAjoutForm(nouveauFormAjout()); setAjoutOuvert(true); }}
-                  style={{ background: 'transparent', border: '1px dashed #444', color: '#888',
-                           borderRadius: '10px', padding: '10px', cursor: 'pointer',
-                           fontSize: '0.8rem', fontWeight: 'bold', width: '100%' }}>
-                  ✍️ Ajouter un résultat à la main
-                </button>
-              )}
-
               {isLoadingStats && (
                 <div style={{ textAlign: 'center', padding: '12px', color: '#00e676', fontSize: '0.82rem', background: 'rgba(0,230,118,0.05)', borderRadius: '8px', border: '1px solid rgba(0,230,118,0.2)' }}>
                   ⏳ Calcul en cours...
@@ -2136,11 +2127,8 @@ const { account, daily_stats, settings: settingsFromBot, active_trades } = dashb
               {/* (#stats) Pendant un recalcul on n'affiche AUCUNE carte : la valeur encore
                   presente dans Firestore peut dater d'une version anterieure du bot, et la
                   laisser visible quelques secondes revient a afficher des chiffres faux. */}
-              {isLoadingStats ? null : Object.keys(channelData).length > 0 ? (
-                Object.entries(channelData)
-                .filter(([name]) => isChannelVisible(name)) // (#7) pack du client
-                .sort((a, b) => (b[1].profit ?? 0) - (a[1].profit ?? 0)) // Tri par profit décroissant
-                .map(([name, data]) => {
+              {isLoadingStats ? null : canauxVisibles.length > 0 ? (
+                canauxVisibles.map(([name, data]) => {
                   // (#stats) Moyenne simple pips/trade, calculée côté bot. Fallback sur le même
                   // calcul local pour un exe client pas encore à jour (champ absent).
                   const avgPips = (data.avg_pips !== undefined && data.avg_pips !== null)
@@ -2196,6 +2184,22 @@ const { account, daily_stats, settings: settingsFromBot, active_trades } = dashb
                 <div style={{ textAlign: 'center', color: '#666', padding: '40px', background: '#1e1e1e', borderRadius: '12px' }}>
                   Aucun trade sur cette période.
                 </div>
+              )}
+
+              {/* (#98/#99) Ajout manuel : trades ratés pendant une coupure, résultats
+                  rattrapés à la main. Piloté par AJOUT_MANUEL_STATS dans settings.json, et non
+                  par DISPLAY_MODE -- la console épurée et cette fonction n'ont rien à voir.
+                  Masquage d'affichage seulement, le refus qui compte est côté bot.
+                  (#112) Sous la liste plutôt qu'entre la période et les résultats : on s'en sert
+                  rarement. Laissé visible pendant un calcul, l'ajout n'en dépend pas. */}
+              {settings.ajout_manuel === true && (
+                <button
+                  onClick={() => { setAjoutForm(nouveauFormAjout()); setAjoutOuvert(true); }}
+                  style={{ background: 'transparent', border: '1px dashed #444', color: '#888',
+                           borderRadius: '10px', padding: '10px', cursor: 'pointer',
+                           fontSize: '0.8rem', fontWeight: 'bold', width: '100%' }}>
+                  ✍️ Ajouter un résultat à la main
+                </button>
               )}
             </div>
             );
