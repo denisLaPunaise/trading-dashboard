@@ -168,6 +168,7 @@ VERSION_BOT = "15.15.0"
 FONCTIONS_BOT = [
     "periodes_v2",   # (#108) periodes au minuit du client ; "week" accepte par l'historique
     "plage_perso",   # (#107) request_stats days="custom" + debut/fin -> cle stats_plage
+    "historique_canal",  # (#109) request_history + canal -> cle trades_history_filtre
 ]
 # (URL_LICENCE retire — licence verifiee via Firestore, Phase 4)
 
@@ -577,6 +578,10 @@ MANUAL_STATS_FILE = "stats_manuel.json"
 STATS_RESET_FILE = "stats_reset.json"
 # (#108) Fuseau horaire du client, appris du dashboard (cf. noter_fuseau_client).
 FUSEAU_FILENAME = "fuseau_client.json"
+# (#109) Dernier historique filtre par canal demande par le dashboard ({period, canal, t}) :
+# la boucle de stats le rafraichit comme elle rafraichit "Jour", tant qu'il a moins d'une heure.
+# Un dict modifie sur place, jamais reaffecte : pas de `global` a oublier.
+DERNIER_HISTORIQUE_FILTRE = {}
 
 BLACKLIST_WORDS = [
     "FERMEZ", "CLOSE", "MOITIÉ", "DÉPLACEZ", "BREAKEVEN", "RESULTAT", "ANNULEZ",
@@ -2329,7 +2334,7 @@ def bornes_serveur(bornes):
     return debut_srv, fin_srv
 
 
-def get_trades_history(bornes, max_rows=100):
+def get_trades_history(bornes, max_rows=100, canal=None):
     """(#74) Liste des trades clôturés sur la période, du plus récent au plus ancien.
 
     Lue depuis trades_detailed.csv et non depuis l'historique MT5 : c'est la seule source qui
@@ -2342,6 +2347,10 @@ def get_trades_history(bornes, max_rows=100):
 
     Plafonné à max_rows : au-delà le document Firestore gonflerait sans que personne ne fasse
     défiler autant de lignes.
+
+    (#109) `canal` (libellé des stats, ex. "CANAL SABR VIP") filtre AVANT le plafond : filtrer
+    à l'écran ne chercherait que parmi les 100 trades les plus récents tous canaux confondus,
+    et un canal peu actif paraîtrait vide sur « 1M » ou « Max ».
     """
     out = []
     if not os.path.exists(DETAILED_HISTORY_FILE):
@@ -2357,6 +2366,8 @@ def get_trades_history(bornes, max_rows=100):
                 if src == "MANUEL/INCONNU":
                     src = "CANAL PERSO"
                 if not channel_allowed(src):
+                    continue
+                if canal and src != canal:  # (#109) même rattachement que les stats par canal
                     continue
                 def _f(key):
                     try: return float(row.get(key) or 0)
@@ -8453,6 +8464,21 @@ async def handle_firebase_command(cmd_id: str, cmd_data: dict) -> None:
                 logger.warning(f"⚠️ request_history : période inconnue {period!r}")
                 set_status("error", {"success": False, "message": f"Période inconnue : {period}"})
                 return
+            canal = str(payload.get("canal") or "").strip()
+            if canal:
+                # (#109) Historique d'un seul canal. Une seule clé pour tous les filtres, qui
+                # recopie période et canal : une clé par combinaison (6 périodes x 9 canaux,
+                # 100 lignes chacune) approcherait la limite de 1 Mo du document Firestore.
+                if canal not in STATS_CHANNELS:
+                    set_status("error", {"success": False, "message": f"Canal inconnu : {canal}"})
+                    return
+                hist = await run_bg(get_trades_history, bornes, canal=canal)
+                DERNIER_HISTORIQUE_FILTRE.update({"period": period, "canal": canal, "t": time.time()})
+                if firebase_sync._firebase_initialized:
+                    await firebase_sync.push_state(user_id, {"trades_history_filtre": firebase_sync._safe(
+                        {"period": period, "canal": canal, "trades": hist})})
+                set_status("done", {"success": True})
+                return
             hist = await run_bg(get_trades_history, bornes)
             if firebase_sync._firebase_initialized:
                 await firebase_sync.push_state(user_id, {
@@ -8497,14 +8523,23 @@ async def _firebase_push_stats_loop(user_id: str) -> None:
                 # quelque chose à afficher dès l'ouverture du dashboard, sans attendre l'aller-
                 # retour request_stats. Les autres périodes restent à la demande.
                 chan_30 = await run_bg(get_channel_stats_period, b30)
-                await firebase_sync.push_state(user_id, {
+                envoi = {
                     "global_period_30": firebase_sync._safe(stats_30d),
                     "channels_period_30": firebase_sync._safe(
                         {c: v for c, v in chan_30.items() if channel_allowed(c)}),
                     "equity_curve_30": firebase_sync._safe(await get_equity_curve(b30)),
                     "trades_history_1": firebase_sync._safe(
                         await run_bg(get_trades_history, bornes_periode("1"))),
-                })
+                }
+                # (#109) L'historique filtré qu'on regarde se met à jour comme « Jour ».
+                f = dict(DERNIER_HISTORIQUE_FILTRE)
+                if f and time.time() - f.get("t", 0) < 3600:
+                    bf = bornes_periode(f["period"])
+                    if bf is not None:
+                        envoi["trades_history_filtre"] = firebase_sync._safe({
+                            "period": f["period"], "canal": f["canal"],
+                            "trades": await run_bg(get_trades_history, bf, canal=f["canal"])})
+                await firebase_sync.push_state(user_id, envoi)
         except asyncio.CancelledError:
             break
         except Exception as e:

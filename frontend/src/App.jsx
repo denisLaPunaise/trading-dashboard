@@ -259,6 +259,7 @@ function App() {
   const fonctionsBot = Array.isArray(dashboardData?.fonctions) ? dashboardData.fonctions : []
   const periodesV2 = fonctionsBot.includes('periodes_v2')
   const plagePerso = fonctionsBot.includes('plage_perso')   // (#107)
+  const historiqueCanal = fonctionsBot.includes('historique_canal')   // (#109)
   const [error, setError] = useState(null)
   const settingDebounce = useRef({}) // (#11) timers de debounce par clé de réglage
 
@@ -515,6 +516,11 @@ function App() {
   // 'week' dans l'historique (il n'y renvoyait que la journée), il reçoit donc '7'.
   const [historyPeriod, setHistoryPeriod] = useState('1');
   const idHistorique = historyPeriod === 'semaine' ? (periodesV2 ? 'week' : '7') : historyPeriod;
+  // (#109) Canal de l'historique, libellé des stats ("CANAL SABR VIP"). '' = tous, et c'est le
+  // défaut à chaque ouverture : un filtre retrouvé tel quel ferait croire à un historique vide.
+  const [historyCanal, setHistoryCanal] = useState('');
+  // Le bot filtre lui-même s'il sait le faire ; sinon on filtre à l'écran (cf. tradesHistory).
+  const canalDemande = historiqueCanal ? historyCanal : '';
   const requestedHistory = useRef(new Set());
   const [isLoadingStats, setIsLoadingStats] = useState(false);
   const requestedPeriods = useRef(new Set());
@@ -629,22 +635,27 @@ function App() {
   // d'une session précédente. requestedHistory dédoublonne par chargement de page.
   useEffect(() => {
     if (!isClosedTradesOpen || !userId) return;
-    if (requestedHistory.current.has(idHistorique)) return;
-    requestedHistory.current.add(idHistorique);
+    // (#109) Un historique filtré arrive sous UNE clé réécrite à chaque filtre : il est donc
+    // redemandé à chaque changement, la déduplication ne vaut que pour « Tous ».
+    if (!canalDemande) {
+      if (requestedHistory.current.has(idHistorique)) return;
+      requestedHistory.current.add(idHistorique);
+    }
     (async () => {
       try {
         await addDoc(collection(db, 'users', userId, 'commands'), {
-          type: 'request_history', payload: { period: idHistorique, ...fuseauTelephone() },
+          type: 'request_history',
+          payload: { period: idHistorique, ...(canalDemande ? { canal: canalDemande } : {}), ...fuseauTelephone() },
           status: 'pending', created_at: serverTimestamp(), expire_at: commandExpiry(),
         });
       } catch {
         // (#106) Même piège que les stats : marquée « demandée » avant l'envoi, la période
         // restait bloquée après un échec. Un `cancelled` avait été déclaré pour ce cas mais
         // jamais relu -- c'est lui que signalait le linter.
-        requestedHistory.current.delete(idHistorique);
+        if (!canalDemande) requestedHistory.current.delete(idHistorique);
       }
     })();
-  }, [isClosedTradesOpen, idHistorique, userId]);
+  }, [isClosedTradesOpen, idHistorique, canalDemande, userId]);
 
   // Authentification Firebase + abonnement temps réel Firestore
   useEffect(() => {
@@ -1029,7 +1040,17 @@ const { account, daily_stats, settings: settingsFromBot, active_trades } = dashb
     : settingsFromBot
   // (#74) Historique des trades sur la période choisie, poussé par le bot en réponse à
   // request_history. Remplace l'ancien `closed_trades`, qui ne couvrait que la journée en cours.
-  const tradesHistory = dashboardData[`trades_history_${idHistorique}`] || []
+  const historiqueTous = dashboardData[`trades_history_${idHistorique}`] || []
+  // (#109) Filtré par le bot : on n'affiche la réponse que si elle recopie bien la période et le
+  // canal demandés. Exe antérieur : filtre à l'écran sur les 100 derniers trades tous canaux,
+  // exact sur les courtes périodes, incomplet au-delà -- c'est signalé sous la liste.
+  const recuFiltre = dashboardData.trades_history_filtre
+  const filtreOk = !!(canalDemande && recuFiltre && recuFiltre.period === idHistorique && recuFiltre.canal === canalDemande)
+  const tradesHistory = !historyCanal ? historiqueTous
+    : canalDemande ? (filtreOk ? (recuFiltre.trades || []) : [])
+    : historiqueTous.filter((t) => `CANAL ${t.source}` === historyCanal)
+  const historiqueEnAttente = !!canalDemande && !filtreOk
+  const filtreIncomplet = !!historyCanal && !canalDemande && historiqueTous.length >= 100
 
   // (#107) Bouton « 📅 Personnalisé » et son panneau, sous les périodes de Par Canal et de
   // Global. Masqué tant que l'exe n'annonce pas la fonction : un exe antérieur répondait à une
@@ -1598,7 +1619,41 @@ const { account, daily_stats, settings: settingsFromBot, active_trades } = dashb
               ))}
             </div>
 
-            {tradesHistory.length === 0 ? (
+            {/* (#109) Filtre par canal, « Tous » par défaut. Les libellés sont ceux des stats
+                par canal (SABR regroupé en VIP / FREE), pour que les deux écrans parlent la même
+                langue et se recoupent : même canal, même période, mêmes trades. */}
+            <select value={historyCanal} onChange={(e) => { triggerHaptic('light'); setHistoryCanal(e.target.value); }}
+              aria-label="Canal"
+              style={{ width: '100%', background: '#1e1e1e', color: historyCanal ? '#00e676' : '#aaa',
+                       border: `1px solid ${historyCanal ? '#00e676' : '#333'}`, borderRadius: '8px',
+                       padding: '8px 10px', fontSize: '0.8rem', fontWeight: 'bold', colorScheme: 'dark', cursor: 'pointer' }}>
+              <option value="">Tous les canaux</option>
+              {(settings.stats_channels || []).filter(isChannelVisible).map((c) => (
+                <option key={c} value={c}>{c.replace('CANAL ', '').replace('_', ' ')}</option>
+              ))}
+            </select>
+
+            {/* (#109) Total du canal filtré : se recoupe avec sa carte dans Par Canal sur la même
+                période (en « ordres » : une zone SABR = 1 trade là-bas, 3 lignes ici). */}
+            {historyCanal && tradesHistory.length > 0 && (() => {
+              const total = tradesHistory.reduce((a, t) => a + (t.profit ?? 0), 0);
+              const pips = tradesHistory.reduce((a, t) => a + (t.pips ?? 0), 0);
+              return (
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.75rem',
+                              color: '#888', padding: '2px 4px' }}>
+                  <span>{tradesHistory.length} trade{tradesHistory.length > 1 ? 's' : ''}{tradesHistory.length >= 100 ? ' (les 100 derniers)' : ''}</span>
+                  <span style={{ fontWeight: 'bold', color: total >= 0 ? '#00e676' : '#ff4444' }}>
+                    {total > 0 ? '+' : ''}{total.toFixed(2)} € · {pips > 0 ? '+' : ''}{pips.toFixed(1)} pips
+                  </span>
+                </div>
+              );
+            })()}
+
+            {historiqueEnAttente ? (
+              <div style={{ textAlign: 'center', padding: '20px', color: '#00e676', background: '#1a1a1a', borderRadius: '10px', fontSize: '0.85rem' }}>
+                ⏳ Chargement...
+              </div>
+            ) : tradesHistory.length === 0 ? (
               <div style={{ textAlign: 'center', padding: '20px', color: '#555', background: '#1a1a1a', borderRadius: '10px', fontSize: '0.9rem' }}>
                 Aucun trade cloture sur cette periode.
               </div>
@@ -1639,6 +1694,14 @@ const { account, daily_stats, settings: settingsFromBot, active_trades } = dashb
                     </div>
                   </div>
                 ))}
+              </div>
+            )}
+
+            {/* (#109) Exe antérieur : il renvoie les 100 derniers trades TOUS canaux, filtrés ici.
+                Si la liste a été coupée, des trades plus anciens du canal peuvent manquer. */}
+            {filtreIncomplet && (
+              <div style={{ fontSize: '0.7rem', color: '#777', textAlign: 'center', padding: '0 6px' }}>
+                Filtre limité aux 100 derniers trades tous canaux confondus : mets ton bot à jour pour voir tout l'historique de ce canal.
               </div>
             )}
           </div>
