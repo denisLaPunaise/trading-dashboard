@@ -107,6 +107,78 @@ const NumField = ({ value, step, onCommit, signed = false, width = '70px', min, 
   );
 };
 
+// (#110) Échelle de TP d'un canal à paliers (INDODOG, FTS) : un % de la position INITIALE par
+// palier, le dernier vaut pour les paliers suivants, et le DERNIER TP du signal ferme toujours le
+// reste. Mêmes règles que lire_echelle() / decrire_echelle() côté bot.
+// La virgule SÉPARE les paliers : c'est la seule touche de séparation du pavé numérique d'un
+// téléphone en français. L'aperçu montre aussitôt l'échelle comprise, une saisie ambiguë
+// (« 12,5 ») se voit donc avant d'être envoyée.
+const lireEchelle = (txt) => {
+  const parts = String(txt ?? '').split(/[\s,;/]+/).filter(Boolean);
+  if (!parts.length || parts.length > 8) return null;
+  const vals = parts.map((x) => Math.round(parseFloat(x.replace('%', '')) * 10) / 10);
+  return vals.every((v) => Number.isFinite(v) && v > 0 && v <= 100) ? vals : null;
+};
+const pctPalier = (ech, i) => ech[Math.min(i, ech.length) - 1];
+const fmtPct = (p) => `${String(Math.round(p * 10) / 10).replace('.', ',')} %`;
+const decrireEchelle = (ech, nTp) => {
+  let cumul = 0;
+  const parts = [];
+  for (let i = 1; i < nTp; i++) {
+    const p = Math.min(pctPalier(ech, i), Math.max(0, 100 - cumul));
+    cumul += p;
+    parts.push(fmtPct(p));
+  }
+  parts.push(`reste ${fmtPct(Math.max(0, 100 - cumul))}`);
+  return parts.join(' · ');
+};
+// Premier palier où TOUT est déjà fermé sur un signal à 5 TP (le maximum d'INDODOG), ou null.
+const paliersEpuises = (ech) => {
+  let cumul = 0;
+  for (let i = 1; i < 5; i++) { cumul += pctPalier(ech, i); if (cumul >= 99.9) return i; }
+  return null;
+};
+const EchelleField = ({ label, value, onCommit }) => {
+  const actuelle = Array.isArray(value) && value.length ? value : null;
+  const [draft, setDraft] = useState(null);
+  const texte = draft !== null ? draft : (actuelle ? actuelle.join(', ') : '');
+  const lue = lireEchelle(texte);
+  const valider = () => {
+    if (draft === null) return;
+    const v = lireEchelle(draft);
+    if (v && JSON.stringify(v) !== JSON.stringify(actuelle)) onCommit(v);
+    setDraft(null);   // saisie invalide : on revient à l'échelle en place
+  };
+  const apercu = lue || actuelle;
+  const epuise = apercu ? paliersEpuises(apercu) : null;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px' }}>
+        <span style={{ fontSize: '0.85rem' }}>{label}</span>
+        <input
+          type="text" inputMode="decimal" value={texte} placeholder="10, 20" aria-label={label}
+          onChange={(e) => setDraft(e.target.value)}
+          onFocus={(e) => e.target.select()}
+          onBlur={valider}
+          onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+          style={{ background: '#121212', border: `1px solid ${draft !== null && !lue ? '#ff4444' : '#444'}`,
+                   color: '#fff', padding: '5px 8px', width: '110px', borderRadius: '4px', textAlign: 'center' }}
+        />
+      </div>
+      {draft !== null && !lue ? (
+        <div style={{ fontSize: '0.7rem', color: '#ff4444' }}>Un % par TP, de 1 à 100, ex. « 10, 20 ».</div>
+      ) : apercu && (
+        <div style={{ fontSize: '0.7rem', color: '#888', lineHeight: 1.5 }}>
+          3 TP : {decrireEchelle(apercu, 3)}<br />5 TP : {decrireEchelle(apercu, 5)}
+          {epuise && (
+            <div style={{ color: '#ffc107' }}>⚠️ Tout est fermé dès le TP{epuise} : les TP suivants ne servent plus.</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
 // --- COMPOSANT ODOMÈTRE (ÉTAPE 5) ---
 const AnimatedNumber = ({ value, duration = 800, prefix = '' }) => {
   const [displayValue, setDisplayValue] = useState(value);
@@ -260,6 +332,7 @@ function App() {
   const periodesV2 = fonctionsBot.includes('periodes_v2')
   const plagePerso = fonctionsBot.includes('plage_perso')   // (#107)
   const historiqueCanal = fonctionsBot.includes('historique_canal')   // (#109)
+  const echelleTp = fonctionsBot.includes('echelle_tp')   // (#110)
   const [error, setError] = useState(null)
   const settingDebounce = useRef({}) // (#11) timers de debounce par clé de réglage
 
@@ -1769,10 +1842,10 @@ const { account, daily_stats, settings: settingsFromBot, active_trades } = dashb
                 { label: 'Lots SABR VIP (lot)', key: 'sabr_lot_vip', channel: 'CANAL SABR_VIP', step: '0.01' },
                 { label: 'Lots SABR Free (lot)', key: 'sabr_lot_free', channel: 'CANAL SABR_FREE', step: '0.01' },
                 { label: 'Risque SABR autres (%)', key: 'risk_sabr_other', step: '0.1', mult: 100, fallback: 0.006 },
-                // (#84) INDODOG : lot fixe, comme SABR. L'echelle de TP (10 % puis 20 %, cf. INDO_TP1_PCT) se
-                // calcule sur ce volume initial.
+                // (#84) INDODOG : lot fixe, comme SABR. L'echelle de TP (cf. la carte « Échelle
+                // de TP » ci-dessous, #110) se calcule sur ce volume initial.
                 { label: 'Lot INDODOG (lot)', key: 'lot_indodog', channel: 'CANAL INDODOG', step: '0.01', fallback: 0.10 },
-                // (#90) FTS : meme moteur qu'INDODOG, echelle uniforme de 20 % par palier.
+                // (#90) FTS : meme moteur qu'INDODOG.
                 { label: 'Lot FTS (lot)', key: 'lot_fts', channel: 'CANAL FTS', step: '0.01', fallback: 0.10 }
               ].filter((item) => !item.channel || isChannelVisible(item.channel)).map((item) => {
                 const raw = settings[item.key] ?? item.fallback ?? 0;
@@ -1787,6 +1860,27 @@ const { account, daily_stats, settings: settingsFromBot, active_trades } = dashb
                   </div>
                 );
               })}
+
+              {/* (#110) Échelle de TP des canaux à paliers. Pleine largeur : l'aperçu sur 3 et 5 TP
+                  est ce qui rend le réglage lisible, le nombre de TP variant d'un signal à
+                  l'autre. Masquée tant que l'exe n'annonce pas la fonction -- un exe antérieur
+                  accepterait la commande sans rien en faire. */}
+              {echelleTp && (isChannelVisible('CANAL INDODOG') || isChannelVisible('CANAL FTS')) && (
+                <div style={{ gridColumn: '1 / -1', background: '#2a2a2a', padding: '10px', borderRadius: '8px',
+                              display: 'flex', flexDirection: 'column', gap: '12px', textAlign: 'left' }}>
+                  <div style={{ fontSize: '0.75rem', color: '#aaa' }}>
+                    🪜 <strong>Échelle de TP</strong> — % de la position fermé à chaque TP. Le dernier
+                    chiffre vaut pour les TP suivants ; le dernier TP du signal ferme toujours le reste.
+                    Un signal déjà posé garde son échelle.
+                  </div>
+                  {[['CANAL INDODOG', 'INDODOG', 'echelle_indodog'], ['CANAL FTS', 'FTS', 'echelle_fts']]
+                    .filter(([canal]) => isChannelVisible(canal))
+                    .map(([, nom, cle]) => (
+                      <EchelleField key={cle} label={nom} value={settings[cle]}
+                        onCommit={(v) => updateSetting(cle, v, { debounce: false })} />
+                    ))}
+                </div>
+              )}
 
               {/* (#pips/#102) Zone SABR : quelles bornes on prend, et comment le lot s'y
                   répartit. Les deux réglages vivent dans la même carte parce qu'ils se
