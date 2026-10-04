@@ -92,8 +92,9 @@ et on ne réutilise jamais.
 | #73 | % de TP INDODOG / FTS réglables | `(#110)` |
 | #74 | Journal de tous les canaux | `(#111)` |
 | #75 | Bouton d'ajout manuel sous la liste des canaux | `(#112)` |
+| — | Le bot annonce sa version et ses fonctions au dashboard (prérequis de #70, #72, #73) | `(#113)` |
 
-Le prochain marqueur libre est donc **`(#113)`**, et non le plus grand trouvé dans le code :
+Le prochain marqueur libre est donc **`(#114)`**, et non le plus grand trouvé dans le code :
 une réservation n'apparaît dans le code qu'une fois le sujet traité. Toute nouvelle issue
 réserve le sien et met ce tableau à jour.
 

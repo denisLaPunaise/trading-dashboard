@@ -159,6 +159,15 @@ SECURITY_PIN = str(secrets.randbelow(900000) + 100000)
 # 🔐 CONFIGURATION DISTRIBUTION (LICENCE)
 # ==========================================
 VERSION_BOT = "15.15.0"
+# (#113) Ce que CET exe sait faire, annonce au dashboard dans chaque push d'etat. Le dashboard
+# n'affiche une fonction que si le bot la declare : sans ca, un client sur un exe plus ancien
+# verrait un bouton que son bot ignore -- ou pire, auquel il repond autre chose sans le dire
+# (une periode inconnue retombait en silence sur 30 jours). Une liste plutot qu'une
+# comparaison de versions : elle survit a la fusion de deux lignes de developpement, comme
+# celle de la V15.13.0 et de la V15.14.0. Un nom publie ne se retire ni ne change de sens.
+FONCTIONS_BOT = [
+    "periodes_v2",   # (#108) periodes au minuit du client ; "week" accepte par l'historique
+]
 # (URL_LICENCE retire — licence verifiee via Firestore, Phase 4)
 
 # ==========================================
@@ -399,6 +408,14 @@ MARKET_CLOSED_SYMBOLS = {}
 
 # --- Configuration Heure ---
 BROKER_TIME_OFFSET = 3
+# (#108) Ecart REEL heure serveur MT5 - UTC, en secondes, mesure sur les ticks (cf.
+# mesurer_decalage_serveur). None tant qu'aucune mesure fiable : on retombe alors sur
+# BROKER_TIME_OFFSET, qui reste par ailleurs la reference de la journee du drawdown.
+DECALAGE_SERVEUR_S = None
+_TICKS_DECALAGE = {}
+# (#108) Fuseau du CLIENT, donne par son telephone via le dashboard. tz_min = minutes d'avance
+# sur UTC (120 = Paris en ete). None tant que le dashboard ne l'a jamais envoye.
+FUSEAU_CLIENT = {"tz_min": None, "tz": ""}
 
 # --- Stratégie de Scaling (NOUVELLE STRATÉGIE) ---
 TP1_PIPS = 30
@@ -557,6 +574,8 @@ MANUAL_STATS_FILE = "stats_manuel.json"
 # ces deux-la. On memorise juste une date de coupure par canal, et les stats ignorent ce qui
 # est anterieur. Reversible : retirer la date fait tout revenir.
 STATS_RESET_FILE = "stats_reset.json"
+# (#108) Fuseau horaire du client, appris du dashboard (cf. noter_fuseau_client).
+FUSEAU_FILENAME = "fuseau_client.json"
 
 BLACKLIST_WORDS = [
     "FERMEZ", "CLOSE", "MOITIÉ", "DÉPLACEZ", "BREAKEVEN", "RESULTAT", "ANNULEZ",
@@ -2023,6 +2042,9 @@ def log_trade_detail(ticket, symbol, source, direction, open_time, close_time, d
     file_exists = os.path.isfile(DETAILED_HISTORY_FILE)
 
     # Conversion des timestamps en format lisible (Excel friendly) avec correction heure française
+    # (#108) Format conservé tel quel, il sert aussi à l'analyse dans Excel : la relecture en
+    # instant réel se fait dans epoch_csv(), qui refait ce calcul à l'envers. Ne pas le changer
+    # sans adapter epoch_csv -- toutes les périodes des stats et de l'historique en dépendent.
     ot_str = (datetime.fromtimestamp(open_time) - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
     ct_str = (datetime.fromtimestamp(close_time) - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
     
@@ -2057,29 +2079,234 @@ def log_trade_detail(ticket, symbol, source, direction, open_time, close_time, d
             logger.info(f"📝 Trade #{ticket} archivé dans {DETAILED_HISTORY_FILE}")
     except Exception as e: logger.error(f"⚠️ Erreur CSV Detailed: {e}")
 
-def history_cutoff(period):
-    """(#74) Début de période pour l'historique des trades, calé sur des JOURNÉES ENTIÈRES.
+# ==========================================
+# 🕐 HEURES ET PERIODES (#108)
+# ==========================================
+# Trois horloges se croisent ici, et les confondre decalait les periodes d'une a deux heures :
+#   - l'heure du SERVEUR MT5 : tous les horodatages MT5 (deal.time, position.time, tick.time)
+#     sont l'heure murale du serveur, codee comme si c'etait de l'UTC. Souvent GMT+2 l'hiver,
+#     GMT+3 l'ete ;
+#   - l'heure de la MACHINE du bot (PC ou VPS), celle de datetime.now() ;
+#   - l'heure du CLIENT, celle de son telephone : la seule qui ait un sens pour "aujourd'hui".
+# Avant, l'historique et les stats comparaient des heures du CSV (heure serveur vue par la
+# machine, moins 1 h) a des minuits de la machine. Quel que soit le fuseau de la machine, le
+# CSV avait donc (ecart du serveur - 1) h d'avance sur son horloge, soit 2 h l'ete : un trade
+# ferme a 22h30 tombait dans la journee du lendemain. Tout est desormais compare en INSTANTS
+# REELS (epoch UTC), et les minuits sont ceux du client.
+# trades_detailed.csv garde son format (cf. log_trade_detail) : on le relit en instants reels
+# plutot que de reecrire le fichier, qui sert aussi a l'analyse dans Excel.
 
-    "24h" ne veut pas dire "les 24 dernières heures" mais "aujourd'hui, de 00h00 à 23h59" ;
-    "48h" couvre toute la journée d'hier plus aujourd'hui. Un trade clôturé hier à 23h50 doit
-    apparaître en 48h même s'il date de plus de 48 heures au sens strict.
+def mesurer_decalage_serveur():
+    """(#108) Mesure l'ecart heure serveur MT5 - UTC sur un tick FRAIS. Bloquant (MT5).
+
+    Un tick ne donne l'heure du serveur que s'il vient d'arriver : le dernier tick EURUSD d'un
+    samedi date du vendredi soir. Une mesure n'est donc retenue que si le tick a AVANCE depuis
+    la lecture precedente, et si l'ecart tombe a dix minutes pres sur une heure ronde -- les
+    serveurs MT5 sont a l'heure pleine (GMT+2, GMT+3...), le reste est de la latence ou de la
+    derive d'horloge. Sinon on garde la mesure precedente, ou a defaut BROKER_TIME_OFFSET (cf.
+    decalage_serveur_s) : une horloge de PC fausse de plus de dix minutes ne produit jamais de
+    mesure, plutot qu'un fuseau farfelu. Le passage heure d'ete / heure d'hiver du serveur est
+    ainsi suivi tout seul, ce que le reglage fixe ne sait pas faire.
     """
-    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    if str(period) == "all":
-        return datetime(1970, 1, 1)
+    global DECALAGE_SERVEUR_S
+    for sym in ("BTCUSD", "BITCOIN", "ETHUSD", "XAUUSD", "EURUSD"):
+        try:
+            if not mt5.symbol_select(sym, True):
+                continue
+            tick = mt5.symbol_info_tick(sym)
+        except Exception:
+            continue
+        t_ms = getattr(tick, "time_msc", 0) if tick else 0
+        if not t_ms:
+            continue
+        precedent = _TICKS_DECALAGE.get(sym)
+        _TICKS_DECALAGE[sym] = t_ms
+        if precedent is None or t_ms == precedent:
+            continue  # premiere lecture, ou tick fige (marche ferme) : rien de sur a en tirer
+        brut = t_ms / 1000.0 - time.time()
+        arrondi = int(round(brut / 3600.0)) * 3600
+        if abs(brut - arrondi) > 600 or not (-12 * 3600 <= arrondi <= 14 * 3600):
+            continue
+        if arrondi != DECALAGE_SERVEUR_S:
+            logger.info(f"🕐 Heure du serveur MT5 : UTC{arrondi / 3600:+g} (mesuree sur {sym})")
+            DECALAGE_SERVEUR_S = arrondi
+        return DECALAGE_SERVEUR_S
+    return DECALAGE_SERVEUR_S
+
+
+def decalage_serveur_s():
+    """(#108) Ecart heure serveur - UTC en secondes : la derniere mesure, sinon le reglage."""
+    if DECALAGE_SERVEUR_S is not None:
+        return DECALAGE_SERVEUR_S
+    return int(BROKER_TIME_OFFSET * 3600)
+
+
+def epoch_mt5(ts_serveur):
+    """(#108) Horodatage MT5 (heure murale du serveur, codee en UTC) -> instant reel (epoch)."""
+    return float(ts_serveur) - decalage_serveur_s()
+
+
+def epoch_csv(texte):
+    """(#108) Heure ecrite dans trades_detailed.csv -> instant reel (epoch UTC), None si illisible.
+
+    log_trade_detail ecrit `datetime.fromtimestamp(t_serveur) - 1 h` : on refait le chemin a
+    l'envers -- mktime est l'inverse exact de fromtimestamp sur la meme machine -- puis on
+    retire l'ecart du serveur. Limite connue : l'ecart est celui d'AUJOURD'HUI, donc une ligne
+    ecrite dans l'autre saison (heure d'ete / d'hiver) est relue a une heure pres.
+    """
     try:
-        n_days = max(1, int(period))
+        dt = datetime.strptime(str(texte).strip(), "%Y-%m-%d %H:%M:%S")
+        return time.mktime((dt + timedelta(hours=1)).timetuple()) - decalage_serveur_s()
     except Exception:
-        n_days = 1
-    return today - timedelta(days=n_days - 1)
+        return None
 
 
-def get_trades_history(period="1", max_rows=100):
+def tz_client_min():
+    """(#108) Avance du client sur UTC, en minutes. A defaut, celle de la machine du bot."""
+    tz = FUSEAU_CLIENT.get("tz_min")
+    if isinstance(tz, int):
+        return tz
+    off = datetime.now().astimezone().utcoffset()
+    return int(off.total_seconds() // 60) if off is not None else 0
+
+
+def heure_client(ts_serveur, fmt="%H:%M"):
+    """(#108) Heure a AFFICHER pour un horodatage MT5, dans le fuseau du client.
+
+    Sans fuseau connu (dashboard jamais ouvert depuis l'installation), l'ancien calcul est
+    garde a l'identique : `fromtimestamp - 1 h`. Il est juste sur un VPS regle en UTC face a un
+    serveur en GMT+2/+3, decale partout ailleurs -- c'est ce que le fuseau du client corrige.
+    """
+    try:
+        tz = FUSEAU_CLIENT.get("tz_min")
+        if isinstance(tz, int):
+            return datetime.fromtimestamp(epoch_mt5(ts_serveur) + tz * 60,
+                                          timezone.utc).strftime(fmt)
+        return (datetime.fromtimestamp(ts_serveur) - timedelta(hours=1)).strftime(fmt)
+    except Exception:
+        return "--:--"
+
+
+def charger_fuseau_client():
+    """(#108) Relit le fuseau appris lors d'une session precedente."""
+    global FUSEAU_CLIENT
+    if not os.path.exists(FUSEAU_FILENAME):
+        return
+    try:
+        with open(FUSEAU_FILENAME, "r", encoding="utf-8") as f:
+            d = json.load(f) or {}
+        tz = d.get("tz_min")
+        if isinstance(tz, int) and -720 <= tz <= 840:
+            FUSEAU_CLIENT = {"tz_min": tz, "tz": str(d.get("tz") or "")[:64]}
+    except Exception as e:
+        logger.warning(f"⚠️ Lecture {FUSEAU_FILENAME} : {e}")
+
+
+def noter_fuseau_client(payload):
+    """(#108) Retient le fuseau que le dashboard joint a une demande de stats ou d'historique.
+
+    Renvoye a chaque demande : le passage a l'heure d'ete ou d'hiver est donc rattrape a la
+    prochaine ouverture du dashboard, sans rien a regler. Ecrit sur disque seulement s'il
+    change. Retourne l'avance en minutes a utiliser pour CETTE demande.
+    """
+    global FUSEAU_CLIENT
+    try:
+        tz = int(payload.get("tz_min"))
+    except (TypeError, ValueError, AttributeError):
+        return tz_client_min()
+    if not -720 <= tz <= 840:
+        return tz_client_min()
+    nom = str(payload.get("tz") or "")[:64]
+    if FUSEAU_CLIENT.get("tz_min") != tz or FUSEAU_CLIENT.get("tz") != nom:
+        FUSEAU_CLIENT = {"tz_min": tz, "tz": nom}
+        try:
+            with open(FUSEAU_FILENAME, "w", encoding="utf-8") as f:
+                json.dump(FUSEAU_CLIENT, f)
+        except Exception as e:
+            logger.warning(f"⚠️ Ecriture {FUSEAU_FILENAME} : {e}")
+        logger.info(f"🕐 Fuseau du client : UTC{tz / 60:+g} ({nom or 'sans nom'})")
+    return tz
+
+
+def bornes_periode(periode, tz_min=None, maintenant=None):
+    """(#108) Bornes d'une periode des stats ou de l'historique, en instants reels (epoch UTC).
+
+    Une seule regle pour tous les ecrans, calee sur le minuit du CLIENT :
+      "today" et "1"  -> aujourd'hui depuis 00h00 ("Jour")
+      "week"          -> depuis lundi 00h00 ("1S", "Cette Semaine")
+      "N" (entier)    -> N journees entieres, aujourd'hui compris ("2j", "14j", "1M" = 30...)
+      "all"           -> tout ("Max")
+    Avant, les stats comptaient N x 24 h a l'heure pres et l'historique N journees entieres :
+    "1M" ne couvrait pas les memes trades dans les deux ecrans.
+
+    Retourne {"debut", "fin"} en epoch (None = pas de borne ; fin exclue) et {"jour_debut",
+    "jour_fin"} en AAAA-MM-JJ du client, pour les lignes seulement datees (ajouts manuels,
+    historique repris). None pour une periode inconnue : a l'appelant de choisir son repli.
+    """
+    tz = tz_client_min() if tz_min is None else int(tz_min)
+    decal = timedelta(minutes=tz)
+    now_utc = maintenant or datetime.now(timezone.utc)
+    minuit = (now_utc + decal).replace(tzinfo=None, hour=0, minute=0, second=0, microsecond=0)
+    p = str(periode).strip().lower()
+    if p == "all":
+        return {"debut": None, "fin": None, "jour_debut": None, "jour_fin": None}
+    if p == "today":
+        debut = minuit
+    elif p == "week":
+        debut = minuit - timedelta(days=minuit.weekday())
+    else:
+        try:
+            n = int(p)
+        except ValueError:
+            return None
+        if n < 1:
+            return None
+        if n >= 9999:  # ancienne valeur de "Max"
+            return {"debut": None, "fin": None, "jour_debut": None, "jour_fin": None}
+        debut = minuit - timedelta(days=n - 1)
+    return {"debut": (debut - decal).replace(tzinfo=timezone.utc).timestamp(), "fin": None,
+            "jour_debut": debut.strftime("%Y-%m-%d"), "jour_fin": None}
+
+
+def dans_bornes(epoch, bornes):
+    """(#108) Vrai si l'instant tombe dans la periode : debut inclus, fin exclue."""
+    if epoch is None:
+        return False
+    if bornes.get("debut") is not None and epoch < bornes["debut"]:
+        return False
+    if bornes.get("fin") is not None and epoch >= bornes["fin"]:
+        return False
+    return True
+
+
+def bornes_serveur(bornes):
+    """(#108) Bornes d'une requete d'historique MT5, en heure SERVEUR (entiers, epoch).
+
+    Passer un datetime naif a history_deals_get laissait la bibliotheque le convertir avec le
+    fuseau de la machine : la fenetre se retrouvait decalee de l'ecart du serveur, et les
+    trades des 2-3 dernieres heures sortaient de "Cette Semaine" et des stats globales. En
+    entiers, la comparaison se fait directement avec deal.time.
+    """
+    dec = decalage_serveur_s()
+    debut = bornes.get("debut")
+    fin = bornes.get("fin")
+    # Plancher en 2000 plutot qu'en 1970 : un 0 n'a jamais ete teste face au terminal.
+    debut_srv = int(debut + dec) if debut is not None else 946684800
+    # Sans borne de fin : un peu au-dela de maintenant, rien ne peut exister dans le futur.
+    fin_srv = int(fin + dec) if fin is not None else int(time.time() + dec + 3600)
+    return debut_srv, fin_srv
+
+
+def get_trades_history(bornes, max_rows=100):
     """(#74) Liste des trades clôturés sur la période, du plus récent au plus ancien.
 
     Lue depuis trades_detailed.csv et non depuis l'historique MT5 : c'est la seule source qui
     porte le CANAL d'origine et la RAISON de sortie, deux colonnes attendues dans un historique.
     En contrepartie, "all" ne remonte qu'à ce que le bot a enregistré.
+
+    (#108) `bornes` vient de bornes_periode(). Chaque ligne porte `close_ts` (instant réel) :
+    le dashboard l'affiche à l'heure du téléphone. `close_time` est la même heure, dans le
+    fuseau du client connu du bot, pour un dashboard qui ne lirait pas close_ts.
 
     Plafonné à max_rows : au-delà le document Firestore gonflerait sans que personne ne fasse
     défiler autant de lignes.
@@ -2087,15 +2314,12 @@ def get_trades_history(period="1", max_rows=100):
     out = []
     if not os.path.exists(DETAILED_HISTORY_FILE):
         return out
-    cutoff = history_cutoff(period)
+    tz = tz_client_min()
     try:
         with open(DETAILED_HISTORY_FILE, "r", encoding="utf-8") as f:
             for row in csv.DictReader(f):
-                try:
-                    closed_at = datetime.strptime(row.get("Close Time", ""), "%Y-%m-%d %H:%M:%S")
-                except Exception:
-                    continue
-                if closed_at < cutoff:
+                closed_ts = epoch_csv(row.get("Close Time", ""))
+                if not dans_bornes(closed_ts, bornes):
                     continue
                 src = normalize_channel_source(row.get("Source"))
                 if src == "MANUEL/INCONNU":
@@ -2113,16 +2337,15 @@ def get_trades_history(period="1", max_rows=100):
                     "lots": _f("Lots"),
                     "profit": round(_f("Profit"), 2),
                     "pips": round(_f("Pips"), 1),
-                    "close_time": row.get("Close Time", ""),
+                    "close_time": datetime.fromtimestamp(closed_ts + tz * 60, timezone.utc)
+                                          .strftime("%Y-%m-%d %H:%M:%S"),
+                    "close_ts": int(closed_ts),
                     "reason": row.get("Exit Reason", ""),
-                    "_ts": closed_at.timestamp(),
                 })
     except Exception as e:
         logger.warning(f"⚠️ get_trades_history : {e}")
 
-    out.sort(key=lambda t: t["_ts"], reverse=True)
-    for t in out:
-        t.pop("_ts", None)
+    out.sort(key=lambda t: t["close_ts"], reverse=True)
     return out[:max_rows]
 
 
@@ -2204,13 +2427,16 @@ def sauve_stats_manuel(lignes):
         return False
 
 
-def _merge_stats_manuel(out, cutoff):
+def _merge_stats_manuel(out, bornes):
     """(#98) Injecte les ajouts manuels dans les stats par canal.
 
     Une ligne datee entre dans une periode si sa date tombe apres la borne de debut -- la
     meme regle que les vrais trades. Elle sort donc de "24h" toute seule le lendemain, tout
     en restant dans "1S" et "Max". C'est ce qui evite d'avoir un fichier a vider chaque nuit,
     donc un vidage qui pourrait echouer (bot eteint a minuit) ou se rejouer.
+
+    (#108) Les dates saisies au dashboard sont celles du telephone : on les compare donc aux
+    jours du CLIENT (bornes["jour_debut"] / ["jour_fin"]), pas a la date de la machine.
 
     Ces lignes n'alimentent QUE les stats par canal : ni l'historique des trades, ni la courbe
     du portefeuille, qui doivent rester le reflet exact du compte MT5.
@@ -2228,9 +2454,11 @@ def _merge_stats_manuel(out, cutoff):
             logger.warning(f"⚠️ Ajout manuel ignore ({canal}) : date invalide "
                            f"{ligne.get('date')!r}, attendu AAAA-MM-JJ")
             continue
-        # Comparaison au JOUR pres : une ligne datee du jour de la borne doit entrer, meme si
-        # cutoff porte une heure (cas des periodes glissantes type "14j").
-        if jour.date() < cutoff.date():
+        # Comparaison au JOUR pres : une ligne datee du jour de la borne doit entrer.
+        jour_txt = jour.strftime("%Y-%m-%d")
+        if bornes.get("jour_debut") and jour_txt < bornes["jour_debut"]:
+            continue
+        if bornes.get("jour_fin") and jour_txt > bornes["jour_fin"]:
             continue
         # Une remise a zero du canal masque aussi les ajouts manuels anterieurs a la coupure.
         _rst = stats_reset_cutoff(canal)
@@ -2263,16 +2491,17 @@ def _merge_stats_manuel(out, cutoff):
         sous["pips"] += pips
 
 
-def _merge_stats_seed(out, cutoff):
+def _merge_stats_seed(out, bornes):
     """(#stats) Injecte un historique REPRIS d'avant la refonte des stats (stats_seed.json).
 
     Le CSV détaillé contient une ligne par trade ; un total agrégé ne peut donc pas y être
     écrit sans inventer des trades qui n'ont jamais existé sous cette forme. Ce fichier
     optionnel porte le total tel qu'il avait été mesuré, avec la plage de dates qu'il couvre.
 
-    Il n'est ajouté QUE si la période demandée englobe entièrement cette plage (cutoff <=
-    'from'). Un chevauchement partiel est ignoré : on ne sait pas découper un agrégat, et
-    l'inclure quand même gonflerait par exemple un "14 jours" avec des mois de résultats.
+    Il n'est ajouté QUE si la période demandée englobe entièrement cette plage (début de la
+    période <= 'from'). Un chevauchement partiel est ignoré : on ne sait pas découper un
+    agrégat, et l'inclure quand même gonflerait par exemple un "14 jours" avec des mois de
+    résultats.
     """
     if not os.path.exists(STATS_SEED_FILE):
         return
@@ -2291,10 +2520,8 @@ def _merge_stats_seed(out, cutoff):
         except Exception:
             logger.warning(f"⚠️ stats_seed.json : champ 'from' manquant/invalide pour {chan}")
             continue
-        # Comparaison au JOUR près : cutoff porte l'heure courante, donc un seed daté du même
-        # jour que le début de la fenêtre (ex. "il y a 14 jours" pour la période 14j) serait
-        # exclu de quelques heures si on comparait les datetime bruts.
-        if cutoff.date() > date_from.date():
+        # Comparaison au JOUR près, en jours du client (#108).
+        if bornes.get("jour_debut") and bornes["jour_debut"] > date_from.strftime("%Y-%m-%d"):
             continue  # la période demandée ne remonte pas assez loin
         # (#91) Un seed est un AGREGAT : impossible d'en retirer la partie anterieure à une
         # remise à zéro. Si le canal a été remis à zéro après le début du seed, on le laisse
@@ -2320,7 +2547,7 @@ def _merge_stats_seed(out, cutoff):
         seed_ligne["pips"] += float(data.get("pips", 0.0))
 
 
-def get_channel_stats_period(days=30, start_date_custom=None):
+def get_channel_stats_period(bornes):
     """Stats par canal SUR UNE PÉRIODE, reconstruites depuis trades_detailed.csv.
 
     SOURCE UNIQUE des stats par canal, tous comptes MT5 confondus. Il existait avant un
@@ -2331,22 +2558,23 @@ def get_channel_stats_period(days=30, start_date_custom=None):
     Retourne {canal: {count, positions, profit, pips, avg_pips}}.
 
     (#stats) `count` compte les SIGNAUX (une zone SABR = 1 signal / 3 positions), et `avg_pips`
-    est la moyenne simple pips/trade -- cf. _finalize_channel_stats() pour ses limites."""
+    est la moyenne simple pips/trade -- cf. _finalize_channel_stats() pour ses limites.
+
+    (#108) `bornes` vient de bornes_periode() : memes journees, et meme minuit, que
+    l'historique des trades."""
     out = {}
-    cutoff = start_date_custom if start_date_custom else (datetime.now() - timedelta(days=days))
     seen_signals = {}
-    _merge_stats_seed(out, cutoff)
-    _merge_stats_manuel(out, cutoff)   # (#98)
+    reset_ts = {}  # canal -> instant de la remise a zero, calcule une fois par canal
+    _merge_stats_seed(out, bornes)
+    _merge_stats_manuel(out, bornes)   # (#98)
     if not os.path.exists(DETAILED_HISTORY_FILE):
         return _finalize_channel_stats(out)
     try:
         with open(DETAILED_HISTORY_FILE, "r", encoding="utf-8") as f:
             for row in csv.DictReader(f):
-                try:
-                    closed_at = datetime.strptime(row.get("Close Time", ""), "%Y-%m-%d %H:%M:%S")
-                except Exception:
-                    continue  # ligne corrompue / en-tête d'un ancien format -> on ignore
-                if closed_at < cutoff:
+                # Ligne corrompue / en-tête d'un ancien format -> epoch None -> ignorée.
+                closed_ts = epoch_csv(row.get("Close Time", ""))
+                if not dans_bornes(closed_ts, bornes):
                     continue
                 src = normalize_channel_source(row.get("Source"))
                 if not src:
@@ -2359,8 +2587,12 @@ def get_channel_stats_period(days=30, start_date_custom=None):
                     src = "CANAL PERSO"
                 # (#91) Coupure testee APRES le rattachement a PERSO, sinon une remise a zero
                 # de PERSO ne s'appliquerait pas aux trades manuels, qui en sont l'essentiel.
-                _rst = stats_reset_cutoff(src)
-                if _rst and closed_at < _rst:
+                # (#108) La coupure est une heure de la MACHINE (datetime.now() a la remise a
+                # zero) : comparee en instant reel, comme la cloture.
+                if src not in reset_ts:
+                    _rst = stats_reset_cutoff(src)
+                    reset_ts[src] = time.mktime(_rst.timetuple()) if _rst else None
+                if reset_ts[src] is not None and closed_ts < reset_ts[src]:
                     continue
                 entry = out.setdefault(src, {"count": 0, "positions": 0, "profit": 0.0,
                                              "pips": 0.0, "avg_pips": 0.0})
@@ -3128,7 +3360,7 @@ async def close_partial(pos, pct, tp_label, pips_gained, fixed_lot=None, etape=N
         current_partial = PARTIAL_PROFITS.get(pos.ticket, 0.0)
         PARTIAL_PROFITS[pos.ticket] = current_partial + est_profit
 
-        open_time = (datetime.fromtimestamp(pos.time) - timedelta(hours=1)).strftime('%H:%M')
+        open_time = heure_client(pos.time)  # (#108)
         src_raw = ACTIVE_TRADE_SOURCES.get(pos.ticket, "INCONNU")
         src_clean = src_raw.replace("CANAL ", "").replace("_", " ")
 
@@ -4529,7 +4761,7 @@ async def check_closed_positions():
             
             head = "🟢 **GAIN**" if prof >= 0 else "🔴 **PERTE**"
             #open_time = datetime.fromtimestamp(entry.time).strftime('%H:%M')
-            open_time = (datetime.fromtimestamp(entry.time) - timedelta(hours=1)).strftime('%H:%M')
+            open_time = heure_client(entry.time)  # (#108)
             #open_time = (datetime.fromtimestamp(entry.time)).strftime('%H:%M')
             safe_source = source.replace("CANAL ", "").replace("_", " ")
 
@@ -4627,7 +4859,7 @@ def calculate_pips(symbol: str, price_diff: float) -> float:
     
     return (price_diff / pt) / div
 
-async def get_equity_curve(days=30, start_date_custom=None, max_points=180):
+async def get_equity_curve(bornes, max_points=180):
     """(#65) Courbe de BALANCE du compte sur la période, pour le graphique de l'onglet Global.
 
     Reconstruite depuis l'historique MT5 (et non depuis trades_detailed.csv) : c'est la seule
@@ -4648,16 +4880,23 @@ async def get_equity_curve(days=30, start_date_custom=None, max_points=180):
     courbe part du capital réellement disponible au début de la période.
 
     Retourne [{"d": "2026-08-13", "v": 10236.69}, ...] trié par date, [] si indisponible.
+
+    (#108) `bornes` vient de bornes_periode(). Les deals sont rangés par JOUR DU CLIENT : avant,
+    un trade fermé le soir pouvait marquer la courbe du lendemain.
     """
-    end_date = datetime.now()
-    start_date = start_date_custom if start_date_custom else (end_date - timedelta(days=days))
+    tz_s = tz_client_min() * 60
+    dec = decalage_serveur_s()
+
+    def _jour(epoch):
+        return datetime.fromtimestamp(epoch + tz_s, timezone.utc).strftime("%Y-%m-%d")
 
     acc = await run_mt5(mt5.account_info)
     if acc is None:
         return []
     balance_now = float(acc.balance)
 
-    history = await run_mt5(mt5.history_deals_get, start_date, end_date)
+    debut_srv, fin_srv = bornes_serveur(bornes)
+    history = await run_mt5(mt5.history_deals_get, debut_srv, fin_srv)
 
     per_day = {}
     total = 0.0
@@ -4669,12 +4908,15 @@ async def get_equity_curve(days=30, start_date_custom=None, max_points=180):
         amount = deal.profit + deal.swap + deal.commission
         if amount == 0:
             continue
-        day = datetime.fromtimestamp(deal.time).strftime("%Y-%m-%d")
+        day = _jour(deal.time - dec)
         per_day[day] = per_day.get(day, 0.0) + amount
         total += amount
 
     balance_start = balance_now - total
-    points = [{"d": start_date.strftime("%Y-%m-%d"), "v": round(balance_start, 2)}]
+    # Premier point : le premier jour de la période. Pour "Max", qui n'a pas de début, le jour
+    # du premier trade -- et non une date arbitraire vingt ans en arrière.
+    jour_debut = bornes.get("jour_debut") or (min(per_day) if per_day else _jour(time.time()))
+    points = [{"d": jour_debut, "v": round(balance_start, 2)}]
     running = balance_start
     for day in sorted(per_day):
         running += per_day[day]
@@ -4682,7 +4924,7 @@ async def get_equity_curve(days=30, start_date_custom=None, max_points=180):
 
     # Point final à aujourd'hui : sans lui, une courbe dont le dernier trade date d'une semaine
     # s'arrêterait au milieu du graphique, ce qui se lit comme un arrêt d'activité.
-    today = end_date.strftime("%Y-%m-%d")
+    today = _jour(time.time())
     if points[-1]["d"] != today:
         points.append({"d": today, "v": round(balance_now, 2)})
 
@@ -4698,15 +4940,11 @@ async def get_equity_curve(days=30, start_date_custom=None, max_points=180):
     return points
 
 
-async def get_historical_stats(days=30, start_date_custom=None):
-    from datetime import datetime, timedelta
-    end_date = datetime.now()
-    if start_date_custom:
-        start_date = start_date_custom
-    else:
-        start_date = end_date - timedelta(days=days)
-    
-    history = await run_mt5(mt5.history_deals_get, start_date, end_date)
+async def get_historical_stats(bornes):
+    # (#108) `bornes` vient de bornes_periode() : même règle que les stats par canal et
+    # l'historique des trades, et une requête MT5 en heure serveur (cf. bornes_serveur).
+    debut_srv, fin_srv = bornes_serveur(bornes)
+    history = await run_mt5(mt5.history_deals_get, debut_srv, fin_srv)
     
     # On initialise un dictionnaire complet pour matcher la structure daily_stats
     stats = {
@@ -4869,7 +5107,7 @@ def _get_closed_trades_today_blocking():
         else:
             vol_str = f"{vol_closed}"
 
-        open_time_str = (datetime.fromtimestamp(t["open_time"]) - timedelta(hours=1)).strftime('%H:%M')
+        open_time_str = heure_client(t["open_time"])  # (#108)
             
         closed_list.append({
             "ticket": t["ticket"],
@@ -5008,6 +5246,24 @@ async def heartbeat_monitor():
                 logger.error(f"Heartbeat Error: {e}")
 
         await asyncio.sleep(10)
+
+async def horloge_serveur_monitor():
+    """(#108) Mesure l'heure du serveur MT5 chaque minute (cf. mesurer_decalage_serveur).
+
+    Les deux premières lectures sont rapprochées : une mesure exige un tick qui a avancé entre
+    deux lectures, on l'obtient ainsi dès le démarrage plutôt qu'au bout d'une minute.
+    """
+    premiere = True
+    while True:
+        try:
+            await run_mt5(mesurer_decalage_serveur)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.debug(f"Mesure de l'heure serveur : {e}")
+        await asyncio.sleep(5 if premiere else 60)
+        premiere = False
+
 
 async def license_watchdog():
     logger.info("👮 Monitor Licence activé (Vérification toutes les 4h).")
@@ -5235,7 +5491,7 @@ async def monitor_positions():
                     active_pos = mt5.positions_get(ticket=ticket)
                     if active_pos:
                         pos = active_pos[0]
-                        act_time = (datetime.fromtimestamp(pos.time) - timedelta(hours=1)).strftime('%H:%M')
+                        act_time = heure_client(pos.time)  # (#108)
                         src_raw = ACTIVE_TRADE_SOURCES.get(ticket, "INCONNU")
                         src_clean = src_raw.replace("CANAL ", "").replace("_", " ")
                         await send_channel_alert(f"⚡ **ORDRE ACTIVÉ**\n\n"
@@ -5549,7 +5805,7 @@ async def monitor_positions():
                     div = get_pip_divisor(sym)
                     entry = pos.price_open
 
-                    open_time = (datetime.fromtimestamp(pos.time) - timedelta(hours=1)).strftime('%H:%M')
+                    open_time = heure_client(pos.time)  # (#108)
                     src_clean = src_trade.replace("CANAL ", "").replace("_", " ")
                     
                     if pos.type == mt5.ORDER_TYPE_BUY:
@@ -5834,7 +6090,7 @@ async def monitor_positions():
                                         req = {"action": mt5.TRADE_ACTION_SLTP, "symbol": sym, "position": p.ticket, "sl": new_sl, "tp": p.tp}
                                         res = await run_mt5(_send_order_blocking, req)
                                         if res and res.retcode == mt5.TRADE_RETCODE_DONE:
-                                            p_open_time = (datetime.fromtimestamp(p.time) - timedelta(hours=1)).strftime('%H:%M')
+                                            p_open_time = heure_client(p.time)  # (#108)
                                             p_src_clean = ACTIVE_TRADE_SOURCES.get(p.ticket, "INCONNU").replace("CANAL ", "").replace("_", " ")
                                             await send_channel_alert(f"☄️ **SABR: BE ACTIVÉ (+100p)**\n\n"
                                                              f"Symbole: {sym} ({p_open_time})\n"
@@ -6819,14 +7075,17 @@ async def admin_commands(event):
         await send_daily_report(acc, day_total, day_pct)
 
 # --- 16. STATISTIQUES PAR CANAL (VERSION DÉTAILLÉE) ---
-    elif text == "/canal_stats":
+    elif text == "/canal_stats" or text.startswith("/canal_stats "):
         # (#stats) Recalculé depuis trades_detailed.csv, source unique. Sans argument on prend
         # tout l'historique ; `/canal_stats 30` limite aux N derniers jours.
+        # (#108) Le test était `text == "/canal_stats"` : la variante avec un nombre n'arrivait
+        # jamais ici. Mêmes journées entières que le dashboard (cf. bornes_periode).
         parts = text.split()
         try: nb_days = int(parts[1]) if len(parts) > 1 else 9999
         except ValueError: nb_days = 9999
+        if nb_days < 1: nb_days = 9999
 
-        stats_chan = await run_bg(get_channel_stats_period, days=nb_days)
+        stats_chan = await run_bg(get_channel_stats_period, bornes_periode(str(nb_days)))
         stats_chan = {c: v for c, v in stats_chan.items() if channel_allowed(c)}
         if not stats_chan:
             await event.reply("⚠️ Aucune donnée enregistrée pour le moment.")
@@ -7710,12 +7969,14 @@ async def get_current_state_for_firebase() -> dict:
                 pips = calculate_pips(p.symbol, abs(p.price_open - current_p))
                 if (otype == "BUY" and current_p < p.price_open) or (otype == "SELL" and current_p > p.price_open):
                     pips = -pips
-                open_time_str = (datetime.fromtimestamp(p.time) - timedelta(hours=1)).strftime('%H:%M')
+                open_time_str = heure_client(p.time)  # (#108)
                 active_trades.append({
                     "ticket": p.ticket, "symbol": p.symbol, "type": otype,
                     "volume": p.volume, "open_price": p.price_open, "current_price": current_p,
                     "sl": p.sl, "tp": p.tp, "profit": p.profit, "pips": round(pips, 1),
                     "open_time": open_time_str,
+                    # (#108) Instant réel : le dashboard l'affiche à l'heure du téléphone.
+                    "open_ts": int(epoch_mt5(p.time)),
                     "source": ACTIVE_TRADE_SOURCES.get(p.ticket, "Inconnu"),
                     "managed": is_managed,
                 })
@@ -7781,7 +8042,9 @@ async def get_current_state_for_firebase() -> dict:
             # via un get() sur licenses/{license_key}, que la licence est toujours ACTIVE avant
             # d'autoriser le dashboard à créer une commande (panic/kill/close_trade/...),
             # indépendamment de l'identité Telegram du client qui reste valide même banni.
-            extra={"license_key": USER_LICENSE_KEY}
+            extra={"license_key": USER_LICENSE_KEY,
+                   # (#113) Version et fonctions de cet exe, cf. FONCTIONS_BOT.
+                   "bot_version": VERSION_BOT, "fonctions": FONCTIONS_BOT}
         )
     except Exception as e:
         logger.error(f"Erreur collecte état Firebase : {e}")
@@ -8054,34 +8317,25 @@ async def handle_firebase_command(cmd_id: str, cmd_data: dict) -> None:
             set_status("done", {"success": True})
 
         elif cmd_type == "request_stats":
-            days = payload.get("days", "30")
-            # (#95) Deux périodes calées sur des bornes CALENDAIRES et non sur un nombre de
-            # jours glissant, même convention que l'historique des trades (cf. history_cutoff) :
-            #   "today" = aujourd'hui depuis 00h00, et rien d'hier ;
-            #   "week"  = depuis lundi 00h00, donc la semaine EN COURS et non 7 jours glissants.
-            debut = None
-            if days == "today":
-                debut = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-            elif days == "week":
-                _n = datetime.now()
-                debut = (_n - timedelta(days=_n.weekday())).replace(
-                    hour=0, minute=0, second=0, microsecond=0)
-
-            if debut is not None:
-                stats = await get_historical_stats(start_date_custom=debut)
-                chan_stats = await run_bg(get_channel_stats_period, start_date_custom=debut)
-                curve = await get_equity_curve(start_date_custom=debut)
-            else:
-                # Repli sur 30 jours si le dashboard envoie une période inconnue : sans ça, un
-                # int() sur une chaîne inattendue ferait échouer toute la commande.
-                try:
-                    days_int = 9999 if days == "all" else int(days)
-                except (TypeError, ValueError):
-                    logger.warning(f"⚠️ request_stats : période inconnue {days!r}, repli sur 30 j")
-                    days_int = 30
-                stats = await get_historical_stats(days=days_int)
-                chan_stats = await run_bg(get_channel_stats_period, days=days_int)
-                curve = await get_equity_curve(days=days_int)
+            days = str(payload.get("days", "30"))
+            # (#108) Le dashboard joint le fuseau du telephone : les periodes partent du minuit
+            # du CLIENT, et non de celui de la machine du bot (un VPS en UTC, par exemple).
+            tz = noter_fuseau_client(payload)
+            # (#95/#108) Une seule regle, celle de l'historique des trades (cf. bornes_periode) :
+            #   "today" = aujourd'hui depuis 00h00, "week" = depuis lundi 00h00 ;
+            #   "14", "30"... = N journees entieres, aujourd'hui compris. Avant, ces dernieres
+            #   comptaient N x 24 h a l'heure pres : "1M" ne couvrait pas les memes trades que
+            #   le "1M" de l'historique.
+            bornes = bornes_periode(days, tz)
+            if bornes is None:
+                # Plus de repli silencieux sur 30 jours : il poussait d'autres chiffres que ceux
+                # demandes, sous la cle de la periode demandee, sans que rien ne le signale.
+                logger.warning(f"⚠️ request_stats : période inconnue {days!r}")
+                set_status("error", {"success": False, "message": f"Période inconnue : {days}"})
+                return
+            stats = await get_historical_stats(bornes)
+            chan_stats = await run_bg(get_channel_stats_period, bornes)
+            curve = await get_equity_curve(bornes)
             if firebase_sync._firebase_initialized:
                 payload_push = {}
                 if stats:
@@ -8102,7 +8356,13 @@ async def handle_firebase_command(cmd_id: str, cmd_data: dict) -> None:
             # greffee sur request_stats : la section a son propre selecteur, ouvert/ferme
             # independamment de la fenetre de statistiques.
             period = str(payload.get("period", "1"))
-            hist = await run_bg(get_trades_history, period=period)
+            tz = noter_fuseau_client(payload)  # (#108)
+            bornes = bornes_periode(period, tz)
+            if bornes is None:
+                logger.warning(f"⚠️ request_history : période inconnue {period!r}")
+                set_status("error", {"success": False, "message": f"Période inconnue : {period}"})
+                return
+            hist = await run_bg(get_trades_history, bornes)
             if firebase_sync._firebase_initialized:
                 await firebase_sync.push_state(user_id, {
                     f"trades_history_{period}": firebase_sync._safe(hist)})
@@ -8136,18 +8396,23 @@ async def _firebase_push_stats_loop(user_id: str) -> None:
     while True:
         await asyncio.sleep(60)
         try:
-            stats_30d = await get_historical_stats(days=30)
+            # (#108) Memes bornes que les demandes du dashboard (meme fonction, meme fuseau
+            # client) : sinon ce rafraichissement ecraserait toutes les 60 s la reponse a une
+            # demande par des chiffres calcules autrement.
+            b30 = bornes_periode("30")
+            stats_30d = await get_historical_stats(b30)
             if stats_30d and firebase_sync._firebase_initialized:
                 # (#stats) channels_period_30 est poussé ici pour que l'onglet "Par Canal" ait
                 # quelque chose à afficher dès l'ouverture du dashboard, sans attendre l'aller-
                 # retour request_stats. Les autres périodes restent à la demande.
-                chan_30 = await run_bg(get_channel_stats_period, days=30)
+                chan_30 = await run_bg(get_channel_stats_period, b30)
                 await firebase_sync.push_state(user_id, {
                     "global_period_30": firebase_sync._safe(stats_30d),
                     "channels_period_30": firebase_sync._safe(
                         {c: v for c, v in chan_30.items() if channel_allowed(c)}),
-                    "equity_curve_30": firebase_sync._safe(await get_equity_curve(days=30)),
-                    "trades_history_1": firebase_sync._safe(await run_bg(get_trades_history, period="1")),
+                    "equity_curve_30": firebase_sync._safe(await get_equity_curve(b30)),
+                    "trades_history_1": firebase_sync._safe(
+                        await run_bg(get_trades_history, bornes_periode("1"))),
                 })
         except asyncio.CancelledError:
             break
@@ -8445,6 +8710,7 @@ async def main():
     load_channel_data()
     load_ladder_stats()   # (#87/#90)
     load_stats_reset()    # (#91)
+    charger_fuseau_client()  # (#108)
 
     if not await init_daily_stats(): 
         logger.error("❌ Erreur de chargement des statistiques.")
@@ -8456,6 +8722,7 @@ async def main():
     asyncio.create_task(safety_net_scanner())
     asyncio.create_task(heartbeat_monitor())  # (#35) oublié -- sans lui, alive.txt n'est jamais
     # réécrit et le watchdog ne peut jamais détecter un gel du worker.
+    asyncio.create_task(horloge_serveur_monitor())  # (#108)
 
     # ─── Firebase : initialisation ───
     if FIREBASE_EMAIL and FIREBASE_PASSWORD:

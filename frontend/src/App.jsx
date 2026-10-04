@@ -8,6 +8,27 @@ import { signInAnonymously, signInWithCustomToken } from 'firebase/auth'
 // (#12) TTL Firestore sur users/{uid}/commands : la politique pointe sur ce champ pour purger après 3 jours
 const commandExpiry = () => Timestamp.fromMillis(Date.now() + 3 * 24 * 60 * 60 * 1000)
 
+// (#108) Fuseau du téléphone, joint aux demandes de stats et d'historique : le bot cale les
+// périodes sur le minuit du CLIENT, et non sur celui de sa machine (un VPS réglé en UTC, par
+// exemple). Renvoyé à chaque demande, le passage à l'heure d'été ou d'hiver suit tout seul.
+const fuseauTelephone = () => {
+  let tz = ''
+  try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || '' } catch { /* navigateur ancien */ }
+  return { tz_min: -new Date().getTimezoneOffset(), tz }
+}
+
+// (#108) Instant réel (secondes) -> heure du téléphone. Même format que close_time / open_time,
+// que le bot remplit aussi pour un exe qui n'enverrait pas encore close_ts / open_ts.
+const pad2 = (n) => String(n).padStart(2, '0')
+const dateHeureLocale = (ts) => {
+  const d = new Date(ts * 1000)
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`
+}
+const heureLocale = (ts) => {
+  const d = new Date(ts * 1000)
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+}
+
 // (#16) day_factor_0..6 = Lundi..Dimanche
 const FULL_DAY_NAMES = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche']
 
@@ -231,6 +252,12 @@ const EquityChart = ({ points, loading }) => {
 
 function App() {
   const [dashboardData, setDashboardData] = useState(null)
+  // (#113) Ce que l'exe du client sait faire (cf. FONCTIONS_BOT côté bot). Absent = exe
+  // antérieur : une fonction nouvelle reste masquée, plutôt que d'envoyer au bot une demande
+  // qu'il ignorerait -- ou à laquelle il répondrait autre chose sans le dire. On en tire des
+  // booléens : un tableau neuf à chaque push relancerait les effets qui en dépendent.
+  const fonctionsBot = Array.isArray(dashboardData?.fonctions) ? dashboardData.fonctions : []
+  const periodesV2 = fonctionsBot.includes('periodes_v2')
   const [error, setError] = useState(null)
   const settingDebounce = useRef({}) // (#11) timers de debounce par clé de réglage
 
@@ -469,9 +496,13 @@ function App() {
   const nouveauFormAjout = () => ({ date: dateDuJour(), canal: '', signaux: '1', ordres: '',
                                     profit: '', pips: '', symbole: '', note: '' });
   const [dayWeekToggle, setDayWeekToggle] = useState('day'); // 'day' ou 'week'
-  // (#74) Période de la section "Historique Trades". Les libellés sont en heures mais les
-  // bornes sont des JOURNÉES ENTIÈRES côté bot : '2' = toute la journée d'hier + aujourd'hui.
+  // (#74) Période de la section "Historique Trades", en JOURNÉES ENTIÈRES côté bot : '2' =
+  // toute la journée d'hier + aujourd'hui.
+  // (#108) 'semaine' est un identifiant d'écran : un exe qui connaît les périodes v2 reçoit
+  // 'week' (depuis lundi, comme « 1S » dans les stats) ; un exe antérieur ne sait pas lire
+  // 'week' dans l'historique (il n'y renvoyait que la journée), il reçoit donc '7'.
   const [historyPeriod, setHistoryPeriod] = useState('1');
+  const idHistorique = historyPeriod === 'semaine' ? (periodesV2 ? 'week' : '7') : historyPeriod;
   const requestedHistory = useRef(new Set());
   const [isLoadingStats, setIsLoadingStats] = useState(false);
   const requestedPeriods = useRef(new Set());
@@ -482,11 +513,13 @@ function App() {
     const periodKey = `global_period_${globalPeriod}`;
     // Fallback sur global_period (poussé par l'exe) si la clé spécifique n'existe pas encore
     const period = dashboardData[periodKey] || (globalPeriod === '30' ? dashboardData.global_period : null);
-    // (#60) "Cette Semaine" (onglet Jour & Semaine) a besoin d'un vrai agrégat 7 jours
+    // (#60) "Cette Semaine" (onglet Jour & Semaine) a besoin de son propre agrégat,
     // INDÉPENDANT de la période choisie dans l'onglet Global -- avant, les deux partageaient
     // le même champ (global_period), donc "Cette Semaine" affichait en fait la période
-    // sélectionnée côté Global (30 jours par défaut), pas un vrai 7 jours.
-    const weekPeriod = dashboardData.global_period_7 || null;
+    // sélectionnée côté Global (30 jours par défaut).
+    // (#108) Et c'est la semaine EN COURS (depuis lundi), comme « 1S » partout ailleurs : elle
+    // demandait '7', soit les 7 derniers jours, ce que son libellé ne dit pas.
+    const weekPeriod = dashboardData.global_period_week || null;
     // (#stats) Source unique des stats par canal : le CSV détaillé du bot, réagrégé sur la
     // période choisie. Il n'y a plus de cumul "lifetime" séparé -- "Max" joue ce rôle.
     const channelsPeriod = dashboardData[`channels_period_${channelPeriod}`] || null;
@@ -513,15 +546,15 @@ function App() {
   useEffect(() => {
     if (!isStatsOpen || !userId) return;
     // (#60) Deux sources de requête indépendantes : la période choisie dans l'onglet Global,
-    // et un 7 jours fixe pour "Cette Semaine" (onglet Jour & Semaine) -- qui ne doit JAMAIS
-    // suivre le sélecteur de l'onglet Global.
+    // et la semaine en cours pour "Cette Semaine" (onglet Jour & Semaine) -- qui ne doit
+    // JAMAIS suivre le sélecteur de l'onglet Global.
     const wantWeek = statsTab === 'jour' && dayWeekToggle === 'week';
     const wantGlobal = statsTab === 'global';
     // (#stats) L'onglet Par Canal a sa propre période -- même commande request_stats, qui
     // pousse désormais aussi channels_period_<days> en plus de global_period_<days>.
     const wantChannel = statsTab === 'canal';
     if (!wantWeek && !wantGlobal && !wantChannel) return;
-    const period = wantWeek ? '7' : (wantChannel ? channelPeriod : globalPeriod);
+    const period = wantWeek ? 'week' : (wantChannel ? channelPeriod : globalPeriod);
     // (#stats) On ne se fie PAS à la présence de la clé dans Firestore pour éviter la requête :
     // ces champs sont persistants et peuvent dater d'une version antérieure du bot. C'était la
     // cause d'un affichage figé où "14j" montrait plus de trades que "1M", et où 3M et 6M
@@ -541,7 +574,7 @@ function App() {
     (async () => {
       try {
         const cmdRef = await addDoc(collection(db, 'users', userId, 'commands'), {
-          type: 'request_stats', payload: { days: period }, status: 'pending', created_at: serverTimestamp(), expire_at: commandExpiry(),
+          type: 'request_stats', payload: { days: period, ...fuseauTelephone() }, status: 'pending', created_at: serverTimestamp(), expire_at: commandExpiry(),
         });
         envoye = true;
         if (cancelled) return;
@@ -573,22 +606,22 @@ function App() {
   // d'une session précédente. requestedHistory dédoublonne par chargement de page.
   useEffect(() => {
     if (!isClosedTradesOpen || !userId) return;
-    if (requestedHistory.current.has(historyPeriod)) return;
-    requestedHistory.current.add(historyPeriod);
+    if (requestedHistory.current.has(idHistorique)) return;
+    requestedHistory.current.add(idHistorique);
     (async () => {
       try {
         await addDoc(collection(db, 'users', userId, 'commands'), {
-          type: 'request_history', payload: { period: historyPeriod },
+          type: 'request_history', payload: { period: idHistorique, ...fuseauTelephone() },
           status: 'pending', created_at: serverTimestamp(), expire_at: commandExpiry(),
         });
       } catch {
         // (#106) Même piège que les stats : marquée « demandée » avant l'envoi, la période
         // restait bloquée après un échec. Un `cancelled` avait été déclaré pour ce cas mais
         // jamais relu -- c'est lui que signalait le linter.
-        requestedHistory.current.delete(historyPeriod);
+        requestedHistory.current.delete(idHistorique);
       }
     })();
-  }, [isClosedTradesOpen, historyPeriod, userId]);
+  }, [isClosedTradesOpen, idHistorique, userId]);
 
   // Authentification Firebase + abonnement temps réel Firestore
   useEffect(() => {
@@ -935,7 +968,7 @@ const { account, daily_stats, settings: settingsFromBot, active_trades } = dashb
     : settingsFromBot
   // (#74) Historique des trades sur la période choisie, poussé par le bot en réponse à
   // request_history. Remplace l'ancien `closed_trades`, qui ne couvrait que la journée en cours.
-  const tradesHistory = dashboardData[`trades_history_${historyPeriod}`] || []
+  const tradesHistory = dashboardData[`trades_history_${idHistorique}`] || []
 
   // (#7) Pack du client : on n'affiche que les canaux de son pack (réglages, mute, stats).
   // Liste vide/absente = tout afficher (rétro-compatible). Filtre purement cosmétique.
@@ -1371,7 +1404,7 @@ const { account, daily_stats, settings: settingsFromBot, active_trades } = dashb
                   {/* Lots et Heures (Gris et petits) */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '6px' }}>
                      <span style={{ color: '#888', fontSize: '0.7rem' }}>{Number(trade.volume).toFixed(2)} lots</span>
-                     <span style={{ color: '#666', fontSize: '0.65rem' }}>({trade.open_time})</span>
+                     <span style={{ color: '#666', fontSize: '0.65rem' }}>({trade.open_ts ? heureLocale(trade.open_ts) : trade.open_time})</span>
                   </div>
                   
                   {/* Profit agrandi (1.25rem) */}
@@ -1423,12 +1456,15 @@ const { account, daily_stats, settings: settingsFromBot, active_trades } = dashb
         <div style={{ overflow: 'hidden' }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '30px', paddingTop: '5px' }}>
 
-            {/* Selecteur de periode. Les libelles sont en heures mais les bornes sont des
-                JOURNEES ENTIERES cote bot : "48h" = toute la journee d'hier + aujourd'hui. */}
+            {/* Selecteur de periode, en JOURNEES ENTIERES cote bot.
+                (#108) Memes libelles et memes bornes que les stats : un chiffre = N journees
+                entieres, aujourd'hui compris (« 2j » = hier + aujourd'hui), « Jour » = depuis
+                minuit, « 1S » = depuis lundi. « 24h » et « 48h » promettaient des heures
+                glissantes que la periode ne donnait pas. */}
             <div style={{ display: 'flex', gap: '5px', background: '#1e1e1e', padding: '5px', borderRadius: '8px', border: '1px solid #333' }}>
               {[
-                { id: '1', label: '24h' }, { id: '2', label: '48h' }, { id: '7', label: '1 Sem' },
-                { id: '30', label: '1 Mois' }, { id: '365', label: '1 An' }, { id: 'all', label: 'Max' }
+                { id: '1', label: 'Jour' }, { id: '2', label: '2j' }, { id: 'semaine', label: '1S' },
+                { id: '30', label: '1M' }, { id: '365', label: '1 An' }, { id: 'all', label: 'Max' }
               ].map(p => (
                 <button
                   key={p.id}
@@ -1468,7 +1504,7 @@ const { account, daily_stats, settings: settingsFromBot, active_trades } = dashb
                         <span style={{ color: '#666', fontSize: '0.7rem' }}>{(trade.lots ?? 0).toFixed(2)} lots</span>
                       </div>
                       <div style={{ fontSize: '0.72rem', color: '#777', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                        {trade.close_time} · {String(trade.source || '').replace('_', ' ')}
+                        {trade.close_ts ? dateHeureLocale(trade.close_ts) : trade.close_time} · {String(trade.source || '').replace('_', ' ')}
                       </div>
                       {trade.reason && (
                         <div style={{ fontSize: '0.68rem', color: '#555', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
@@ -2092,13 +2128,16 @@ const { account, daily_stats, settings: settingsFromBot, active_trades } = dashb
             <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
 
               <div style={{ display: 'flex', gap: '5px', background: '#1e1e1e', padding: '5px', borderRadius: '8px', border: '1px solid #333' }}>
-                {/* (#95) "24h" et "1S" sont calés sur des bornes CALENDAIRES, pas sur un nombre
-                    de jours glissant : 24h = aujourd'hui depuis 00h00, 1S = depuis lundi. Même
+                {/* (#95) "Jour" et "1S" sont calés sur des bornes CALENDAIRES, pas sur un nombre
+                    de jours glissant : Jour = aujourd'hui depuis 00h00, 1S = depuis lundi. Même
                     convention que l'Historique Trades. 6M retiré — 3M et 1 An suffisent à
                     couvrir le long terme, et 7 boutons est le maximum qui tienne sur une ligne
-                    à 375px (mesuré : 42px par bouton, sans troncature ni retour à la ligne). */}
+                    à 375px (mesuré : 42px par bouton, sans troncature ni retour à la ligne).
+                    (#108) "24h" renommé "Jour" : la période part de minuit, pas de 24 h en
+                    arrière. Les autres comptent désormais N journées entières, comme
+                    l'historique, et partent du minuit du téléphone. */}
                 {[
-                  { id: 'today', label: '24h' }, { id: 'week', label: '1S' },
+                  { id: 'today', label: 'Jour' }, { id: 'week', label: '1S' },
                   { id: '14', label: '14j' }, { id: '30', label: '1M' }, { id: '90', label: '3M' },
                   { id: '365', label: '1 An' }, { id: 'all', label: 'Max' }
                 ].map(p => (
@@ -2407,6 +2446,14 @@ const { account, daily_stats, settings: settingsFromBot, active_trades } = dashb
         </div>
       </div>
       </div>
+
+      {/* (#113) Version de l'exe du client : la première chose à savoir quand il signale un
+          souci. Absente avant la V15.16.0, qui est la première à l'envoyer. */}
+      {dashboardData.bot_version && (
+        <div style={{ textAlign: 'center', color: '#444', fontSize: '0.7rem', marginTop: '25px' }}>
+          Kairos v{dashboardData.bot_version}
+        </div>
+      )}
 
       {/* (#96) Détail d'un canal par classe d'actifs. Fond flouté + carte, plutôt qu'un
           déroulant : le détail peut faire 6 lignes, et les déplier dans la liste ferait sauter
