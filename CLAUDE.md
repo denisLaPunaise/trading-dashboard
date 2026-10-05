@@ -466,7 +466,9 @@ GitHub transforme `#74` nu en lien vers l'issue #74, donc vers un sujet sans rap
     tant qu'il ne l'a jamais reçu, l'ancien calcul est gardé à l'identique. Une seule règle de
     période, `bornes_periode()`, pour les stats ET l'historique : `Jour` = depuis minuit, `1S`
     et « Cette Semaine » = depuis lundi, un chiffre = N journées entières aujourd'hui compris.
-    Libellés : « 24h » → « Jour », « 48h » → « 2j », « 1 Sem » → « 1S », « 1 Mois » → « 1M ».
+    Libellés : « 24h » → « Jour », « 48h » → « 2j », « 1 Sem » → « 1S », « 1 Mois » → « 1M »,
+    et « 14j » → « 2S » (Par Canal et Global) — qui reste 14 journées entières, **pas** la
+    semaine en cours plus la précédente : seul « 1S » est calé sur le lundi.
     « Aujourd'hui » (Jour & Semaine) garde la journée du broker, comme le drawdown.
   - **Plage personnalisée** (Par Canal et Global, `stats_plage`) : une seule clé Firestore qui
     recopie ses dates, jamais une par plage (document limité à 1 Mo). La courbe d'une plage

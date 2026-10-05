@@ -2408,10 +2408,12 @@ const { account, daily_stats, settings: settingsFromBot, active_trades } = dashb
                     à 375px (mesuré : 42px par bouton, sans troncature ni retour à la ligne).
                     (#108) "24h" renommé "Jour" : la période part de minuit, pas de 24 h en
                     arrière. Les autres comptent désormais N journées entières, comme
-                    l'historique, et partent du minuit du téléphone. */}
+                    l'historique, et partent du minuit du téléphone. "14j" affiché "2S", à la
+                    demande : ce sont toujours 14 journées entières, pas la semaine en cours
+                    plus la précédente. */}
                 {[
                   { id: 'today', label: 'Jour' }, { id: 'week', label: '1S' },
-                  { id: '14', label: '14j' }, { id: '30', label: '1M' }, { id: '90', label: '3M' },
+                  { id: '14', label: '2S' }, { id: '30', label: '1M' }, { id: '90', label: '3M' },
                   { id: '365', label: '1 An' }, { id: 'all', label: 'Max' }
                 ].map(p => (
                   <button
@@ -2533,10 +2535,10 @@ const { account, daily_stats, settings: settingsFromBot, active_trades } = dashb
           {statsTab === 'global' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
               
-              {/* SÉLECTEUR DE PÉRIODE */}
+              {/* SÉLECTEUR DE PÉRIODE -- (#108) mêmes libellés que Par Canal ("2S" = 14 journées) */}
               <div style={{ display: 'flex', gap: '5px', background: '#1e1e1e', padding: '5px', borderRadius: '8px', border: '1px solid #333' }}>
                 {[
-                  { id: '14', label: '14j' },
+                  { id: '14', label: '2S' },
                   { id: '30', label: '1M' },
                   { id: '90', label: '3M' },
                   { id: '180', label: '6M' },
