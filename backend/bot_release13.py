@@ -158,7 +158,7 @@ SECURITY_PIN = str(secrets.randbelow(900000) + 100000)
 # ==========================================
 # 🔐 CONFIGURATION DISTRIBUTION (LICENCE)
 # ==========================================
-VERSION_BOT = "15.16.0"
+VERSION_BOT = "15.16.1"
 # (#113) Ce que CET exe sait faire, annonce au dashboard dans chaque push d'etat. Le dashboard
 # n'affiche une fonction que si le bot la declare : sans ca, un client sur un exe plus ancien
 # verrait un bouton que son bot ignore -- ou pire, auquel il repond autre chose sans le dire
@@ -4500,13 +4500,34 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
             else:
                 lot = target_lot
                 
-        if lot < 0.01: continue
+        if lot < 0.01:
+            # (#114) Jusque-la ce "continue" etait MUET : un signal dont le lot calcule
+            # retombait sous le minimum broker disparaissait sans trace (ni journal, ni alerte),
+            # d'ou l'impression de trades "loupes" cote client (surtout MDT FREE). On note
+            # desormais la raison exacte au journal ET sur Telegram.
+            log(f"🚫 {channel_source} {symbol} {action} : lot calcule < 0.01 "
+                f"(risque trop faible ou SL tres eloigne) -> ignore", important=True)
+            await noter(_tag_x, f"🚫 AUCUN ORDRE ({symbol} {action}) : lot calcule sous le "
+                                f"minimum broker (0.01) — risque trop faible ou SL trop eloigne")
+            await send_alert(f"🚫 **SIGNAL NON PRIS**\n{action} {symbol}\n"
+                             f"Lot calcule sous 0.01 (risque trop faible ou SL trop eloigne).")
+            continue
 
         # (#78) Dernier filtre avant l'envoi : la taille calculée doit tenir dans la marge
         # libre. Sans ça, un lot trop gros partait quand même et MT5 le rejetait ("No money"),
         # le signal étant alors purement perdu.
         lot = await run_mt5(cap_lot_to_free_margin, symbol, action, lot, final_px, otype)
-        if lot < 0.01: continue
+        if lot < 0.01:
+            # (#114) Meme trou muet que ci-dessus, cote marge : si meme le lot minimum ne tient
+            # pas dans la marge libre, cap_lot_to_free_margin renvoie 0 et le signal etait perdu
+            # en silence. Desormais journalise et signale.
+            log(f"🚫 {channel_source} {symbol} {action} : marge libre insuffisante pour le lot "
+                f"minimum -> ignore", important=True)
+            await noter(_tag_x, f"🚫 AUCUN ORDRE ({symbol} {action}) : marge libre insuffisante "
+                                f"pour le lot minimum du broker")
+            await send_alert(f"🚫 **SIGNAL NON PRIS**\n{action} {symbol}\n"
+                             f"Marge libre insuffisante meme pour le lot minimum.")
+            continue
 
         # --- 🧮 NOUVEAU : CALCUL ET LOG DU RISQUE EXACT ---
         projected_loss_eur = 0.0
@@ -7732,9 +7753,18 @@ async def main_handler(event):
         # relevées dans les logs, 53 disent "au POINT d'entrée", 9 "au NIVEAU d'entrée" et
         # 1 "au PRIX d'entrée" : ces 10 dernières étaient ignorées, le partiel se faisait mais
         # le stop restait en place. Les trois formulations sont désormais acceptées.
+        # (#115) Le canal abrege de plus en plus "breakeven" en "BE" : "SL A BE", "SL A BE
+        # MAINTENANT (4428)", "ON PASSE LE SL A BE", "SL A BE POUR MOI". Ces consignes etaient
+        # RATEES (seul le mot complet BREAKEVEN, ou "SL au point/niveau/prix d'entree", etait
+        # reconnu) : le partiel se faisait, mais le stop ne remontait pas -- ~7 fois en 2 mois
+        # dans les logs. On ajoute deux formes : "SL ... BE" rapproche, et "... A/À BE".
+        # \bBE\b (mot entier) evite de declencher sur un "BE" niche dans un autre mot (SUPERBE,
+        # BEAUCOUP...).
         is_be = ("BREAKEVEN" in txt_upper) or ("BE" == txt_upper.strip()) or \
                 (any(w in txt_upper for w in ("POINT", "NIVEAU", "PRIX"))
-                 and "ENTR" in txt_upper and "SL" in txt_upper)
+                 and "ENTR" in txt_upper and "SL" in txt_upper) or \
+                bool(re.search(r"\bSL\b.{0,12}\bBE\b", txt_upper)) or \
+                bool(re.search(r"\b[AÀ]\s+BE\b", txt_upper))
 
         original_msg_id = event.reply_to_msg_id
 

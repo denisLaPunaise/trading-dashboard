@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-# V15.16.0 — Periodes au minuit du client, plage de dates, filtre canal, echelle de TP reglable, journal de tous les canaux
+# V15.16.1 — Visibilite des signaux non pris (journal + alerte) + detection 'SL A BE'
 # V15.15.0 — Reference DD par compte, relances MT5 espacees + alerte Telegram
 # V15.14.0 — Diagnostic MT5, garde-fous hedging/algo, correctifs securite drawdown
 #             + edition de message limitee a son canal, SL auto au risque regle,
@@ -49,7 +49,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='Kairos_V15.16.0',
+    name='Kairos_V15.16.1',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

@@ -94,9 +94,10 @@ et on ne réutilise jamais.
 | #75 | Bouton d'ajout manuel sous la liste des canaux | `(#112)` |
 | — | Le bot annonce sa version et ses fonctions au dashboard (prérequis de #70, #72, #73) | `(#113)` |
 
-Le prochain marqueur libre est donc **`(#114)`**, et non le plus grand trouvé dans le code :
-une réservation n'apparaît dans le code qu'une fois le sujet traité. Toute nouvelle issue
-réserve le sien et met ce tableau à jour.
+Le prochain marqueur libre est donc **`(#116)`** (`#114` = visibilité des signaux non pris,
+`#115` = détection « SL A BE », tous deux en V15.16.1), et non le plus grand trouvé dans le
+code : une réservation n'apparaît dans le code qu'une fois le sujet traité. Toute nouvelle
+issue réserve le sien et met ce tableau à jour.
 
 Dans une issue, une PR ou un message de commit, écrire un marqueur **entre backticks** :
 GitHub transforme `#74` nu en lien vers l'issue #74, donc vers un sujet sans rapport.
@@ -493,3 +494,25 @@ GitHub transforme `#74` nu en lien vers l'issue #74, donc vers un sujet sans rap
     et le **vrai dashboard piloté dans Chromium** avec un faux Firebase (alias Vite sur
     `./firebase`, `firebase/firestore`, `firebase/auth`, `@twa-dev/sdk`) — de quoi voir chaque
     écran et le repli pour un exe ancien sans toucher à la production.
+- **V15.16.1** — deux points nés de l'analyse du log d'un client (`debug_mdt.log`, août→octobre).
+  - **Signaux non pris, désormais visibles** (`#114`). La boucle d'exécution classique (MDT,
+    SPACE, LIGUE, PERSO) abandonnait un signal par un `continue` **muet** dans deux cas : lot
+    calculé sous 0,01 (risque trop faible ou SL très éloigné) et marge libre insuffisante même
+    pour le lot minimum (`cap_lot_to_free_margin` renvoie 0). Aucun journal, aucune alerte : le
+    trade « disparaissait », d'où l'impression côté client que MDT FREE loupait des signaux. Les
+    rejets MT5 (prix refusé, no money…) étaient déjà notés et alertés ; c'étaient les deux seuls
+    trous restants. Chacun écrit maintenant la raison exacte au journal (`noter`) **et** sur
+    Telegram (`send_alert`). Note : la cause des cas FREE observés n'était pas la marge (le
+    client confirme en avoir toujours assez) — c'est précisément pour ça qu'il fallait rendre
+    *tout* abandon traçable, le prochain cas dira de lui-même pourquoi via `journal_canaux.log`.
+  - **Détection « SL A BE »** (`#115`). Le canal abrège « breakeven » en « BE » (« SL A BE »,
+    « SL A BE MAINTENANT (4428) », « METS TON SL A BE (4078) », « SL AU BE », « SL à BE ») :
+    `is_be` n'acceptait que le mot complet BREAKEVEN ou « SL au point/niveau/prix d'entrée »,
+    donc le partiel se faisait mais le **stop ne remontait pas** — relevé ~7 fois en deux mois.
+    Deux formes ajoutées : `\bSL\b.{0,12}\bBE\b` et `\b[AÀ]\s+BE\b`. Le `\bBE\b` (mot entier)
+    évite de déclencher sur un « BE » niché dans un autre mot (SUPERBE, BEAUCOUP, ABEILLE).
+    Vérifié sur 15 vraies formulations du log + 7 pièges (zéro faux positif), et les anciennes
+    formes (« SL AU POINT D'ENTRÉE ») restent reconnues.
+  - Patch invisible pour le client : aucun nouveau réglage, mais il reçoit désormais une alerte
+    quand un signal n'est pas pris (c'était silencieux). Se compile avec la V15.16.0 (jamais
+    distribuée seule).
