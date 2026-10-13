@@ -94,10 +94,10 @@ et on ne réutilise jamais.
 | #75 | Bouton d'ajout manuel sous la liste des canaux | `(#112)` |
 | — | Le bot annonce sa version et ses fonctions au dashboard (prérequis de #70, #72, #73) | `(#113)` |
 
-Le prochain marqueur libre est donc **`(#116)`** (`#114` = visibilité des signaux non pris,
-`#115` = détection « SL A BE », tous deux en V15.16.1), et non le plus grand trouvé dans le
-code : une réservation n'apparaît dans le code qu'une fois le sujet traité. Toute nouvelle
-issue réserve le sien et met ce tableau à jour.
+Le prochain marqueur libre est donc **`(#117)`** (`#114` = visibilité des signaux non pris,
+`#115` = détection « SL A BE », tous deux en V15.16.1 ; `#116` = risque par type d'actif en
+V15.17.0), et non le plus grand trouvé dans le code : une réservation n'apparaît dans le code
+qu'une fois le sujet traité. Toute nouvelle issue réserve le sien et met ce tableau à jour.
 
 Dans une issue, une PR ou un message de commit, écrire un marqueur **entre backticks** :
 GitHub transforme `#74` nu en lien vers l'issue #74, donc vers un sujet sans rapport.
@@ -516,3 +516,32 @@ GitHub transforme `#74` nu en lien vers l'issue #74, donc vers un sujet sans rap
   - Patch invisible pour le client : aucun nouveau réglage, mais il reçoit désormais une alerte
     quand un signal n'est pas pris (c'était silencieux). Se compile avec la V15.16.0 (jamais
     distribuée seule).
+- **V15.17.0** — `#116`, né de l'analyse de rentabilité d'un compte client (`trades_detailed.csv`,
+  août→octobre) : sur 2 mois, le forex de MDT VIP perdait ~−790 € pendant que l'or était à plat
+  et les indices positifs, mais impossible de couper le forex sans toucher le reste.
+  - **Risque par type d'actif.** L'ancien bucket unique « Autres » (`RISK_PERCENT_OTHER`) mêlait
+    forex, crypto et pétrole. Il est découpé en **`RISK_PERCENT_FOREX` / `_CRYPTO` / `_OIL`**,
+    `OTHER` ne gardant que le résiduel (argent, exotiques, non classés). La classification passe
+    par **`classe_actif()`** déjà existant — même vocabulaire que les stats et `get_pip_divisor()`,
+    donc pas de divergence. Défauts tous à 0,6 % → **aucun changement de comportement** tant que
+    le client ne touche à rien. Rappel important : MDT VIP n'utilise ces buckets que s'il est en
+    **« auto »** (`RISK_PERCENT_MDT_VIP = None`) ; sinon son risque de canal unique prime.
+  - **« 0 % = ne pas trader ce type ».** Avant, un risque à 0 était ramené au plancher `0.0001`
+    puis remonté au lot minimum par `max(volume_min, …)` : un « risque 0 » ouvrait quand même
+    0,01 lot, il ne coupait rien. `get_safe_lot_size` renvoie désormais `(0.0, 0.0)` dès que le
+    risque résolu vaut 0 ; le signal est alors sauté par le `if lot < 0.01: continue` de la
+    boucle d'exécution — **déjà journalisé et alerté par `#114`** (V15.16.1). Les défauts valant
+    0,6 %, un 0 n'arrive que si le client l'a mis exprès.
+  - **Dashboard.** La carte « Gestion du Risque » montre désormais 5 types (Or, Indices,
+    **Devises**, **Crypto**, **Pétrole**) au lieu du « Devise » unique mal nommé ; « Autres »
+    résiduel reste back-only (commande `/risk_other`). Un type à 0 % s'affiche **⛔ Coupé**.
+    Curseur **Auto / Manuel** ajouté sur MDT VIP et MDT Free (le mode auto n'était atteignable
+    que par `/risk_vip auto`). Nouvelles commandes `/risk_devise`, `/risk_crypto`, `/risk_petrole`.
+    Capability `risk_par_type` (`FONCTIONS_BOT`) : un exe antérieur garde l'ancien champ unique.
+  - Vérification : `py_compile`, parité clés `save`/`load` (42/42), test de `classe_actif()`
+    **extrait du source** + logique « 0 = couper » (XAU→Or, US30→Indices, GBPNZD→Devises,
+    BTC→Crypto, USOIL→Pétrole ; forex à 0 → sauté, le reste garde), dashboard **lint 0 + build
+    Vite OK**.
+  - **La bascule recommandée au client** (de −2 400 € à ≈ +900 € sur la période) : muter INDODOG
+    (26 % de réussite, rien ne le sauve), et MDT VIP en auto + Devises à 0. Réglages seulement —
+    actifs une fois la V15.17.0 compilée.

@@ -333,6 +333,7 @@ function App() {
   const plagePerso = fonctionsBot.includes('plage_perso')   // (#107)
   const historiqueCanal = fonctionsBot.includes('historique_canal')   // (#109)
   const echelleTp = fonctionsBot.includes('echelle_tp')   // (#110)
+  const riskParType = fonctionsBot.includes('risk_par_type')   // (#116) Devises/Crypto/Pétrole séparés + 0 = couper
   const [error, setError] = useState(null)
   const settingDebounce = useRef({}) // (#11) timers de debounce par clé de réglage
 
@@ -1227,12 +1228,26 @@ const { account, daily_stats, settings: settingsFromBot, active_trades } = dashb
   // liste est VIDE (les 3 globaux sont riskEngineOnly, les autres sont filtrés par canal) :
   // on masque alors tout l'en-tête "Gestion du Risque (%)" + son verrou, et la section
   // Lots SABR perd son trait de séparation, sinon il restait un bloc titre vide.
+  // (#116) Risque par type d'actif. Sur un bot V15.17.0+ (capability risk_par_type), on affiche
+  // Devises / Crypto / Pétrole séparément (chacun 0 % = couper). Sur un exe antérieur, repli sur
+  // l'ancien bucket unique "Autres" (clé risk_other), affiché "Devises (Global)" comme avant.
+  const assetGlobals = riskParType
+    ? [
+        { label: 'Or (Global)', key: 'risk_gold', color: '#ffd700', riskEngineOnly: true },
+        { label: 'Indices (Global)', key: 'risk_indices', color: '#4da8da', riskEngineOnly: true },
+        { label: 'Devises (Global)', key: 'risk_forex', color: '#ff8a65', riskEngineOnly: true, cutAtZero: true },
+        { label: 'Crypto (Global)', key: 'risk_crypto', color: '#ba68c8', riskEngineOnly: true, cutAtZero: true },
+        { label: 'Pétrole (Global)', key: 'risk_oil', color: '#8d6e63', riskEngineOnly: true, cutAtZero: true },
+      ]
+    : [
+        { label: 'Or (Global)', key: 'risk_gold', color: '#ffd700', riskEngineOnly: true },
+        { label: 'Indices (Global)', key: 'risk_indices', color: '#4da8da', riskEngineOnly: true },
+        { label: 'Devises (Global)', key: 'risk_other', color: '#ff8a65', riskEngineOnly: true },
+      ];
   const riskSliders = [
-    { label: 'Or (Global)', key: 'risk_gold', color: '#ffd700', riskEngineOnly: true },
-    { label: 'Indices (Global)', key: 'risk_indices', color: '#4da8da', riskEngineOnly: true },
-    { label: 'Devises (Global)', key: 'risk_other', color: '#ff8a65', riskEngineOnly: true },
-    { label: 'MDT VIP', key: 'risk_mdt_vip', color: '#a5d6a7', channel: 'CANAL MDT_VIP' },
-    { label: 'MDT Free', key: 'risk_mdt_free', color: '#81c784', channel: 'CANAL MDT_FREE' },
+    ...assetGlobals,
+    { label: 'MDT VIP', key: 'risk_mdt_vip', color: '#a5d6a7', channel: 'CANAL MDT_VIP', autoToggle: true },
+    { label: 'MDT Free', key: 'risk_mdt_free', color: '#81c784', channel: 'CANAL MDT_FREE', autoToggle: true },
     { label: 'Space', key: 'risk_space', color: '#ce93d8', channel: 'CANAL SPACE' },
     { label: 'Ligue', key: 'risk_ligue', color: '#ffb74d', channel: 'CANAL LIGUE' },
     { label: 'Perso', key: 'risk_perso', color: '#90caf9', channel: 'CANAL PERSO' },
@@ -1816,20 +1831,56 @@ const { account, daily_stats, settings: settingsFromBot, active_trades } = dashb
             )}
 
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '20px' }}>
-              {riskSliders.map((item) => (
-                <div key={item.key}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.9rem', marginBottom: '5px' }}>
-                    <span>{item.label}</span>
-                    <strong style={{ color: item.color }}>{(settings[item.key] * 100).toFixed(2)} %</strong>
+              {riskSliders.map((item) => {
+                const val = Number(settings[item.key]) || 0;
+                const pct = val * 100;
+                const isAuto = item.autoToggle && !val;    // (#116) 0/absent = Auto (risque par type)
+                const isCut = item.cutAtZero && pct === 0;  // (#116) 0 % = type coupé
+                return (
+                  <div key={item.key}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.9rem', marginBottom: '5px' }}>
+                      <span>{item.label}</span>
+                      {item.autoToggle ? (
+                        <button
+                          onClick={() => { triggerHaptic('light'); updateSetting(item.key, isAuto ? 0.006 : 0); }}
+                          disabled={risksLocked}
+                          style={{
+                            padding: '2px 10px', borderRadius: '12px', fontSize: '0.7rem', fontWeight: 'bold',
+                            border: `1px solid ${isAuto ? '#4da8da' : '#555'}`,
+                            background: isAuto ? 'rgba(77,168,218,0.15)' : '#2a2a2a',
+                            color: isAuto ? '#4da8da' : '#888',
+                            cursor: risksLocked ? 'not-allowed' : 'pointer', opacity: risksLocked ? 0.4 : 1
+                          }}
+                        >
+                          {isAuto ? '⚙️ Auto' : `${pct.toFixed(2)} %`}
+                        </button>
+                      ) : (
+                        <strong style={{ color: isCut ? '#ff5252' : item.color }}>
+                          {isCut ? '⛔ Coupé' : `${pct.toFixed(2)} %`}
+                        </strong>
+                      )}
+                    </div>
+                    {isAuto ? (
+                      <div style={{ fontSize: '0.75rem', color: '#777', fontStyle: 'italic', padding: '6px 0' }}>
+                        Risque par type d'actif (Or / Indices / Devises…)
+                      </div>
+                    ) : (
+                      <input
+                        type="range" min="0" max="2.0" step="0.01" value={pct} disabled={risksLocked}
+                        onChange={(e) => updateSetting(item.key, parseFloat(e.target.value) / 100)}
+                        style={{ width: '100%', accentColor: isCut ? '#ff5252' : item.color, opacity: risksLocked ? 0.4 : 1, cursor: risksLocked ? 'not-allowed' : 'pointer' }}
+                      />
+                    )}
                   </div>
-                  <input
-                    type="range" min="0" max="2.0" step="0.01" value={settings[item.key] * 100} disabled={risksLocked}
-                    onChange={(e) => updateSetting(item.key, parseFloat(e.target.value) / 100)}
-                    style={{ width: '100%', accentColor: item.color, opacity: risksLocked ? 0.4 : 1, cursor: risksLocked ? 'not-allowed' : 'pointer' }}
-                  />
-                </div>
-              ))}
+                );
+              })}
             </div>
+            {riskParType && hasRiskSliders && (
+              <p style={{ fontSize: '0.72rem', color: '#777', margin: '8px 2px 0' }}>
+                💡 Un type à <strong>0 %</strong> = <strong style={{ color: '#ff5252' }}>ne pas trader ce type</strong>. Pour couper
+                le forex sur MDT VIP : passe VIP en <strong>⚙️ Auto</strong> puis mets <strong>Devises</strong> à 0 %.
+              </p>
+            )}
 
             {/* LOTS & RISQUE SABR (#15 : réaligné en grille, mini-descriptions retirées)
                 Le trait de séparation + l'espace au-dessus n'ont de sens que s'il y a

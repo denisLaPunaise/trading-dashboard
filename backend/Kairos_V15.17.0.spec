@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-# V15.16.1 — Visibilite des signaux non pris (journal + alerte) + detection 'SL A BE'
+# V15.17.0 — Risque par type d'actif (Devises/Crypto/Petrole separes) + 0 % = couper
 # V15.15.0 — Reference DD par compte, relances MT5 espacees + alerte Telegram
 # V15.14.0 — Diagnostic MT5, garde-fous hedging/algo, correctifs securite drawdown
 #             + edition de message limitee a son canal, SL auto au risque regle,
@@ -49,7 +49,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='Kairos_V15.16.1',
+    name='Kairos_V15.17.0',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

@@ -158,7 +158,7 @@ SECURITY_PIN = str(secrets.randbelow(900000) + 100000)
 # ==========================================
 # 🔐 CONFIGURATION DISTRIBUTION (LICENCE)
 # ==========================================
-VERSION_BOT = "15.16.1"
+VERSION_BOT = "15.17.0"
 # (#113) Ce que CET exe sait faire, annonce au dashboard dans chaque push d'etat. Le dashboard
 # n'affiche une fonction que si le bot la declare : sans ca, un client sur un exe plus ancien
 # verrait un bouton que son bot ignore -- ou pire, auquel il repond autre chose sans le dire
@@ -170,6 +170,7 @@ FONCTIONS_BOT = [
     "plage_perso",   # (#107) request_stats days="custom" + debut/fin -> cle stats_plage
     "historique_canal",  # (#109) request_history + canal -> cle trades_history_filtre
     "echelle_tp",    # (#110) update_setting echelle_indodog / echelle_fts (liste de %)
+    "risk_par_type", # (#116) risques Devises/Crypto/Petrole separes + 0 = couper
 ]
 # (URL_LICENCE retire — licence verifiee via Firestore, Phase 4)
 
@@ -275,8 +276,16 @@ MAGIC_NUMBER = 999000          # ID unique des trades de ce bot
 
 # --- Money Management ---
 RISK_PERCENT_GOLD = 0.006     # 0.6% (Défaut OR)
-RISK_PERCENT_OTHER = 0.006    # 0.6% (Défaut Autres)
+RISK_PERCENT_OTHER = 0.006    # 0.6% (Défaut Autres : argent, exotiques, non classés -- filet)
 RISK_PERCENT_INDICES = 0.008  # 0.8% (Indices US30/NAS100)
+# (#116) Le bucket "Autres" d'origine mélangeait forex, crypto et pétrole : impossible de
+# couper le forex (le plus perdant, cf. analyse des logs) sans couper le reste. On le découpe
+# en trois types réglables séparément. Défaut identique à OTHER -> aucun changement de
+# comportement tant que le client ne les touche pas. Un type réglé à 0 % = NE PAS TRADER ce
+# type (cf. get_safe_lot_size), au lieu de l'ancien repli au lot minimum.
+RISK_PERCENT_FOREX = 0.006    # 0.6% (Devises : paires de deux codes 3 lettres)
+RISK_PERCENT_CRYPTO = 0.006   # 0.6% (BTC, ETH...)
+RISK_PERCENT_OIL = 0.006      # 0.6% (Pétrole : USOIL, WTI, BRENT...)
 
 # --- 🕒 FILTRES TEMPORELS & JOURS ---
 # Par défaut : 8h-17h = 100% du risque (1.0). Le reste du temps = 50% (0.5)
@@ -1778,6 +1787,9 @@ def save_settings():
             new_values = {
                 "RISK_PERCENT_GOLD": RISK_PERCENT_GOLD,
                 "RISK_PERCENT_OTHER": RISK_PERCENT_OTHER,
+                "RISK_PERCENT_FOREX": RISK_PERCENT_FOREX,     # (#116)
+                "RISK_PERCENT_CRYPTO": RISK_PERCENT_CRYPTO,   # (#116)
+                "RISK_PERCENT_OIL": RISK_PERCENT_OIL,         # (#116)
                 "RISK_PERCENT_MDT_VIP": RISK_PERCENT_MDT_VIP,
                 "RISK_PERCENT_MDT_FREE": RISK_PERCENT_MDT_FREE,
                 "FIXED_LOT_SABR_FREE": FIXED_LOT_SABR_FREE,
@@ -1838,6 +1850,7 @@ def load_settings():
     """Charge les réglages au démarrage"""
     global RISK_PERCENT_GOLD, SABR_FORWARD_ACTIVE, RISK_PERCENT_OTHER, RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE, MAX_DAILY_DRAWDOWN, DRAWDOWN_ACTIVE, TRAILING_STOP_PIPS, RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO, SOFT_SL_PERCENT, MUTED_CHANNELS, ALLOWED_CHANNELS, CHANNEL_TP1_PCT, TELEGRAM_DESTINATION_ID, ADMIN_ID, RISK_PERCENT_INDICES, PRIME_HOURS, TIME_OFF_PEAK_FACTOR, DAY_RISK_FACTORS, FIXED_LOT_SABR_FREE, FIXED_LOT_SABR_VIP, RISK_PERCENT_SABR_OTHER, SABR_ZONE_EQUAL_SPLIT, SABR_ZONE_BORNES, SABR_ZONE_PCT1, SABR_ZONE_PCT2, SL_SUIVEUR_ACTIVE, SOFT_SL_ACTIVE, FIREBASE_EMAIL, FIREBASE_PASSWORD, BE_OFFSET_PIPS, SABR_TRAILING_ACTIVE, SABR_TRAILING_PIPS, FIXED_LOT_INDODOG, FIXED_LOT_FTS, SABR_BE_PARTIEL_ACTIVE, SABR_BE_PARTIEL_PCT, SABR_ANTI_DOUBLON_ACTIVE
     global INDO_ECHELLE_TP, FTS_ECHELLE_TP   # (#110) cf. le piege de l'anti-doublon (V15.8.0)
+    global RISK_PERCENT_FOREX, RISK_PERCENT_CRYPTO, RISK_PERCENT_OIL   # (#116)
 
     if os.path.exists(SETTINGS_FILENAME):
         try:
@@ -1849,6 +1862,9 @@ def load_settings():
                 # On met à jour les variables globales si elles existent dans le fichier
                 if "RISK_PERCENT_GOLD" in data: RISK_PERCENT_GOLD = data["RISK_PERCENT_GOLD"]
                 if "RISK_PERCENT_OTHER" in data: RISK_PERCENT_OTHER = data["RISK_PERCENT_OTHER"]
+                if "RISK_PERCENT_FOREX" in data: RISK_PERCENT_FOREX = data["RISK_PERCENT_FOREX"]      # (#116)
+                if "RISK_PERCENT_CRYPTO" in data: RISK_PERCENT_CRYPTO = data["RISK_PERCENT_CRYPTO"]   # (#116)
+                if "RISK_PERCENT_OIL" in data: RISK_PERCENT_OIL = data["RISK_PERCENT_OIL"]            # (#116)
                 if "RISK_PERCENT_MDT_VIP" in data: RISK_PERCENT_MDT_VIP = data["RISK_PERCENT_MDT_VIP"]
                 elif "RISK_PERCENT_VIP" in data: RISK_PERCENT_MDT_VIP = data["RISK_PERCENT_VIP"]
                 if "RISK_PERCENT_MDT_FREE" in data: RISK_PERCENT_MDT_FREE = data["RISK_PERCENT_MDT_FREE"]
@@ -3399,13 +3415,27 @@ async def get_safe_lot_size(symbol, signal_type, sl_price, entry_price_ref, chan
     elif channel_source == "CANAL LIGUE" and RISK_PERCENT_LIGUE is not None: base_risk_pct = RISK_PERCENT_LIGUE
     elif channel_source == "CANAL PERSO" and RISK_PERCENT_PERSO is not None: base_risk_pct = RISK_PERCENT_PERSO
     else:
-        if is_gold: base_risk_pct = RISK_PERCENT_GOLD
-        elif is_index: base_risk_pct = RISK_PERCENT_INDICES
-        else: base_risk_pct = RISK_PERCENT_OTHER
+        # (#116) Risque par TYPE d'actif. On reutilise classe_actif() -- meme vocabulaire que
+        # les stats et get_pip_divisor() -- pour ne pas diverger d'une classification a l'autre.
+        _cl = classe_actif(symbol)
+        if   _cl == "Or":      base_risk_pct = RISK_PERCENT_GOLD
+        elif _cl == "Indices": base_risk_pct = RISK_PERCENT_INDICES
+        elif _cl == "Devises": base_risk_pct = RISK_PERCENT_FOREX
+        elif _cl == "Crypto":  base_risk_pct = RISK_PERCENT_CRYPTO
+        elif _cl == "Petrole": base_risk_pct = RISK_PERCENT_OIL
+        else:                  base_risk_pct = RISK_PERCENT_OTHER   # Argent, exotiques, non classes
 
     # (#3) Risque imposé (ex: SABR hors-or) -> prime sur la logique par classe/canal
     if risk_override is not None:
         base_risk_pct = risk_override
+
+    # (#116) 0 % explicite = NE PAS TRADER ce type/canal. Avant, le plancher a 0.0001 puis le
+    # max(volume_min, ...) forcaient malgre tout un ordre a 0.01 lot -- un "risque 0" n'arretait
+    # donc rien. On coupe net ici : le signal saute ensuite par le `if lot < 0.01: continue` de
+    # la boucle d'execution, qui le journalise ET l'alerte (#114). Les defauts valent 0.6 %, un
+    # 0 n'arrive donc que si le client l'a mis expres.
+    if base_risk_pct == 0:
+        return 0.0, 0.0
 
     used_risk_pct = base_risk_pct
     if used_risk_pct < 0.0001: used_risk_pct = 0.0001
@@ -5438,6 +5468,7 @@ async def api_update_planning(data: PlanningUpdate):
 
 async def api_update_setting(data: SettingUpdate):
     global RISK_PERCENT_GOLD, RISK_PERCENT_INDICES, RISK_PERCENT_OTHER
+    global RISK_PERCENT_FOREX, RISK_PERCENT_CRYPTO, RISK_PERCENT_OIL   # (#116)
     global RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE, RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO
     global FIXED_LOT_SABR_VIP, FIXED_LOT_SABR_FREE, RISK_PERCENT_SABR_OTHER, SABR_ZONE_EQUAL_SPLIT, SABR_ZONE_PCT1, SABR_ZONE_PCT2, SABR_ZONE_BORNES
     global MAX_DAILY_DRAWDOWN, TRAILING_STOP_PIPS, SOFT_SL_PERCENT
@@ -5469,6 +5500,9 @@ async def api_update_setting(data: SettingUpdate):
     if k == "risk_gold": RISK_PERCENT_GOLD = float(v)
     elif k == "risk_indices": RISK_PERCENT_INDICES = float(v)
     elif k == "risk_other": RISK_PERCENT_OTHER = float(v)
+    elif k == "risk_forex": RISK_PERCENT_FOREX = float(v)      # (#116) 0 = ne pas trader le forex
+    elif k == "risk_crypto": RISK_PERCENT_CRYPTO = float(v)    # (#116) 0 = ne pas trader la crypto
+    elif k == "risk_oil": RISK_PERCENT_OIL = float(v)          # (#116) 0 = ne pas trader le petrole
     elif k == "risk_mdt_vip": RISK_PERCENT_MDT_VIP = float(v) if float(v) > 0 else None
     elif k == "risk_mdt_free": RISK_PERCENT_MDT_FREE = float(v) if float(v) > 0 else None
     elif k == "risk_space": RISK_PERCENT_SPACE = float(v) if float(v) > 0 else None
@@ -6722,6 +6756,7 @@ async def pairing_handler(event):
 @client.on(events.NewMessage())
 async def admin_commands(event):
     global RISK_PERCENT_GOLD, RISK_PERCENT_OTHER, security_triggered, DD_PANIC_NOTIFIED
+    global RISK_PERCENT_FOREX, RISK_PERCENT_CRYPTO, RISK_PERCENT_OIL   # (#116)
     global RISK_PERCENT_MDT_VIP, RISK_PERCENT_MDT_FREE
     global FIXED_LOT_SABR_VIP, FIXED_LOT_SABR_FREE
     global RISK_PERCENT_SPACE, RISK_PERCENT_LIGUE, RISK_PERCENT_PERSO
@@ -6764,6 +6799,12 @@ async def admin_commands(event):
         risk_g = round(RISK_PERCENT_GOLD * 100, 2)
         risk_o = round(RISK_PERCENT_OTHER * 100, 2)
         risk_i = round(RISK_PERCENT_INDICES * 100, 2)
+        # (#116) 0 % = type coupe -> on l'affiche en clair plutot qu'un "0%" ambigu.
+        def _ft(pct):
+            return "⛔" if pct == 0 else f"{round(pct*100, 2)}%"
+        risk_fx = _ft(RISK_PERCENT_FOREX)
+        risk_cr = _ft(RISK_PERCENT_CRYPTO)
+        risk_pe = _ft(RISK_PERCENT_OIL)
 
         # (#pack) Un canal hors du pack du client ne doit plus apparaître DU TOUT (avant : ligne
         # affichée avec un "🔇", ce qui exposait l'existence de canaux non payés). Un canal du
@@ -6809,7 +6850,9 @@ async def admin_commands(event):
         # avant le bloc trailing) -- on les masque pour un pack 100% SABR, cf.
         # pack_uses_risk_engine().
         sl_block = f"**SL Suiveur: {sl_info}** (Vente: {soft_txt})\n" if show_risk_engine else ""
-        globals_block = f"Or: **{risk_g}%** | Indices: **{risk_i}%** | Autre: **{risk_o}%**\n" if show_risk_engine else ""
+        globals_block = (f"Or: **{risk_g}%** | Indices: **{risk_i}%**\n"
+                         f"Devises: **{risk_fx}** | Crypto: **{risk_cr}** | Pétrole: **{risk_pe}** | Autre: **{risk_o}%**\n"
+                         ) if show_risk_engine else ""
         planning_block = f"\n{time_status}\n\n📅 Jours : **{risk_days_str}**" if show_risk_engine else ""
         doublon_block = f"**Anti-Doublon SABR:** {doublon_state}\n" if (
             channel_allowed("CANAL SABR_VIP") or channel_allowed("CANAL SABR_FREE")) else ""
@@ -6879,10 +6922,32 @@ async def admin_commands(event):
 
     elif text.startswith("/risk_other"):
         try:
-            val = float(text.split()[1]); RISK_PERCENT_OTHER = val / 100 
+            val = float(text.split()[1]); RISK_PERCENT_OTHER = val / 100
             await run_bg(save_settings); await event.reply(f"🔵 **RISQUE AUTRE MODIFIÉ** : **{val}%**")
         except: await event.reply("❌ Usage: /risk_other 0.5")
-    
+
+    # (#116) Risque par type d'actif (0 = ne pas trader ce type).
+    elif text.startswith("/risk_devise") or text.startswith("/risk_forex"):
+        try:
+            val = float(text.split()[1]); RISK_PERCENT_FOREX = val / 100
+            suff = " (⛔ FOREX COUPÉ)" if val == 0 else ""
+            await run_bg(save_settings); await event.reply(f"💶 **RISQUE DEVISES MODIFIÉ** : **{val}%**{suff}")
+        except: await event.reply("❌ Usage: /risk_devise 0.5  (0 = ne pas trader le forex)")
+
+    elif text.startswith("/risk_crypto"):
+        try:
+            val = float(text.split()[1]); RISK_PERCENT_CRYPTO = val / 100
+            suff = " (⛔ CRYPTO COUPÉE)" if val == 0 else ""
+            await run_bg(save_settings); await event.reply(f"🪙 **RISQUE CRYPTO MODIFIÉ** : **{val}%**{suff}")
+        except: await event.reply("❌ Usage: /risk_crypto 0.5  (0 = ne pas trader la crypto)")
+
+    elif text.startswith("/risk_petrole") or text.startswith("/risk_oil"):
+        try:
+            val = float(text.split()[1]); RISK_PERCENT_OIL = val / 100
+            suff = " (⛔ PÉTROLE COUPÉ)" if val == 0 else ""
+            await run_bg(save_settings); await event.reply(f"🛢️ **RISQUE PÉTROLE MODIFIÉ** : **{val}%**{suff}")
+        except: await event.reply("❌ Usage: /risk_petrole 0.5  (0 = ne pas trader le pétrole)")
+
     elif text.startswith("/risk_indice"):
         try:
             val = float(text.split()[1]); RISK_PERCENT_INDICES = val / 100 
@@ -7532,8 +7597,11 @@ async def admin_commands(event):
         # n'apparaît que si ce canal fait partie du pack du client.
         risk_lines = [
             (None, "`/risk_gold 0.6`"),
-            (None, "`/risk_other 0.6`"),
             (None, "`/risk_indice 0.8`"),
+            (None, "`/risk_devise 0.6` (0 = couper)"),
+            (None, "`/risk_crypto 0.6` (0 = couper)"),
+            (None, "`/risk_petrole 0.6` (0 = couper)"),
+            (None, "`/risk_other 0.6`"),
             (None, "`/risk_all 0.5`"),
             ("CANAL MDT_VIP", "`/risk_mdt_vip 1.0`"),
             ("CANAL MDT_FREE", "`/risk_mdt_free 0.5`"),
@@ -8469,6 +8537,8 @@ async def get_current_state_for_firebase() -> dict:
         settings = {
             "risk_gold": RISK_PERCENT_GOLD, "risk_indices": RISK_PERCENT_INDICES,
             "risk_other": RISK_PERCENT_OTHER,
+            "risk_forex": RISK_PERCENT_FOREX, "risk_crypto": RISK_PERCENT_CRYPTO,   # (#116)
+            "risk_oil": RISK_PERCENT_OIL,                                            # (#116)
             "risk_mdt_vip": RISK_PERCENT_MDT_VIP or 0, "risk_mdt_free": RISK_PERCENT_MDT_FREE or 0,
             "risk_space": RISK_PERCENT_SPACE or 0, "risk_ligue": RISK_PERCENT_LIGUE or 0,
             "risk_perso": RISK_PERCENT_PERSO or 0,
