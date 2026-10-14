@@ -94,10 +94,11 @@ et on ne réutilise jamais.
 | #75 | Bouton d'ajout manuel sous la liste des canaux | `(#112)` |
 | — | Le bot annonce sa version et ses fonctions au dashboard (prérequis de #70, #72, #73) | `(#113)` |
 
-Le prochain marqueur libre est donc **`(#117)`** (`#114` = visibilité des signaux non pris,
+Le prochain marqueur libre est donc **`(#118)`** (`#114` = visibilité des signaux non pris,
 `#115` = détection « SL A BE », tous deux en V15.16.1 ; `#116` = risque par type d'actif en
-V15.17.0), et non le plus grand trouvé dans le code : une réservation n'apparaît dans le code
-qu'une fois le sujet traité. Toute nouvelle issue réserve le sien et met ce tableau à jour.
+V15.17.0 ; `#117` = témoin d'attente partagé sur toutes les cartes de réglages), et non le plus
+grand trouvé dans le code : une réservation n'apparaît dans le code qu'une fois le sujet traité.
+Toute nouvelle issue réserve le sien et met ce tableau à jour.
 
 Dans une issue, une PR ou un message de commit, écrire un marqueur **entre backticks** :
 GitHub transforme `#74` nu en lien vers l'issue #74, donc vers un sujet sans rapport.

@@ -69,6 +69,29 @@ const getTelegramUserId = () => {
 //
 // `signed` ajoute un bouton ± : sur mobile, le pavé numérique n'a pas de touche moins, donc
 // une valeur négative (SL de BE placé AVANT l'entrée) était tout simplement impossible à saisir.
+// (#117) Témoin d'attente, PARTAGÉ par toutes les cartes de réglages.
+//
+// Tant que le bot n'a pas confirmé, la valeur affichée vient de la file locale et non de lui :
+// sans ce point, rien ne distingue « envoyé » de « réellement appliqué ». Il n'existait que
+// dans la carte « Sécurité & MM » ; les curseurs de risque, le planning horaire et le mute des
+// canaux n'avaient aucun retour -- d'où l'impression que le réglage « ne prenait pas ».
+//
+// Rouge quand le bot est hors ligne : la commande n'est pas perdue, elle attend dans Firestore
+// et partira à son prochain démarrage. C'est précisément le cas qu'on ne pouvait pas deviner.
+//
+// `cles` accepte une clé ou plusieurs : un même libellé peut porter une valeur ET son
+// interrupteur (cf. `item.key` / `item.toggleKey`).
+const MarqueurAttente = ({ cles, enAttente, botOnline }) => {
+  const liste = Array.isArray(cles) ? cles : [cles];
+  if (!liste.some((c) => c !== undefined && c !== null && enAttente[c] !== undefined)) return null;
+  return (
+    <span title={botOnline ? 'Envoyé — en attente de confirmation du bot'
+                           : "Bot hors ligne — sera appliqué à son prochain démarrage"}
+      style={{ color: botOnline ? '#ffc107' : '#ff6b6b', fontSize: '0.6rem',
+               marginLeft: '6px', verticalAlign: 'middle' }}>●</span>
+  );
+};
+
 const NumField = ({ value, step, onCommit, signed = false, width = '70px', min, max }) => {
   const [draft, setDraft] = useState(null);
   const shown = draft !== null ? draft : (value ?? '');
@@ -138,7 +161,9 @@ const paliersEpuises = (ech) => {
   for (let i = 1; i < 5; i++) { cumul += pctPalier(ech, i); if (cumul >= 99.9) return i; }
   return null;
 };
-const EchelleField = ({ label, value, onCommit }) => {
+// (#117) `marqueur` est un noeud optionnel affiché après le libellé (témoin d'attente). Il ne
+// passe pas par `label`, qui sert aussi d'`aria-label` et doit rester une chaîne.
+const EchelleField = ({ label, value, onCommit, marqueur = null }) => {
   const actuelle = Array.isArray(value) && value.length ? value : null;
   const [draft, setDraft] = useState(null);
   const texte = draft !== null ? draft : (actuelle ? actuelle.join(', ') : '');
@@ -154,7 +179,7 @@ const EchelleField = ({ label, value, onCommit }) => {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px' }}>
-        <span style={{ fontSize: '0.85rem' }}>{label}</span>
+        <span style={{ fontSize: '0.85rem' }}>{label}{marqueur}</span>
         <input
           type="text" inputMode="decimal" value={texte} placeholder="10, 20" aria-label={label}
           onChange={(e) => setDraft(e.target.value)}
@@ -1839,7 +1864,11 @@ const { account, daily_stats, settings: settingsFromBot, active_trades } = dashb
                 return (
                   <div key={item.key}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.9rem', marginBottom: '5px' }}>
-                      <span>{item.label}</span>
+                      <span>
+                        {item.label}
+                        <MarqueurAttente cles={item.key} enAttente={pendingSettings}
+                                         botOnline={botOnline} />
+                      </span>
                       {item.autoToggle ? (
                         <button
                           onClick={() => { triggerHaptic('light'); updateSetting(item.key, isAuto ? 0.006 : 0); }}
@@ -1903,7 +1932,11 @@ const { account, daily_stats, settings: settingsFromBot, active_trades } = dashb
                 const displayVal = item.mult ? (raw * 100).toFixed(1) : raw;
                 return (
                   <div key={item.key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#2a2a2a', padding: '10px', borderRadius: '8px' }}>
-                    <span style={{ fontSize: '0.85rem' }}>{item.label}</span>
+                    <span style={{ fontSize: '0.85rem' }}>
+                      {item.label}
+                      <MarqueurAttente cles={item.key} enAttente={pendingSettings}
+                                       botOnline={botOnline} />
+                    </span>
                     <NumField
                       value={displayVal} step={item.step}
                       onCommit={(n) => updateSetting(item.key, item.mult ? n / item.mult : n)}
@@ -1928,6 +1961,8 @@ const { account, daily_stats, settings: settingsFromBot, active_trades } = dashb
                     .filter(([canal]) => isChannelVisible(canal))
                     .map(([, nom, cle]) => (
                       <EchelleField key={cle} label={nom} value={settings[cle]}
+                        marqueur={<MarqueurAttente cles={cle} enAttente={pendingSettings}
+                                                   botOnline={botOnline} />}
                         onCommit={(v) => updateSetting(cle, v, { debounce: false })} />
                     ))}
                 </div>
@@ -1971,7 +2006,11 @@ const { account, daily_stats, settings: settingsFromBot, active_trades } = dashb
 
                   <div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '7px' }}>
-                      <span style={{ fontSize: '0.85rem' }}>Zone SABR</span>
+                      <span style={{ fontSize: '0.85rem' }}>
+                        Zone SABR
+                        <MarqueurAttente cles="sabr_zone_bornes" enAttente={pendingSettings}
+                                         botOnline={botOnline} />
+                      </span>
                       <span style={{ fontSize: '0.7rem', color: '#666' }}>
                         {n} ordre{n > 1 ? 's' : ''} par signal
                       </span>
@@ -2004,7 +2043,11 @@ const { account, daily_stats, settings: settingsFromBot, active_trades } = dashb
 
                   {n > 1 && (
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px' }}>
-                      <span style={{ fontSize: '0.8rem', color: '#aaa' }}>Répartition du lot</span>
+                      <span style={{ fontSize: '0.8rem', color: '#aaa' }}>
+                        Répartition du lot
+                        <MarqueurAttente cles={['sabr_zone_equal_split', 'sabr_zone_pct1', 'sabr_zone_pct2']}
+                                         enAttente={pendingSettings} botOnline={botOnline} />
+                      </span>
                       <div style={{ display: 'flex', background: '#121212', padding: '3px', borderRadius: '7px', border: '1px solid #444' }}>
                         {[{ v: false, t: 'Manuel' }, { v: true, t: 'Égale' }].map((m) => (
                           <button
@@ -2094,7 +2137,11 @@ const { account, daily_stats, settings: settingsFromBot, active_trades } = dashb
                 {FULL_DAY_NAMES.map((dayName, index) => (
                   <div key={dayName} style={{ marginBottom: index < 6 ? '15px' : 0 }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', marginBottom: '5px' }}>
-                      <span style={{ color: index === pyDay ? '#00e676' : '#ccc' }}>{dayName}{index === pyDay ? ' (auj.)' : ''}</span>
+                      <span style={{ color: index === pyDay ? '#00e676' : '#ccc' }}>
+                        {dayName}{index === pyDay ? ' (auj.)' : ''}
+                        <MarqueurAttente cles={`day_factor_${index}`} enAttente={pendingSettings}
+                                         botOnline={botOnline} />
+                      </span>
                       <strong style={{ color: '#00e676' }}>{((settings[`day_factor_${index}`] ?? 1) * 100).toFixed(0)}%</strong>
                     </div>
                     <input
@@ -2111,7 +2158,11 @@ const { account, daily_stats, settings: settingsFromBot, active_trades } = dashb
             {/* 2. L'HORLOGE INTERACTIVE */}
             <div style={{ background: '#121212', padding: '15px', borderRadius: '10px', marginBottom: '20px', border: '1px solid #222' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                <span style={{ fontSize: '0.85rem', color: '#eee' }}>Heures Pleines (100%)</span>
+                <span style={{ fontSize: '0.85rem', color: '#eee' }}>
+                  Heures Pleines (100%)
+                  <MarqueurAttente cles="prime_hours" enAttente={pendingSettings}
+                                   botOnline={botOnline} />
+                </span>
                 <span style={{ fontSize: '0.7rem', color: '#666' }}>Clique pour surligner</span>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(12, 1fr)', gap: '4px' }}>
@@ -2145,7 +2196,11 @@ const { account, daily_stats, settings: settingsFromBot, active_trades } = dashb
             {/* 3. INTERRUPTEUR ET CURSEUR HORS-SESSION */}
             <div style={{ background: 'rgba(255, 255, 255, 0.03)', padding: '15px', borderRadius: '10px', border: '1px solid #333' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: settings.time_off_peak > 0 ? '15px' : '0' }}>
-                <span style={{ fontSize: '0.9rem' }}>Risque hors session</span>
+                <span style={{ fontSize: '0.9rem' }}>
+                  Risque hors session
+                  <MarqueurAttente cles="time_off_peak" enAttente={pendingSettings}
+                                   botOnline={botOnline} />
+                </span>
                 
                 {/* INTERRUPTEUR (TOGGLE) */}
                 <button 
@@ -2261,16 +2316,9 @@ const { account, daily_stats, settings: settingsFromBot, active_trades } = dashb
                   <div key={item.key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', background: item.alerte === 'hit' ? '#3a1f1f' : item.alerte === 'pending' ? '#3a331f' : '#2a2a2a', padding: '10px', borderRadius: '8px', border: item.alerte === 'hit' ? '1px solid #ff4444' : item.alerte === 'pending' ? '1px solid #ffc107' : '1px solid transparent' }}>
                     <span style={{ fontSize: '0.9rem', flex: 1 }}>
                       {item.label}
-                      {/* (#103) Marqueur d'attente : rend visible le seul flou qui subsiste.
-                          Tant que le bot n'a pas confirmé, la valeur affichée vient de la file
-                          locale, pas de lui. Rouge s'il est hors ligne : dans ce cas le réglage
-                          ne sera appliqué qu'à son prochain démarrage (la commande reste en
-                          attente dans Firestore, elle n'est pas perdue). */}
-                      {(pendingSettings[item.key] !== undefined || pendingSettings[item.toggleKey] !== undefined) && (
-                        <span title={botOnline ? 'Envoyé — en attente de confirmation du bot'
-                                               : "Bot hors ligne — sera appliqué à son prochain démarrage"}
-                          style={{ color: botOnline ? '#ffc107' : '#ff6b6b', fontSize: '0.6rem', marginLeft: '6px', verticalAlign: 'middle' }}>●</span>
-                      )}
+                      {/* (#117) Même témoin que partout ailleurs, via le composant partagé. */}
+                      <MarqueurAttente cles={[item.key, item.toggleKey]}
+                                       enAttente={pendingSettings} botOnline={botOnline} />
                       {item.alerte === 'hit' && <span style={{ color: '#ff6b6b', fontSize: '0.7rem', display: 'block' }}>⚠️ Seuil atteint — trading bloqué</span>}
                       {item.alerte === 'pending' && <span style={{ color: '#ffc107', fontSize: '0.7rem', display: 'block' }}>⏳ Déverrouillage requis — voir « Contrôle Système »</span>}
                       {/* (#103) Note contextuelle sous le libellé : sert à révéler les
@@ -2302,7 +2350,11 @@ const { account, daily_stats, settings: settingsFromBot, active_trades } = dashb
 
             {/* Mute Canaux */}
             <div style={{ background: '#1e1e1e', border: '1px solid #333', borderRadius: '12px', padding: '20px' }}>
-              <h3 style={{ margin: '0 0 15px 0', fontSize: '1rem', color: '#aaa', display: 'flex', alignItems: 'center', gap: '5px' }}><BellOff size={16}/> Mute Canaux</h3>
+              <h3 style={{ margin: '0 0 15px 0', fontSize: '1rem', color: '#aaa', display: 'flex', alignItems: 'center', gap: '5px' }}><BellOff size={16}/> Mute Canaux
+                {/* (#117) Le mute passe par la même file : un clic sans retour laissait croire
+                    que rien ne s'était passé tant que le bot n'avait pas répondu. */}
+                <MarqueurAttente cles="muted_channels" enAttente={pendingSettings}
+                                 botOnline={botOnline} /></h3>
              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px' }}>
                 {["CANAL MDT_VIP", "CANAL MDT_FREE", "CANAL SABR_VIP", "CANAL SABR_FREE", "CANAL SABR_COPIE", "CANAL INDODOG", "CANAL FTS", "CANAL SPACE", "CANAL LIGUE", "CANAL PERSO"].filter(isChannelVisible).map(chan => {
                   const isMuted = settings.muted_channels?.includes(chan);
