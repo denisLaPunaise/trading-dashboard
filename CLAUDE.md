@@ -94,7 +94,7 @@ et on ne réutilise jamais.
 | #75 | Bouton d'ajout manuel sous la liste des canaux | `(#112)` |
 | — | Le bot annonce sa version et ses fonctions au dashboard (prérequis de #70, #72, #73) | `(#113)` |
 
-Le prochain marqueur libre est donc **`(#118)`** (`#114` = visibilité des signaux non pris,
+Le prochain marqueur libre est donc **`(#119)`** (`#114` = visibilité des signaux non pris,
 `#115` = détection « SL A BE », tous deux en V15.16.1 ; `#116` = risque par type d'actif en
 V15.17.0 ; `#117` = témoin d'attente partagé sur toutes les cartes de réglages), et non le plus
 grand trouvé dans le code : une réservation n'apparaît dans le code qu'une fois le sujet traité.
@@ -546,3 +546,26 @@ GitHub transforme `#74` nu en lien vers l'issue #74, donc vers un sujet sans rap
   - **La bascule recommandée au client** (de −2 400 € à ≈ +900 € sur la période) : muter INDODOG
     (26 % de réussite, rien ne le sauve), et MDT VIP en auto + Devises à 0. Réglages seulement —
     actifs une fois la V15.17.0 compilée.
+- **V15.17.1** — `#118`. **Le « 0 % = couper » de la V15.17.0 ne coupait rien**, signalé par le
+  client dès le premier essai : MDT VIP en auto + Devises à 0 continuait d'ouvrir à 0,01 lot.
+  `get_safe_lot_size()` renvoyait bien `0.0`, mais l'appelant, douze lignes plus bas, faisait
+  `lot = max(info_sym.volume_min, min(lot, info_sym.volume_max))` — le 0 remontait à 0,01, et le
+  garde-fou suivant teste `if lot < 0.01`, or **0.01 n'est pas < 0.01**. Le commentaire de la
+  V15.17.0 décrivait pourtant ce mécanisme exact et annonçait que le signal serait sauté : la
+  correction avait été posée dans la fonction appelée, jamais chez l'appelant qui refait le
+  plancher. Leçon à garder : **vérifier que le zéro survit jusqu'au point de décision**, pas
+  seulement qu'il est produit.
+  - Même piège par le **multiplicateur** : `final_risk_multiplier = day_multiplier *
+    time_multiplier`, et les deux descendent à 0 (curseur d'un jour à 0 %, interrupteur « Risque
+    hors session » qui écrit littéralement 0). Un jour coupé ou une session coupée ouvraient donc
+    au lot minimum — l'inverse exact du réglage.
+  - Les `0` d'**erreur** de `get_safe_lot_size()` (SL du mauvais côté, paire inconnue de MT5,
+    compte illisible) produisaient eux aussi un ordre à 0,01 au lieu d'être abandonnés.
+  - Deux gardes placés **avant** le plancher, chacun journalisé et alerté avec la classe d'actif
+    nommée (« EURNZD — Devises »), donc le réglage en cause est lisible d'un coup d'œil. Le
+    plancher **reste** pour un lot légitimement petit : on ne coupe que les zéros explicites.
+    Vérifié sur 7 cas, plancher et test de rejet extraits du source — les 4 zéros sont ignorés,
+    les 3 lots légitimes inchangés (dont 0,004 → 0,01).
+  - Au passage : `is_index`, variable morte laissée par `#116` dans cette même fonction.
+  - Noté pendant ce lot, sans rapport avec le correctif : `round()` arrondit **au pair** en
+    Python, donc un lot de 0,185 donne 0,18 et non 0,19. Comportement d'origine, laissé tel quel.
