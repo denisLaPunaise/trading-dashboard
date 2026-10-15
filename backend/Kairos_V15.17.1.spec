@@ -49,7 +49,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='Kairos_V15.17.0',
+    name='Kairos_V15.17.1',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

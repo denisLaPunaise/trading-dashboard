@@ -158,7 +158,7 @@ SECURITY_PIN = str(secrets.randbelow(900000) + 100000)
 # ==========================================
 # 🔐 CONFIGURATION DISTRIBUTION (LICENCE)
 # ==========================================
-VERSION_BOT = "15.17.0"
+VERSION_BOT = "15.17.1"
 # (#113) Ce que CET exe sait faire, annonce au dashboard dans chaque push d'etat. Le dashboard
 # n'affiche une fonction que si le bot la declare : sans ca, un client sur un exe plus ancien
 # verrait un bouton que son bot ignore -- ou pire, auquel il repond autre chose sans le dire
@@ -3405,8 +3405,9 @@ async def get_safe_lot_size(symbol, signal_type, sl_price, entry_price_ref, chan
     base_risk_pct = 0.006 
     
     sym_up = symbol.upper()
+    # `is_gold` sert encore au repli "sans SL" plus bas (FIXED_LOT_GOLD). L'ancien `is_index`,
+    # lui, est mort depuis que (#116) classe les symboles via classe_actif().
     is_gold = "XAU" in sym_up or "GOLD" in sym_up
-    is_index = "US30" in sym_up or "US100" in sym_up or "NAS" in sym_up or "DAX" in sym_up or "DE40" in sym_up
 
     # --- Override spécifique selon les canaux ---
     if channel_source == "CANAL MDT_VIP" and RISK_PERCENT_MDT_VIP is not None: base_risk_pct = RISK_PERCENT_MDT_VIP
@@ -4518,10 +4519,46 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
         if lot == 0.0:
             raw_lot, base_risk_pct = await get_safe_lot_size(symbol, action, sl_val, final_px, channel_source)
             applied_risk_pct = base_risk_pct * custom_lot_modifier * final_risk_multiplier
-            
+
+            # (#118) Un lot NUL veut dire « ne pas trader », et doit sortir AVANT le plancher
+            # ci-dessous. La V15.17.0 avait bien fait renvoyer 0.0 par get_safe_lot_size pour un
+            # risque regle a 0 %, mais le `max(volume_min, ...)` d'en dessous le remontait a
+            # 0.01 : le `if lot < 0.01` ne declenchait jamais (0.01 n'est pas < 0.01) et le
+            # trade partait au lot minimum. Le « 0 % = couper » n'a donc jamais rien coupe.
+            #
+            # Ca vaut aussi pour les 0 d'ERREUR renvoyes par get_safe_lot_size (compte illisible,
+            # SL du mauvais cote de l'entree, order_calc_profit en echec) : ils produisaient
+            # eux aussi un ordre a 0.01 lot au lieu d'etre abandonnes. Le message nomme la classe
+            # d'actif, qui designe directement le reglage en cause.
+            if raw_lot <= 0:
+                _cl = classe_actif(symbol)
+                log(f"🚫 {channel_source} {symbol} ({_cl}) : lot nul -> signal ignore",
+                    important=True)
+                await noter(_tag_x, f"🚫 AUCUN ORDRE ({symbol} {action}) : lot nul — risque de la "
+                                    f"classe « {_cl} » regle a 0 % (= ne pas trader ce type), ou "
+                                    f"lot incalculable (SL du mauvais cote, paire inconnue)")
+                await send_alert(f"🚫 **SIGNAL NON PRIS**\n{action} {symbol} — {_cl}\n"
+                                 f"Risque de ce type réglé à **0 %** (= ne pas trader), "
+                                 f"ou lot incalculable.")
+                continue
+
             # --- 🎯 APPLICATION DU PLANNING ---
             target_lot = raw_lot * custom_lot_modifier * final_risk_multiplier
-            
+
+            # (#118) Meme piege, par le multiplicateur cette fois. `final_risk_multiplier` vaut
+            # `day_multiplier * time_multiplier`, et les DEUX peuvent valoir 0 : le curseur d'un
+            # jour descend jusqu'a 0 %, et l'interrupteur « Risque hors session » ecrit
+            # litteralement 0 quand on le coupe. Sans ce garde-fou, un jour mis a 0 % ou une
+            # session coupee ouvraient quand meme au lot minimum -- l'inverse exact du reglage.
+            if target_lot <= 0:
+                log(f"🚫 {channel_source} {symbol} : multiplicateur de planning nul "
+                    f"(jour x{final_risk_multiplier:.2f}) -> signal ignore", important=True)
+                await noter(_tag_x, f"🚫 AUCUN ORDRE ({symbol} {action}) : multiplicateur de "
+                                    f"planning a 0 — jour regle a 0 % ou risque hors session coupe")
+                await send_alert(f"🚫 **SIGNAL NON PRIS**\n{action} {symbol}\n"
+                                 f"Planning à **0 %** : jour coupé ou hors session.")
+                continue
+
             info_sym = mt5.symbol_info(symbol)
             if info_sym:
                 step = info_sym.volume_step
@@ -4529,7 +4566,7 @@ async def execute_trade(symbol, action, sl, tp, price_signal, message_date, chan
                 lot = max(info_sym.volume_min, min(lot, info_sym.volume_max))
             else:
                 lot = target_lot
-                
+
         if lot < 0.01:
             # (#114) Jusque-la ce "continue" etait MUET : un signal dont le lot calcule
             # retombait sous le minimum broker disparaissait sans trace (ni journal, ni alerte),
