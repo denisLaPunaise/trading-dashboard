@@ -233,24 +233,42 @@ if API_ID == 0 or API_HASH == "" or BOT_TOKEN == "" or API_HASH == "A_REMPLIR_PA
     input(" Appuyez sur ENTRÉE pour fermer cette fenêtre...")
     sys.exit()
 
-# Canal SABR VIP
-ID_SABR_VIP = -1003684008703
-ID_SABR_FREE = -1003639045748
-ID_CANAL_SABR_COPIE = -1003738415220
+# ── Identifiants des canaux Telegram ─────────────────────────────────────────
+# Les IDs réels ne sont PAS versionnés (ils révèlent les sources de signaux
+# surveillées) : ils vivent dans backend/channels_config.py, ignoré par git
+# (modèle : channels_config.example.py). Fichier absent -> IDs à 0, le bot
+# démarre mais ne surveille aucun canal. À déployer avant de recompiler l'exe.
+try:
+    import channels_config as _chans
+except Exception:
+    _chans = None
+
+def _chan(nom, defaut=0):
+    return getattr(_chans, nom, defaut) if _chans is not None else defaut
+
+# Canaux SABR VIP / FREE / COPIE
+ID_SABR_VIP         = _chan("ID_SABR_VIP")
+ID_SABR_FREE        = _chan("ID_SABR_FREE")
+ID_CANAL_SABR_COPIE = _chan("ID_CANAL_SABR_COPIE")
 
 # Canaux MDT (nommés explicitement : servent au journal de debug MDT ci-dessous)
-ID_MDT_VIP = -1002139883659
-ID_MDT_FREE = -1001890808461
+ID_MDT_VIP  = _chan("ID_MDT_VIP")
+ID_MDT_FREE = _chan("ID_MDT_FREE")
+
+# Canaux SPACE / LIGUE / PERSO
+ID_SPACE       = _chan("ID_SPACE")
+ID_LIGUE       = _chan("ID_LIGUE")
+ID_CANAL_PERSO = _chan("ID_CANAL_PERSO")
 
 # (#84) INDODOG -- signaux presentes sous forme de "menu de restaurant" indonesien, mais de
 # structure tres reguliere : action + symbole, prix d'entree (parfois une zone), SL, puis de
 # 3 a 5 TP numerotes. Gestion en echelle : INDO_ECHELLE_TP donne le % de la position INITIALE
 # ferme a chaque palier, et le reliquat est ferme au dernier TP du signal.
-ID_INDODOG = -1003720161775
+ID_INDODOG = _chan("ID_INDODOG")
 # Le canal est un groupe A SUJETS (comme des salons Discord) : tous les salons partagent le
 # MEME identifiant de groupe, seul le numero de sujet les distingue. Sans ce filtre, le bot
 # lirait aussi le salon de discussion generale et tenterait d'y trouver des signaux.
-INDODOG_TOPIC_ID = 64
+INDODOG_TOPIC_ID = _chan("INDODOG_TOPIC_ID", 0)
 
 # (#90) FTS -- "Forex VIP SpaceFX". Signaux simples et tres reguliers :
 #     XAUUSD BUY NOW 4635
@@ -261,13 +279,14 @@ INDODOG_TOPIC_ID = 64
 # Prix d'entree UNIQUE (jamais de zone), un SL, puis 3 TP ou plus NON numerotes : c'est leur
 # ordre d'apparition qui donne le palier. Meme moteur d'echelle qu'INDODOG (FTS_ECHELLE_TP,
 # reliquat ferme au dernier TP) et memes regles d'entree / de peremption.
-ID_FTS = -1001957768371
+ID_FTS = _chan("ID_FTS")
 
 # ⚠️ LISTE DES CANAUX SOURCES (MDT_VIP, MDT_FREE, PERSO, SPACE, LIGUE, SABR_FREE, SABR_VIP, SABR_COPIE, INDODOG, FTS)
-CHANNEL_LIST = [ID_MDT_VIP, ID_MDT_FREE, -5093508256, -1002684710444, -1001753570693, -1003639045748, ID_SABR_VIP, ID_CANAL_SABR_COPIE, ID_INDODOG, ID_FTS]
+CHANNEL_LIST = [ID_MDT_VIP, ID_MDT_FREE, ID_CANAL_PERSO, ID_SPACE, ID_LIGUE,
+                ID_SABR_FREE, ID_SABR_VIP, ID_CANAL_SABR_COPIE, ID_INDODOG, ID_FTS]
 
 # Ton Groupe de Logs
-ADMIN_ID = 0 #-1003692316672
+ADMIN_ID = 0  # chargé depuis settings.json / channels_config (ID_ADMIN_LOG) au besoin
 # Groupe gestion utilisation key
 # (SECURITY_CHANNEL_ID retire — gere cote VPS)
 
@@ -404,7 +423,8 @@ SERVER_PACK_CHANNELS = None
 # Internet) rendait une licence révoquée valide indéfiniment.
 LICENSE_CHECK_FAIL_COUNT = 0
 LICENSE_CHECK_MAX_FAILS = 2
-ID_CANAL_PERSO = -5093508256
+# (défini plus haut depuis channels_config ; on réaffirme la source, sans valeur en dur)
+ID_CANAL_PERSO = _chan("ID_CANAL_PERSO")
 CHANNEL_TP1_PCT = {}
 SABR_ZONE_MIN_DIST = {} # Mémorise la distance la plus proche atteinte par le marché
 SABR_DAILY_SIGNALS = {} # Stocke les signaux du jour {1: data, 2: data...}
@@ -3629,7 +3649,7 @@ _TAG_PAR_CHAT = {
     ID_MDT_VIP: "MDT_VIP", ID_MDT_FREE: "MDT_FREE",
     ID_SABR_VIP: "SABR_VIP", ID_SABR_FREE: "SABR_FREE", ID_CANAL_SABR_COPIE: "SABR_COPIE",
     ID_INDODOG: "INDODOG", ID_FTS: "FTS", ID_CANAL_PERSO: "PERSO",
-    -1002684710444: "SPACE", -1001753570693: "LIGUE",
+    ID_SPACE: "SPACE", ID_LIGUE: "LIGUE",
 }
 
 
@@ -6775,8 +6795,8 @@ async def admin_commands(event):
     # canaux du bot de licence (où il répond déjà lui-même), pour éviter le double /help sans
     # toucher au reste. ID en dur (pas de dépendance à admin_license_bot_V3.py, process séparé).
     LICENSE_BOT_CHANNELS = {
-        -1003872071233,  # SECURITY_CHANNEL_ID (canal de licence/sécurité)
-        -1004458498840,  # FEEDBACK_CHANNEL_ID (canal de support/mailbox)
+        _chan("ID_SECURITY_CHANNEL"),  # canal de licence/sécurité
+        _chan("ID_FEEDBACK_CHANNEL"),  # canal de support/mailbox
     }
     if event.chat_id in LICENSE_BOT_CHANNELS:
         return
@@ -7724,7 +7744,7 @@ async def main_handler(event):
     # côté exécution.
     copie_muted = any("SABR_COPIE" in m for m in MUTED_CHANNELS)
     sabr_vip_allowed = channel_allowed("CANAL SABR_VIP")
-    if SABR_FORWARD_ACTIVE and not copie_muted and sabr_vip_allowed and event.chat_id in [ID_SABR_VIP, -5093508256]:
+    if SABR_FORWARD_ACTIVE and not copie_muted and sabr_vip_allowed and event.chat_id in [ID_SABR_VIP, ID_CANAL_PERSO]:
         try:
             global http_session
             # On envoie le message original vers ton canal de copie

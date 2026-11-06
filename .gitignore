@@ -5,6 +5,10 @@ license_secrets.json
 *.pem
 *.key
 
+# Identifiants réels des canaux Telegram (le modèle .example.py reste suivi)
+channels_config.py
+backend/channels_config.py
+
 # Réglages client réels (contiennent tokens/clés) — le template reste suivi
 settings.json
 backend/settings.json
