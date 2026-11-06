@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import math
+import os
 import time
 import threading
 import requests
@@ -19,9 +20,16 @@ from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
-# ── Config Firebase (publique — déjà dans le frontend) ───────────────────────
-FIREBASE_API_KEY    = "AIzaSyDqyuWknI1fm-dV8bY_o6azfamm3XN3PKw"
-FIREBASE_PROJECT_ID = "ftmo-trading-bot-59dae"
+# ── Config Firebase ──────────────────────────────────────────────────────────
+# ⚠️ Ni l'API key Firebase « web » ni l'ID projet ne sont des SECRETS : Google les
+# conçoit pour être publics (intégrés côté client). La sécurité des données ne
+# repose PAS sur la confidentialité de cette clé mais sur les RÈGLES FIRESTORE
+# (cf. README, section Sécurité). On les lit depuis l'environnement pour garder le
+# code propre ; en l'absence de variable, on retombe sur la valeur ci-dessous.
+# La valeur de repli est volontairement en clair :
+#   → identifiant client PUBLIC, protégé par les règles Firestore (pas un secret).
+FIREBASE_API_KEY    = os.environ.get("FIREBASE_API_KEY",    "AIzaSyDqyuWknI1fm-dV8bY_o6azfamm3XN3PKw")
+FIREBASE_PROJECT_ID = os.environ.get("FIREBASE_PROJECT_ID", "ftmo-trading-bot-59dae")
 _FS_BASE  = f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT_ID}/databases/(default)/documents"
 _AUTH_URL = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_API_KEY}"
 _REFR_URL = f"https://securetoken.googleapis.com/v1/token?key={FIREBASE_API_KEY}"
